@@ -1,0 +1,24 @@
+<<<<<<< HEAD
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# Static files (Optional: keep if you want to save product images)
+# static/products/*
+static/temp/*
+
+# IDEs
+.vscode/
+.idea/
+=======
+venv/
+.env
+__pycache__/
+>>>>>>> db10729100131f023fa952060f6a63a4697d62ac
