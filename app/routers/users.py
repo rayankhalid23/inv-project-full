@@ -1,168 +1,152 @@
-<<<<<<< HEAD
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-=======
-from fastapi import APIRouter, Depends, HTTPException, Query
->>>>>>> db10729100131f023fa952060f6a63a4697d62ac
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from app.crud import user as crud_user  # أضف 'as crud_user' ليعرف الكود هذا الاسم
+
 from app.core.database import get_db
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 from app.models.user import User
-from app.core.deps import get_current_active_user, RoleChecker
-<<<<<<< HEAD
-
-# استيراد كافة الدوال من الـ CRUD
-from app.crud.user import (
-    create_user, 
-    update_user, 
-    toggle_user_status, 
-    get_users, 
-    soft_delete_user, 
-    restore_user
-)
+from app.core.deps import get_current_active_user, RoleChecker,get_current_user
+from app.crud.user import create_user, update_user,  get_users, soft_delete_user, restore_user,get_employee_info
+from app.crud import user as crud_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-# 1. عرض الموظفين: مسموح للأدمن (1) والمدير (2) فقط
-@router.get("/", response_model=List[UserResponse])
-def read_users(
-    status: Optional[str] = Query("active"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([1, 2]))
-):
-    return get_users(db, status=status)
-
-# 2. إضافة موظف جديد: المدير يضيف موظف فقط (3)
-@router.post("/", response_model=UserResponse)
+@router.post("/")
 def add_new_user(
     user: UserCreate, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), 
     current_user: User = Depends(RoleChecker([1, 2]))
 ):
+    # المدير (Role 2) يضيف موظفين (Role 3) فقط
     if current_user.role_id == 2 and user.role_id != 3:
-        raise HTTPException(status_code=403, detail="كمدير، يمكنك إضافة موظفين عاديين فقط")
-    return create_user(db=db, user_in=user)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="صلاحياتك كمدير تسمح لك بإضافة موظفين (الرتبة 3) فقط."
+        )
+    return create_user(db=db, user_in=user , admin_id=current_user.id)
 
-# 3. تحديث بيانات موظف: حماية الأقدمية والذات
-@router.patch("/{user_id}", response_model=UserResponse)
+
+
+
+
+@router.patch("/{user_id}") # أو المسار الذي تستخدمينه
 def update_existing_user(
     user_id: int, 
-    user: UserUpdate, 
+    user_in: UserUpdate, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user) # مسموح للكل مبدئياً لفحص المنطق بالداخل
+    current_user = Depends(get_current_user) # 👈 أضفنا هذا لنجلب بيانات من يقوم بالتعديل
 ):
-    target_user = db.query(User).filter(User.id == user_id).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+    """
+    تعديل بيانات موظف (يدعم التعديل الجزئي والصلاحيات)
+    """
+    # 👈 هنا نمرر البيانات بالأسماء الجديدة التي تتطابق مع دالة CRUD
+    return update_user(
+        db=db, 
+        target_user_id=user_id, 
+        user_in=user_in, 
+        current_user=current_user
+    )
 
-    # منطق الصلاحيات في التحديث
-    if current_user.role_id == 3 and current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="كموظف، يمكنك تعديل بياناتك الشخصية فقط")
-    
-    if current_user.role_id == 2:
-        if target_user.role_id in [1, 2] and current_user.id != user_id:
-            raise HTTPException(status_code=403, detail="لا يمكنك تعديل بيانات حسابات الإدارة")
 
-    if current_user.role_id == 1 and target_user.role_id == 1:
-        if current_user.id > target_user.id:
-            raise HTTPException(status_code=403, detail="لا يمكنك تعديل بيانات مسؤول أقدم منك")
-
-    return update_user(db=db, user_id=user_id, user_in=user)
-
-# 4. تبديل حالة النشاط: منع "الانتحار الرقمي" وقاعدة الأقدمية
-@router.post("/{user_id}/toggle-status", response_model=UserResponse)
-def toggle_status(
-    user_id: int, 
-    db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([1, 2]))
-):
-    target_user = db.query(User).filter(User.id == user_id).first()
-    if not target_user:
-        raise HTTPException(status_code=404, detail="الموظف غير موجود")
-
-    if current_user.id == user_id:
-        raise HTTPException(status_code=403, detail="قيد أمني: لا يمكنك تعطيل حسابك الخاص")
-
-    if current_user.role_id == 1 and target_user.role_id == 1:
-        if current_user.id > target_user.id:
-            raise HTTPException(status_code=403, detail="لا تملك صلاحية تعطيل حساب مسؤول أقدم منك")
-
-    if current_user.role_id == 2 and target_user.role_id in [1, 2]:
-        raise HTTPException(status_code=403, detail="لا يمكنك تعديل حالة حسابات الإدارة")
-
-    return toggle_user_status(db=db, user_id=user_id)
-
-# 5. حذف موظف: منع حذف النفس وقاعدة الأقدمية
-@router.delete("/{user_id}", response_model=UserResponse)
+# ---------------------------------------------------------
+# 2. الحذف الناعم (إرسال للأرشيف)
+# ---------------------------------------------------------
+# 5. الحذف الناعم (إرسال للأرشيف مع الرقابة)
+# ---------------------------------------------------------
+@router.delete("/{user_id}")
 def delete_user(
     user_id: int, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), 
     current_user: User = Depends(RoleChecker([1, 2]))
 ):
+    # جلب المستخدم للتأكد من وجوده ورتبته قبل الحذف
     target_user = db.query(User).filter(User.id == user_id).first()
     if not target_user:
-        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+        raise HTTPException(status_code=404, detail="الموظف غير موجود.")
 
+    # أ. منع الحذف الذاتي
     if current_user.id == user_id:
-        raise HTTPException(status_code=403, detail="قيد أمني: لا يمكنك حذف حسابك الخاص")
+        raise HTTPException(status_code=403, detail="إجراء محظور: لا يمكنك حذف حسابك الشخصي.")
 
-    if current_user.role_id == 1 and target_user.role_id == 1:
-        if current_user.id > target_user.id:
-            raise HTTPException(status_code=403, detail="لا تملك صلاحية حذف مسؤول أقدم منك")
+    # ب. قيود المدير (Role 2): يحذف الموظفين (Role 3) فقط
+    if current_user.role_id == 2 and target_user.role_id != 3:
+        raise HTTPException(status_code=403, detail="صلاحياتك كمدير تسمح لك بحذف الموظفين فقط.")
 
-    if current_user.role_id == 2 and target_user.role_id in [1, 2]:
-        raise HTTPException(status_code=403, detail="لا يمكنك حذف حسابات الإدارة")
+    # ج. حماية إضافية للمسؤول الرئيسي من الحذف
+    if target_user.role_id == 1:
+         raise HTTPException(status_code=403, detail="أمن النظام: يحظر حذف حساب المسؤول الرئيسي.")
 
-    return soft_delete_user(db=db, user_id=user_id)
+    # تمرير admin_id لضمان تسجيل العملية في SystemAuditLog
+    deleted_user = soft_delete_user(db=db, user_id=user_id, admin_id=current_user.id)
+    
+    return {
+        "status": "success",
+        "message": f"تم نقل الموظف ({deleted_user.name}) إلى سلة المحذوفات بنجاح."
+    }
 
-# 6. استعادة موظف: قاعدة الأقدمية
-@router.post("/{user_id}/restore", response_model=UserResponse)
-def restore_existing_user(
+# ---------------------------------------------------------
+# 6. الاستعادة من الأرشيف (مع الرقابة)
+# ---------------------------------------------------------
+@router.post("/{user_id}/restore")
+def restore_deleted_user(
     user_id: int, 
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db), 
     current_user: User = Depends(RoleChecker([1, 2]))
 ):
-    target_user = db.query(User).filter(User.id == user_id).first()
+    # نتحقق من وجود المستخدم في الأرشيف أولاً لمعرفة رتبته
+    target_user = db.query(User).filter(User.id == user_id, User.deleted_at != None).first()
     if not target_user:
-        raise HTTPException(status_code=404, detail="الموظف غير موجود")
+        raise HTTPException(status_code=404, detail="الموظف غير موجود في الأرشيف.")
 
-    if current_user.role_id == 1 and target_user.role_id == 1:
-        if current_user.id > target_user.id:
-            raise HTTPException(status_code=403, detail="لا تملك صلاحية استعادة حساب مسؤول أقدم منك")
+    # أ. منع الاستعادة الذاتية للحماية الإضافية
+    if current_user.id == user_id:
+        raise HTTPException(status_code=403, detail="إجراء غير منطقي: لا يمكنك استعادة حسابك بنفسك.")
 
-    if current_user.role_id == 2 and target_user.role_id in [1, 2]:
-        raise HTTPException(status_code=403, detail="لا يمكنك استعادة حسابات الإدارة")
+    # ب. قيود المدير (Role 2): يستعيد الموظفين (Role 3) فقط
+    if current_user.role_id == 2 and target_user.role_id != 3:
+        raise HTTPException(status_code=403, detail="صلاحياتك كمدير تسمح لك باستعادة الموظفين فقط.")
 
-    return restore_user(db=db, user_id=user_id)
-=======
-from app.crud.user import create_user, update_user, toggle_user_status, get_users, soft_delete_user, restore_user
+    # تمرير admin_id لضمان تسجيل عملية الاستعادة في SystemAuditLog
+    restored_user = restore_user(db=db, user_id=user_id, admin_id=current_user.id)
+    
+    return {
+        "status": "success",
+        "message": f"تمت استعادة الموظف ({restored_user.name}) بنجاح."
+    }
 
-router = APIRouter(prefix="/users", tags=["Users"])
 
-@router.get("/", response_model=List[UserResponse])
-def read_users(status: Optional[str] = Query("active"), db: Session = Depends(get_db), current_user: User = Depends(RoleChecker([1, 2]))):
-    return get_users(db, status=status)
+@router.get("/mini-list", summary="جلب قائمة الموظفين المختصرة")
+def read_users_mini(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user), 
+    q: Optional[str] = Query(None, description="البحث بالاسم أو الهاتف"),
+    role_id: Optional[int] = Query(None, description="فلترة حسب الرتبة"),
+    is_active: Optional[bool] = Query(None, description="فلترة حسب حالة الحساب"),
+    show_deleted: bool = Query(False, description="عرض الموظفين المحذوفين فقط (سلة المحذوفات)"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, le=100)
+):
+    # تمرير كل المعاملات لدالة الـ CRUD المطورة
+    return crud_user.get_all_users_mini(
+        db=db, 
+        query=q, 
+        role_id=role_id, 
+        is_active=is_active, 
+        include_deleted=show_deleted, 
+        page=page, 
+        limit=limit
+    )
 
-@router.post("/", response_model=UserResponse)
-def add_new_user(user: UserCreate, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker([1, 2]))):
-    if current_user.role_id == 2 and user.role_id != 3:
-        raise HTTPException(status_code=403, detail="يمكنك إضافة موظفين فقط")
-    return create_user(db=db, user_in=user)
 
-@router.patch("/{user_id}", response_model=UserResponse)
-def update_existing_user(user_id: int, user: UserUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
-    target_user = db.query(User).filter(User.id == user_id).first()
-    if not target_user: raise HTTPException(status_code=404, detail="الموظف غير موجود")
-    if current_user.role_id == 3 and current_user.id != user_id: raise HTTPException(status_code=403)
-    return update_user(db=db, user_id=user_id, user_in=user)
-
-@router.post("/{user_id}/toggle-status")
-def toggle_status(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker([1, 2]))):
-    if current_user.id == user_id: raise HTTPException(status_code=403, detail="لا يمكنك تعطيل نفسك")
-    return toggle_user_status(db=db, user_id=user_id)
-
-@router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker([1, 2]))):
-    if current_user.id == user_id: raise HTTPException(status_code=403)
-    return soft_delete_user(db=db, user_id=user_id)
->>>>>>> db10729100131f023fa952060f6a63a4697d62ac
+@router.get("/{user_id}/details", summary="معلومات الموظف التفصيلية")
+def read_user_details(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """
+    عرض بيانات الموظف الأساسية فقط:
+    الاسم، الهاتف، التاريخ، الرتبة، والحالة.
+    """
+    return get_employee_info(db, user_id=user_id)
