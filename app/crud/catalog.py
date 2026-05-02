@@ -26,7 +26,12 @@ def create_catalog(db: Session, catalog_in: dict, user_id: int):
     db.add(new_catalog)
     db.commit()
     db.refresh(new_catalog)
-    return new_catalog
+
+
+    return {
+        "status": "success",
+        "message": "تم انشاء كاتولاج جديد بنجاح" 
+    }
 
 def update_catalog(db: Session, catalog_id: int, name: str):
     """تحديث بيانات الكتالوج مع فحص القيود لضمان تفرد الأسماء."""
@@ -41,51 +46,46 @@ def update_catalog(db: Session, catalog_id: int, name: str):
     catalog.name = name
     db.commit()
     db.refresh(catalog)
-    return catalog
 
-def delete_catalog(db: Session, catalog_id: int, action: Optional[str] = None, transfer_to_id: Optional[int] = None):
-    """حذف الكتالوج مع معالجة المنتجات المرتبطة (نقل، حذف إجباري، أو منع الحذف)."""
-    catalog = db.query(Catalog).filter(Catalog.id == catalog_id, Catalog.deleted_at == None).first()
+
+    return {
+        "status": "success",
+        "message": "تم التعديل بنجاح"
+    }
+
+# 3. تبديل الحالة (تنشيط / إلغاء تنشيط)
+def toggle_catalog_status(db: Session, catalog_id: int):
+    catalog = db.query(Catalog).filter(Catalog.id == catalog_id).first()
     if not catalog:
-        raise HTTPException(status_code=404, detail="الكتالوج غير موجود أو محذوف مسبقاً")
-
-    # فحص وجود منتجات مرتبطة لضمان سلامة البيانات
-    products = db.query(Product).filter(Product.catalog_id == catalog_id, Product.deleted_at == None).all()
+        raise HTTPException(status_code=404, detail="الكتالوج غير موجود")
     
-    if products:
-        if action == "transfer" and transfer_to_id:
-            target_catalog = db.query(Catalog).filter(Catalog.id == transfer_to_id, Catalog.deleted_at == None).first()
-            if not target_catalog:
-                raise HTTPException(status_code=404, detail="فشل النقل: الكتالوج الوجهة غير موجود")
-            
-            for product in products:
-                product.catalog_id = transfer_to_id
-            
-            catalog.deleted_at = datetime.now()
-            db.commit()
-            return {"status": "success", "message": f"تم نقل {len(products)} منتج وحذف الكتالوج بنجاح"}
-
-        elif action == "force_delete":
-            for product in products:
-                product.deleted_at = datetime.now()
-            catalog.deleted_at = datetime.now()
-            db.commit()
-            return {"status": "warning", "message": "تم حذف الكتالوج وجميع منتجاته المرتبطة"}
-
-        else:
-            # إذا وُجدت منتجات ولم يحدد المستخدم إجراءً، نرسل خيارات الحل للواجهة الأمامية
-            available_catalogs = db.query(Catalog).filter(Catalog.id != catalog_id, Catalog.deleted_at == None).all()
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "message": "لا يمكن حذف الكتالوج لوجود منتجات مرتبطة",
-                    "requires_action": True,
-                    "options": ["transfer", "force_delete"],
-                    "available_catalogs": [{"id": c.id, "name": c.name} for c in available_catalogs]
-                }
-            )
-    
-    # حذف مباشر إذا كان الكتالوج فارغاً
-    catalog.deleted_at = datetime.now()
+    # عكس الحالة الحالية
+    catalog.is_active = not catalog.is_active
     db.commit()
-    return {"status": "success", "message": "تم حذف الكتالوج الفارغ بنجاح"}
+    db.refresh(catalog)
+    
+    status_text = "تنشيطه" if catalog.is_active else "تعطيله"
+    return {"status": "success", "message": f"تم {status_text} الكتالوج بنجاح", "is_active": catalog.is_active}
+
+
+
+
+def get_catalogs_summary(db: Session):
+    """
+    جلب ملخص الكتالوجات (المعرف، الاسم، الحالة) فقط.
+    يتم استثناء المحذوف منها (deleted_at == None).
+    """
+    # جلب الحقول المحددة فقط لتحسين الأداء
+    results = db.query(Catalog.id, Catalog.name, Catalog.is_active).filter(
+        Catalog.deleted_at == None
+    ).all()
+    
+    # تحويل النتائج إلى قائمة مرتبة
+    return [
+        {
+            "id": item.id,
+            "name": item.name,
+            "status": "نشط" if item.is_active else "معطل",
+            "is_active": item.is_active # مفيد للاستخدام البرمجي في Frontend
+        } for item in results
+    ]

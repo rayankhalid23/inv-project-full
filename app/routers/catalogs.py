@@ -1,13 +1,15 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Body, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
 from app.core.database import get_db
+from app.core.deps import get_current_active_user
 from app.schemas.catalog import CatalogCreate, CatalogUpdate, CatalogResponse
 from app.models.user import User
-from app.models.inventory import Catalog, Product
+from app.crud import catalog as crud_catalog
+from app.models.inventory import Catalog , Product 
 from app.core.deps import RoleChecker
-from app.crud.catalog import create_catalog
+from app.crud.catalog import create_catalog,toggle_catalog_status, update_catalog
 from app.utils import delete_old_image
 
 router = APIRouter(prefix="/catalogs", tags=["Catalogs"])
@@ -56,3 +58,33 @@ def add_catalog(
     catalog.name = clean_name
     new = create_catalog(db, catalog, current_user.id)
     return {**new.__dict__, "creator_name": current_user.name}
+
+
+@router.put("/{catalog_id}", summary="تعديل اسم الكتالوج")
+def update(
+    catalog_id: int,
+    name: str = Body(..., embed=True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    return crud_catalog.update_catalog(db, catalog_id=catalog_id, new_name=name)
+
+@router.patch("/{catalog_id}/toggle", summary="تغيير حالة الكتالوج (نشط/معطل)")
+def toggle_status(
+    catalog_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    return crud_catalog.toggle_catalog_status(db, catalog_id=catalog_id)
+
+
+@router.get("/summary", summary="قائمة الكتالوجات المختصرة")
+def read_catalogs_summary(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """
+    يعيد قائمة بأسماء الكتالوجات ومعرفاتها وحالتها.
+    مثالي لبناء القوائم المنسدلة أو أزرار التنقل الرئيسية.
+    """
+    return crud_catalog.get_catalogs_summary(db)
