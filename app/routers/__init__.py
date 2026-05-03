@@ -25,7 +25,7 @@ api_router.include_router(catalogs_router, prefix="/catalogs", tags=["Catalogs"]
 api_router.include_router(sizes_router, prefix="/sizes", tags=["Sizes"],dependencies=[Depends(get_current_user)])
 api_router.include_router(colors_router, prefix="/colors", tags=["Colors"],dependencies=[Depends(get_current_user)])
 api_router.include_router(products_router, prefix="/products", tags=["Products"],dependencies=[Depends(get_current_user)])
-api_router.include_router(variants_router, prefix="/variants", tags=["Variants"],dependencies=[Depends(get_current_user)])
+api_router.include_router(variants_router, prefix="/variants", tags=["Variants"], dependencies=[Depends(get_current_user)])
 api_router.include_router(inventory_router, prefix="/inventory", tags=["Inventory"],dependencies=[Depends(get_current_user)])
 api_router.include_router(orders_router, prefix="/orders", tags=["Orders"],dependencies=[Depends(get_current_user)])
 api_router.include_router(inventory_router,prefix="/inventory-movements",tags=["Inventory Management"],dependencies=[Depends(get_current_user)])

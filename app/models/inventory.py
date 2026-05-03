@@ -1,3 +1,18 @@
+import os
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
+from reportlab.graphics.barcode import qr
+from reportlab.graphics.shapes import Drawing
+from reportlab.graphics import renderPDF 
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from sqlalchemy.orm import Session, joinedload
+import arabic_reshaper
+from bidi.algorithm import get_display
+from app.models.base import Base
+
+
 from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, func, Numeric, Text, Boolean, DateTime, JSON
 from sqlalchemy.orm import relationship
 from app.models.base import Base
@@ -104,3 +119,97 @@ class SystemAuditLog(Base):
     details = Column(JSON, nullable=True) # تفاصيل إضافية بصيغة JSON
     ip_address = Column(String(45), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    
+# إعداد المسارات والخطوط
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FONT_PATH = os.path.join(BASE_DIR, "static", "fonts", "Amiri-Regular.ttf")
+
+try:
+    pdfmetrics.registerFont(TTFont('ArabicFont', FONT_PATH))
+    ARABIC_FONT = "ArabicFont"
+except:
+    ARABIC_FONT = "Helvetica"
+
+class QRGeneratorService:
+    # مقاس الملصق 50x50 ملم
+    LABEL_SIZE = (50 * mm, 50 * mm) 
+
+    @staticmethod
+    def _format_ar(text):
+        if not text: return "N/A"
+        return get_display(arabic_reshaper.reshape(str(text)))
+
+    @classmethod
+    def _draw_label(cls, c, variant):
+        w, h = cls.LABEL_SIZE
+        
+        # جلب البيانات من العلاقات المعرفة في inventory.py
+        # variant.color -> ProductColor
+        # variant.size -> Size
+        # variant.color.product -> Product
+        
+        product_obj = variant.color.product if variant.color else None
+        product_name = getattr(product_obj, 'name', 'N/A')
+        product_code = getattr(product_obj, 'code', 'N/A')
+        color_name = getattr(variant.color, 'color_name', 'N/A')
+        size_name = getattr(variant.size, 'name', 'N/A')
+
+        # 1. إنشاء الـ QR Code
+        qr_data = f"VAR:{variant.id}|SKU:{product_code}"
+        qr_code = qr.QrCodeWidget(qr_data, barLevel='H')
+        bounds = qr_code.getBounds()
+        qr_w = bounds[2] - bounds[0]
+        qr_h = bounds[3] - bounds[1]
+        
+        d = Drawing(30*mm, 30*mm, transform=[30*mm/qr_w, 0, 0, 30*mm/qr_h, 0, 0])
+        d.add(qr_code)
+        renderPDF.draw(d, c, (w - 30*mm)/2, h - 32*mm)
+
+        # 2. اسم المنتج
+        c.setFont("Helvetica-Bold", 8)
+        c.drawCentredString(w/2, h - 35*mm, product_name[:25])
+        
+        c.setLineWidth(0.1)
+        c.line(5*mm, h - 37*mm, w - 5*mm, h - 37*mm)
+
+        # 3. التفاصيل بالعربية (اللون والمقاس والكود)
+        c.setFont(ARABIC_FONT, 7)
+        c.drawRightString(w - 5*mm, h - 41*mm, cls._format_ar(f"اللون: {color_name}"))
+        c.drawRightString(w - 5*mm, h - 44*mm, cls._format_ar(f"المقاس: {size_name}"))
+        c.drawRightString(w - 5*mm, h - 47*mm, cls._format_ar(f"كود: {product_code}"))
+
+    @classmethod
+    def generate_pdf(cls, variants):
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=cls.LABEL_SIZE)
+        for v in variants:
+            if v:
+                cls._draw_label(c, v)
+                c.showPage()
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+    @classmethod
+    def get_variant_qr_pdf(cls, db: Session, variant_id: int):
+        # تحميل البيانات مع العلاقات لتقليل استعلامات قاعدة البيانات
+        v = db.query(ProductVariant).options(
+            joinedload(ProductVariant.color).joinedload(ProductColor.product),
+            joinedload(ProductVariant.size)
+        ).filter(ProductVariant.id == variant_id).first()
+        return cls.generate_pdf([v]) if v else None
+
+    @classmethod
+    def get_product_all_qrs_pdf(cls, db: Session, product_id: int):
+        # جلب جميع التفرعات لمنتج معين
+        variants = db.query(ProductVariant).join(ProductColor).filter(
+            ProductColor.product_id == product_id,
+            ProductVariant.deleted_at == None
+        ).all()
+        return cls.generate_pdf(variants)
+
+    @classmethod
+    def get_all_active_qrs_pdf(cls, db: Session):
+        variants = db.query(ProductVariant).filter(ProductVariant.deleted_at == None).all()
+        return cls.generate_pdf(variants)
