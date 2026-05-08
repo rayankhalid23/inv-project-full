@@ -7,29 +7,11 @@ from app.models.inventory import Product, ProductVariant,InventoryMovement
 from app.services.audit_service import create_inventory_log
 from app.models.user import User
 from sqlalchemy import func
+from app.crud.inventory_sync import sync_product_metrics
 
 # ==========================================
 # وظائف إدارة حركة المخزون الفنية
 # ==========================================
-
-def sync_product_metrics(db: Session, product_id: int):
-    """
-    دالة داخلية لضمان مطابقة إجمالي الكميات في جدول Product 
-    مع مجموع الكميات في جدول ProductVariant.
-    """
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        return
-
-    # حساب المجاميع من كافة المتغيرات (Variants) التابعة للمنتج
-    variants = db.query(ProductVariant).filter(ProductVariant.product_id == product_id).all()
-    
-    product.total_available = sum(v.quantity_available for v in variants)
-    product.total_damaged = sum(v.damaged_quantity for v in variants)
-    product.total_returns = sum(v.returned_quantity for v in variants)
-    product.total_sold = sum(v.total_sold for v in variants)
-    # لا نقوم بعمل commit هنا، ننتظر العملية الأساسية
-
 def record_stock_addition(db: Session, variant_id: int, user_id: int, quantity: int, notes: str = None):
     """
     إضافة بضاعة جديدة للمخزن (توريد).
@@ -70,6 +52,9 @@ def record_damage_entry(db: Session, variant_id: int, user_id: int, quantity: in
     # العملية الحسابية
     variant.quantity_available -= quantity
     variant.damaged_quantity += quantity
+
+    db.add(variant)
+    db.flush()
     
     # توثيق الحركة[cite: 1]
     create_inventory_log(
@@ -78,31 +63,47 @@ def record_damage_entry(db: Session, variant_id: int, user_id: int, quantity: in
         quantity_before=quantity_before, damage_reason=reason, notes=notes
     )
     
+    
     sync_product_metrics(db, variant.product_id)
     return variant
 
 def record_return_to_stock(db: Session, variant_id: int, user_id: int, quantity: int, order_id: int = None, notes: str = None):
-    """
-    إعادة قطعة للمخزن (مرتجع): يزيد المتاح ويزيد سجل المرتجعات.
-    """
+    # 1. جلب وقفل المتغير
     variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id).with_for_update().first()
     if not variant:
         raise HTTPException(status_code=404, detail="المتغير غير موجود")
 
     quantity_before = variant.quantity_available
     
-    # العملية الحسابية
-    variant.quantity_available += quantity
-    variant.returned_quantity += quantity
+    # --- التعديل الجوهري هنا ---
+    variant.quantity_available += quantity # زيادة المتوفر
     
-    # توثيق الحركة وربطها بالطلب إن وجد[cite: 1]
+    # خصم من المباع (هذا السطر الذي كان ينقصك)
+    variant.total_sold = max(0, (variant.total_sold or 0) - quantity) 
+    
+    # زيادة إجمالي المرتجعات للفرع
+    variant.returned_quantity = (variant.returned_quantity or 0) + quantity
+    # --------------------------
+
+    # توثيق الحركة
     create_inventory_log(
-        db=db, variant_id=variant_id, product_id=variant.product_id, user_id=user_id,
-        movement_type='return_to_stock', quantity_change=quantity,
-        quantity_before=quantity_before, related_order_id=order_id, notes=notes
+        db=db, 
+        variant_id=variant_id, 
+        product_id=variant.product_id, # سيستخدم الـ property التي تجلب الـ id من اللون
+        user_id=user_id,
+        movement_type='return_to_stock', 
+        quantity_change=quantity,
+        quantity_before=quantity_before, 
+        related_order_id=order_id, 
+        notes=notes
     )
     
+    # دفع التغييرات للـ DB مؤقتاً لكي تراها دالة المزامنة عند عمل SUM
+    db.flush() 
+
+    # 2. تحديث المنتج الأساسي (المزامنة)
     sync_product_metrics(db, variant.product_id)
+    
     return variant
 
 def record_manual_adjustment(db: Session, variant_id: int, user_id: int, new_total: int, notes: str):

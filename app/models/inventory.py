@@ -152,23 +152,27 @@ class ProductVariant(Base):
             return self.color.product_id
         return None
      
+# أضف هذا الكلاس في ملف app/models/inventory.py ليعمل النظام
 class InventoryMovement(Base):
     __tablename__ = "inventory_movements"
-    id = Column(Integer, primary_key=True)
+    
+    id = Column(Integer, primary_key=True, index=True)
     variant_id = Column(Integer, ForeignKey("product_variants.id"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True) # العمود المسبب للمشكلة
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    movement_type = Column(String(50), nullable=False) # 'sale', 'return', 'adjustment', 'damage'
     quantity_change = Column(Integer, nullable=False)
-    movement_type = Column(String(50), nullable=False) # 'sale', 'return', 'adjustment'
-    created_at = Column(DateTime, default=func.now())
-
     quantity_before = Column(Integer, nullable=False)
     quantity_after = Column(Integer, nullable=False)
+    
     related_order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
     damage_reason = Column(String(255), nullable=True)
     notes = Column(Text, nullable=True)
-    
-    variant = relationship("ProductVariant", back_populates="movements")
+    created_at = Column(DateTime, server_default=func.now())
 
+    # العلاقات لسهولة جلب البيانات لاحقاً
+    variant = relationship("ProductVariant", back_populates="movements")
 class SystemAuditLog(Base):
     __tablename__ = "system_audit_logs"
 

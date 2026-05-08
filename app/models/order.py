@@ -20,6 +20,7 @@ class OrderItem(BaseModel):
 
     order = relationship("Order", back_populates="items")
     variant = relationship("ProductVariant")
+    product = relationship("Product")
 
     
 
@@ -65,3 +66,7 @@ class Order(BaseModel):
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     actions = relationship("OrderAction", back_populates="order", cascade="all, delete-orphan")
 
+    creator = relationship("User", foreign_keys=[created_by])
+    inventory_employee = relationship("User", foreign_keys=[inventory_employee_id])
+
+   # delivery_man = relationship("User", foreign_keys=[delivery_man_id])

@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.models.order import OrderAction
 from app.models.inventory import InventoryMovement, Product, ProductVariant,SystemAuditLog
-
+from app.models.inventory import Product, ProductVariant
 
 try:
     from app.models.inventory import SystemAuditLog

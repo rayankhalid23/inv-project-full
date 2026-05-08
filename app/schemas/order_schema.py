@@ -47,24 +47,45 @@ class OrderResponse(BaseModel):
     
     model_config = ConfigDict(from_attributes=True)
 
+from pydantic import BaseModel, ConfigDict
+from typing import List, Optional
+from decimal import Decimal
+from datetime import datetime
+
 class OrderItemDetailResponse(BaseModel):
     id: int
     product_name: str
-    variant_id: int
+    variant_id: Optional[int]
     quantity: int
+    picked_quantity: int # أضفنا هذا لنعرف كم تم مسحه من هذا المنتج
     price_at_order: Decimal
-    image_url: Optional[str] = None
+    image_url: Optional[str] = None # سيحتوي على صورة اللون أو المنتج الأساسي
     color_name: Optional[str] = None
     size: Optional[str] = None
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class OrderFullDetailResponse(BaseModel):
     id: int
     customer_name: str
     customer_phones: List[str]
     address: str
+    social_media_source: Optional[str] = None # أضفناه لاكتمال بيانات العميل
     total_price: Decimal
     status: str
     created_at: datetime
+    time_ago: str # النص العربي (منذ...)
+    
+    # بيانات الموظفين
+    created_by_name: str 
+    inventory_employee_name: Optional[str] = None
+    delivery_man_name: Optional[str] = None # سيظهر فقط حسب الحالة في الـ Logic
+    
+    # إحصائيات التجهيز
+    total_ordered_qty: int
+    total_picked_qty: int
+    progress_percentage: float
+    
     items: List[OrderItemDetailResponse]
     
     model_config = ConfigDict(from_attributes=True)

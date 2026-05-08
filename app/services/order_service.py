@@ -1,7 +1,18 @@
 from decimal import Decimal
 import traceback
+from app.core.websocket_manager import manager
 from typing import Optional
+from sqlalchemy import or_, and_, func
 from sqlalchemy.exc import SQLAlchemyError
+from fastapi.responses import StreamingResponse
+import asyncio
+import asyncio
+from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from app.models.inventory import Product, ProductVariant, ProductColor, Size, Catalog
+from app.models.order import Order, OrderItem, OrderAction
+from app.models.user import User
 import json
 import logging
 from datetime import datetime
@@ -9,6 +20,16 @@ from typing import List, Optional , Dict , Tuple
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, status
 from app.models.inventory import  ProductColor, Product
+import os
+import io
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import portrait
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import arabic_reshaper
+from bidi.algorithm import get_display
 
 # استيراد الخدمات المركزية التي أنشأناها
 from .audit_service import log_order_qr_scan, create_order_action_log, log_order_initialization
@@ -115,7 +136,13 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
         # 7. الحفظ النهائي
         db.commit()
         db.refresh(new_order)
+        new_stats = get_inventory_dashboard_stats(db)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(manager.broadcast(new_stats))
         return new_order
+
+        
 
     except Exception as e:
         db.rollback()
@@ -218,6 +245,10 @@ async def process_qr_scan_logic(
         
         # حفظ كل شيء دفعة واحدة
         db.commit()
+        new_stats = get_inventory_dashboard_stats(db)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(manager.broadcast(new_stats))
         
         return {
             "status": order.status, 
@@ -226,6 +257,7 @@ async def process_qr_scan_logic(
             "picked_quantity": order_item.picked_quantity,
             "total_quantity": order_item.quantity
         }
+        
 
     except Exception as e:
         db.rollback() # تراجع عن أي شيء في حال فشل أي خطوة
@@ -245,18 +277,34 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
     
     db.commit()
     return {"status": "success", "new_qty": variant.quantity_available}
-
+   
 def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "تالف"):
-    """منطق تسجيل المنتجات التالفة (أصلاح أخطاء المسافات)"""
+    # 1. جلب البيانات
     variant = db.query(ProductVariant).filter(ProductVariant.qr_code == qr_code).with_for_update().first()
-    if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
+    if not variant: 
+        raise HTTPException(status_code=404, detail="الرمز غير موجود")
 
     if variant.quantity_available <= 0:
         raise HTTPException(status_code=400, detail="لا توجد كمية متاحة لإتلافها")
 
+    # 2. تنفيذ عملية الإتلاف والمزامنة (التي أصلحناها سابقاً)
     record_damage_entry(db, variant_id=variant.id, user_id=user_id, quantity=1, reason="QR Scan Damage", notes=note)
     
-    db.commit()
+    db.commit() # حفظ كل شيء في القاعدة
+
+    # 3. إرسال التحديث عبر WebSocket (الحل الآمن للـ Thread)
+    try:
+        new_stats = get_inventory_dashboard_stats(db)
+        # نستخدم هذه الطريقة للتأكد من أن الإرسال يصل للخيط الرئيسي
+        from app.core.config import manager # تأكد من مسار الـ manager لديك
+        
+        # إذا كنت تستخدم FastAPI، الأفضل جعل الدالة async أو استخدام background_tasks
+        # ولكن كحل سريع ومباشر يعمل مع خيوط العمل:
+        asyncio.run(manager.broadcast(new_stats)) 
+    except Exception as ws_error:
+        print(f"WebSocket Broadcast Failed: {ws_error}")
+        # لا نجعل خطأ الـ WebSocket يوقف العملية الأساسية التي نجحت في القاعدة
+
     return {"status": "success", "new_qty": variant.quantity_available}
 
 async def assign_delivery_logic(db: Session, order_id: int, delivery_data: DeliveryAssignRequest, user_id: int):
@@ -279,38 +327,7 @@ async def assign_delivery_logic(db: Session, order_id: int, delivery_data: Deliv
         raise HTTPException(status_code=500, detail=f"فشل تحديث قاعدة البيانات: {str(e)}")
         
     return db_order
-
-
-async def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None, search: Optional[str] = None):
-    """جلب كافة الطلبات مع دعم الفلترة والبحث (Optimized Query)"""
-    # استخدام joinedload لجلب الأصناف مع الطلب في استعلام واحد لتسريع الأداء
-    query = db.query(Order).options(joinedload(Order.items))
-    
-    if status:
-        query = query.filter(Order.status == status)
-    
-    if search:
-        # البحث في اسم العميل أو الهاتف
-        query = query.filter(
-            (Order.customer_name.ilike(f"%{search}%")) | 
-            (Order.customer_phones.ilike(f"%{search}%"))
-        )
-    
-    return query.order_by(Order.created_at.desc()).offset(skip).limit(limit).all()
-
-
-
-async def get_order_details_logic(db: Session, order_id: int):
-    """جلب تفاصيل طلب محدد مع كافة الحركات والمنتجات التابعة له"""
-    order = db.query(Order).options(
-        joinedload(Order.items).joinedload(OrderItem.variant), # جلب بيانات المنتج والمقاس
-        joinedload(Order.actions) # جلب سجل الأكشن (من جهزه، متى شحن، إلخ)
-    ).filter(Order.id == order_id).first()
-    
-    if not order:
-        raise HTTPException(status_code=404, detail="الطلب غير موجود")
-    return order    
-
+   
 
 
 async def delete_order_logic(db: Session, order_id: int):
@@ -382,11 +399,16 @@ async def delete_order_logic(db: Session, order_id: int):
 
         # 6. الحفظ النهائي
         db.commit()
+        new_stats = get_inventory_dashboard_stats(db)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(manager.broadcast(new_stats))
         
         return {
             "status": "success", 
             "message": f"تم إلغاء الطلب رقم {order_id} وإعادة الكميات للمخزن بنجاح"
         }
+       
 
     except Exception as e:
         db.rollback()
@@ -409,7 +431,7 @@ def _get_locked_order_and_variants(db: Session, order_id: int, new_item_ids: Lis
     # قفل الـ variants لضمان دقة الحسابات الرياضية
     locked_variants = db.query(ProductVariant).filter(
         ProductVariant.id.in_(all_target_ids)
-    ).with_for_update().first() # ستقوم SQLAlchemy بقفل جميع الصفوف المسترجعة
+    ).with_for_update().all() # ستقوم SQLAlchemy بقفل جميع الصفوف المسترجعة
 
     return db_order
 
@@ -543,8 +565,361 @@ async def update_order_master_logic(db: Session, order_id: int, update_data: Dic
 
         db.commit()
         db.refresh(db_order)
+        new_stats = get_inventory_dashboard_stats(db)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(manager.broadcast(new_stats))
         return db_order
+        
 
     except Exception as e:
         db.rollback()
         raise e
+
+
+  #===================================================
+  #                 دوال العرض للطلب     
+  #===================================================
+
+def get_time_ago_ar(dt: datetime) -> str:
+    """تحويل التاريخ إلى صيغة مقروءة (منذ دقيقة، منذ ساعة...)"""
+    if not dt:
+        return ""
+    
+    diff = datetime.now() - dt
+    seconds = diff.total_seconds()
+    
+    if seconds < 60:
+        return "منذ لحظات"
+    elif seconds < 3600:
+        minutes = int(seconds / 60)
+        return f"منذ {minutes} دقيقة"
+    elif seconds < 86400:
+        hours = int(seconds / 3600)
+        return f"منذ {hours} ساعة"
+    else:
+        days = int(seconds / 86400)
+        return f"منذ {days} يوم"   
+
+
+async def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None, search: Optional[str] = None):
+    """جلب كافة الطلبات مع دعم فلترة متقدمة وتشكيل البيانات للوحة التحكم"""
+    
+    # 1. بناء الاستعلام مع جلب كافة العلاقات اللازمة في ضربة واحدة لمنع مشكلة N+1
+    query = db.query(Order).options(
+        joinedload(Order.creator), # جلب بيانات الموظف (المستخدم الذي أنشأ الطلب)
+        joinedload(Order.items).joinedload(OrderItem.variant).joinedload(ProductVariant.color), # لجلب صورة اللون
+        joinedload(Order.items).joinedload(OrderItem.product) # لجلب صورة المنتج الأساسية
+    )
+    
+    # 2. الفلترة حسب الحالة
+    if status:
+        query = query.filter(Order.status == status)
+    
+    # 3. نظام البحث المتقدم
+    if search:
+        search_term = f"%{search}%"
+        conditions = [
+            Order.customer_name.ilike(search_term),
+            Order.social_media_source.ilike(search_term),
+            # ملاحظة: إذا كان customer_phones مخزن كـ JSON في قاعدة بيانات Postgres، قد تحتاج لاستخدام cast للبحث بداخله
+            # لكن إذا كان نص عادي (String) فهذا السطر سيعمل فوراً
+            Order.customer_phones.ilike(search_term) 
+        ]
+        
+        # إذا كان مصطلح البحث عبارة عن رقم فقط، نضيف البحث بكود الطلب (ID)
+        if search.isdigit():
+            conditions.append(Order.id == int(search))
+            
+        query = query.filter(or_(*conditions))
+    
+    # 4. تنفيذ الاستعلام
+    db_orders = query.order_by(Order.created_at.desc()).offset(skip).limit(limit).all()
+    
+    # 5. تشكيل المخرجات (Formatting Data)
+    result = []
+
+    for order in db_orders:
+        total_qty = 0
+        total_picked = 0
+        product_images = []
+        
+        for item in order.items:
+            total_qty += item.quantity
+            total_picked += (item.picked_quantity or 0)
+            
+            image = None
+
+            # 1. الأولوية لصورة اللون (Variant Color Image)
+            if item.variant and item.variant.color and item.variant.color.color_image:
+                image = item.variant.color.color_image
+
+            # 2. إذا لم يجد صورة للون، يبحث عن صورة المنتج الأساسي (Fallback)
+            if not image:
+                product = getattr(item, 'product', None)
+                if product and product.main_image:
+                    image = product.main_image
+            
+            # 3. إضافة الصورة للقائمة النهائية "فقط إذا وجدت" ومع "منع التكرار"
+            if image and image not in product_images:
+                product_images.append(image)
+
+
+        # تجهيز نص الحالة (مثال: "قيد التجهيز - تم سحب 2/4")
+        status_with_progress = f"{order.status} ({total_picked}/{total_qty})" if total_qty > 0 else order.status
+
+        # تجهيز اسم الموظف
+        employee_name = order.creator.name if order.creator else "غير معروف"
+
+        # بناء القاموس النهائي لكل طلب
+        result.append({
+            "order_id": order.id,
+            "customer_name": order.customer_name,
+            "social_media_source": order.social_media_source,
+            "customer_phones": order.customer_phones,
+            "total_price": order.total_price,
+            "status": order.status,
+            "progress_status": status_with_progress, # مثال: 4/2
+            "employee_name": employee_name,
+            "time_ago": get_time_ago_ar(order.created_at),
+            "product_images": product_images # مصفوفة تحتوي على روابط/مسارات الصور
+        })
+
+    return result
+
+def get_item_image(item):
+    """منطق الشلال: صورة اللون -> صورة المنتج الأساسية -> None"""
+    # 1. محاولة جلب صورة اللون من الـ variant
+    if item.variant and item.variant.color and item.variant.color.color_image:
+        return item.variant.color.color_image
+    
+    # 2. التراجع لصورة المنتج الأساسية
+    if item.product and item.product.main_image:
+        return item.product.main_image
+        
+    return None
+
+
+
+
+async def get_order_full_details_logic(db: Session, order_id: int):
+    # 1. جلب الطلب مع كل العلاقات في استعلام واحد (Performance optimization)
+    order = db.query(Order).options(
+        joinedload(Order.creator),
+        joinedload(Order.items).joinedload(OrderItem.product),
+        joinedload(Order.items).joinedload(OrderItem.variant).joinedload(ProductVariant.color)
+    ).filter(Order.id == order_id).first()
+
+    if not order:
+        return None
+
+    # 2. حساب إجمالي الكميات للمسح (Total Progress)
+    total_ordered = sum(item.quantity for item in order.items)
+    total_picked = sum(item.picked_quantity or 0 for item in order.items)
+
+    # 3. معالجة بيانات الموظفين (المنطق الشرطي لرجل التوصيل)
+    personnel = {
+        "created_by": order.creator.name if order.creator else "النظام",
+        "inventory_employee": "موظف المخزن" # يمكنك جلب اسمه بنفس طريقة الـ creator
+    }
+    
+    # شرطك: لا يظهر رجل التوصيل إلا إذا كانت الحالة 'shipped'
+    if order.status.lower() == "shipped":
+        personnel["delivery_man"] = order.delivery_info or "جاري التعيين"
+    else:
+        personnel["delivery_man"] = None
+
+    # 4. تجهيز قائمة المنتجات مع الصور والمسح الجزئي
+    items_list = []
+    for item in order.items:
+        items_list.append({
+            "product_name": item.product.name,
+            "quantity": item.quantity,
+            "picked_quantity": item.picked_quantity or 0,
+            "price": item.price_at_order,
+            "image": get_item_image(item), # استخدام الدالة المساعدة
+            "is_fully_picked": (item.picked_quantity or 0) >= item.quantity
+        })
+
+    # 5. تجميع الرد النهائي
+    return {
+        "order_id": order.id,
+        "status": order.status,
+        "time_ago": get_time_ago_ar(order.created_at),
+        "customer": {
+            "name": order.customer_name,
+            "phones": order.customer_phones,
+            "address": order.address,
+            "source": order.social_media_source,
+            "notes": order.notes
+        },
+        "personnel": personnel,
+        "items": items_list,
+        "summary": {
+            "total_price": order.total_price,
+            "total_items_count": len(order.items),
+            "total_ordered_qty": total_ordered,
+            "total_picked_qty": total_picked,
+            "overall_progress_percentage": (total_picked / total_ordered * 100) if total_ordered > 0 else 0
+        }
+    }
+
+def get_inventory_dashboard_stats(db: Session):
+    # الربط الصحيح باستخدام المسميات الموجودة في الـ Schema الخاصة بك
+    stats = db.query(
+        func.sum(ProductVariant.quantity_available).label("total_available"),
+        func.sum(ProductVariant.quantity_reserved).label("total_reserved"),
+        func.sum(ProductVariant.total_sold).label("total_sold")
+    ).join(ProductColor, ProductColor.id == ProductVariant.product_color_id) \
+     .join(Product, Product.id == ProductColor.product_id) \
+     .filter(
+         ProductVariant.deleted_at.is_(None), 
+         ProductColor.deleted_at.is_(None), 
+         Product.deleted_at.is_(None)
+     ).first()
+
+    return {
+        "total_available": int(stats.total_available or 0),
+        "total_reserved": int(stats.total_reserved or 0),
+        "total_sold": int(stats.total_sold or 0)
+    }
+
+
+
+# --- الإعدادات العامة (نفس التي استعملناها سابقاً) ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FONT_PATH = os.path.join(BASE_DIR, "static", "fonts", "Amiri-Regular.ttf")
+MAROON_COLOR = colors.HexColor("#800000")
+
+try:
+    pdfmetrics.registerFont(TTFont('ArabicFont', FONT_PATH))
+    ARABIC_FONT = "ArabicFont"
+except:
+    ARABIC_FONT = "Helvetica"
+
+def format_ar(text):
+    if not text: return ""
+    reshaped_text = arabic_reshaper.reshape(str(text))
+    return get_display(reshaped_text)
+
+def get_abs_img_path(relative_path):
+    if not relative_path: return None
+    clean_path = relative_path.lstrip('/')
+    abs_path = os.path.join(BASE_DIR, clean_path)
+    return abs_path if os.path.exists(abs_path) else None
+
+class OrderInvoiceService:
+    # حجم الورق الحراري القياسي (80mm عرض، والارتفاع يتمدد حسب الطلب)
+    # سنفترض ارتفاع 200mm كبداية ونعدله برمجياً
+    PAGE_WIDTH = 80 * mm
+    
+    @classmethod
+    def generate_order_pdf(cls, order_data):
+        """
+        order_data: القاموس الذي يخرج من دالة get_order_full_details_logic
+        """
+        buffer = io.BytesIO()
+        
+        # تقدير الارتفاع بناءً على عدد المنتجات (تقريباً 30mm لكل منتج + 100mm للهيدر والفوتر)
+        estimated_height = 100 * mm + (len(order_data['items']) * 25 * mm)
+        custom_size = (cls.PAGE_WIDTH, estimated_height)
+        
+        c = canvas.Canvas(buffer, pagesize=custom_size)
+        width, height = custom_size
+
+        # --- 1. الهيدر (خلفية عنابي وشعار بيلاجو) ---
+        c.setFillColor(MAROON_COLOR)
+        c.rect(0, height - 25*mm, width, 25*mm, fill=1, stroke=0)
+        
+        c.setFillColor(colors.white)
+        c.setFont("Helvetica-Bold", 18)
+        c.drawCentredString(width/2, height - 12*mm, "BELLAGIO")
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(width/2, height - 18*mm, "PREMIUM DELIVERY SLIP")
+
+        # --- 2. بيانات العميل (محاذاة لليمين) ---
+        y = height - 32*mm
+        c.setFillColor(colors.black)
+        
+        # رقم الطلب (كبير وواضح لرجل التوصيل)
+        c.setFont(ARABIC_FONT, 12)
+        c.drawRightString(width - 5*mm, y, format_ar(f"رقم الطلب: #{order_data['order_id']}"))
+        
+        y -= 7*mm
+        c.setFont(ARABIC_FONT, 10)
+        c.drawRightString(width - 5*mm, y, format_ar(f"العميل: {order_data['customer']['name']}"))
+        
+        y -= 6*mm
+        c.drawRightString(width - 5*mm, y, format_ar(f"الهاتف: {order_data['customer']['phones']}"))
+        
+        y -= 6*mm
+        # العنوان (دعم الالتفاف البسيط أو تصغير الخط)
+        c.setFont(ARABIC_FONT, 9)
+        c.drawRightString(width - 5*mm, y, format_ar(f"العنوان: {order_data['customer']['address']}"))
+        
+        y -= 8*mm
+        c.setLineWidth(0.1)
+        c.line(5*mm, y, width - 5*mm, y) # خط فاصل
+
+        # --- 3. جدول المنتجات ---
+        y -= 7*mm
+        c.setFont(ARABIC_FONT, 9)
+        c.drawRightString(width - 5*mm, y, format_ar("المنتجات:"))
+        y -= 5*mm
+
+        for item in order_data['items']:
+            # إطار خفيف لكل منتج
+            c.setStrokeColor(colors.lightgrey)
+            c.roundRect(4*mm, y - 20*mm, width - 8*mm, 18*mm, 2, stroke=1, fill=0)
+            
+            # صورة المنتج (على اليسار)
+            img_path = get_abs_img_path(item['image'])
+            if img_path:
+                try:
+                    c.drawImage(img_path, 5*mm, y - 18*mm, width=15*mm, height=15*mm, preserveAspectRatio=True)
+                except:
+                    pass
+
+            # تفاصيل المنتج (على اليمين)
+            c.setFillColor(colors.black)
+            c.setFont(ARABIC_FONT, 8)
+            # اسم المنتج
+            p_name = item['product_name'][:30] + ".." if len(item['product_name']) > 30 else item['product_name']
+            c.drawRightString(width - 7*mm, y - 5*mm, format_ar(p_name))
+            
+            # الكمية والسعر
+            detail_str = f"الكمية: {item['quantity']} | السعر: {item['price']} LYD"
+            c.setFont(ARABIC_FONT, 7)
+            c.drawRightString(width - 7*mm, y - 10*mm, format_ar(detail_str))
+            
+            # الإجمالي الفرعي للمنتج
+            subtotal = item['quantity'] * item['price']
+            c.setFont("Helvetica-Bold", 8)
+            c.drawRightString(width - 7*mm, y - 16*mm, f"Total: {subtotal} LYD")
+            
+            y -= 22*mm
+            
+            # التحقق من نهاية الصفحة
+            if y < 20*mm:
+                c.showPage()
+                y = height - 20*mm
+
+        # --- 4. الملخص النهائي (Total) ---
+        y -= 5*mm
+        c.setFillColor(MAROON_COLOR)
+        c.rect(4*mm, y - 12*mm, width - 8*mm, 10*mm, fill=1, stroke=0)
+        
+        c.setFillColor(colors.white)
+        c.setFont(ARABIC_FONT, 11)
+        c.drawRightString(width - 10*mm, y - 8*mm, format_ar(f"إجمالي الطلب: {order_data['summary']['total_price']} LYD"))
+
+        # --- 5. تذييل الإيصال ---
+        y -= 20*mm
+        c.setFillColor(colors.grey)
+        c.setFont(ARABIC_FONT, 7)
+        c.drawCentredString(width/2, y, format_ar("شكراً لتبضعكم من بيلاجو"))
+        
+
+        c.save()
+        buffer.seek(0)
+        return buffer
