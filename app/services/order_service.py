@@ -6,6 +6,7 @@ from sqlalchemy import or_, and_, func
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi.responses import StreamingResponse
 import asyncio
+from app.core.websocket_manager import ConnectionManager
 import asyncio
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import Session
@@ -136,10 +137,6 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
         # 7. الحفظ النهائي
         db.commit()
         db.refresh(new_order)
-        new_stats = get_inventory_dashboard_stats(db)
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(manager.broadcast(new_stats))
         return new_order
 
         
@@ -245,10 +242,7 @@ async def process_qr_scan_logic(
         
         # حفظ كل شيء دفعة واحدة
         db.commit()
-        new_stats = get_inventory_dashboard_stats(db)
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(manager.broadcast(new_stats))
+     
         
         return {
             "status": order.status, 
@@ -288,22 +282,9 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
         raise HTTPException(status_code=400, detail="لا توجد كمية متاحة لإتلافها")
 
     # 2. تنفيذ عملية الإتلاف والمزامنة (التي أصلحناها سابقاً)
-    record_damage_entry(db, variant_id=variant.id, user_id=user_id, quantity=1, reason="QR Scan Damage", notes=note)
+    record_damage_entry(db, variant.id, user_id, 1, "QR Scan Damage", note)
     
     db.commit() # حفظ كل شيء في القاعدة
-
-    # 3. إرسال التحديث عبر WebSocket (الحل الآمن للـ Thread)
-    try:
-        new_stats = get_inventory_dashboard_stats(db)
-        # نستخدم هذه الطريقة للتأكد من أن الإرسال يصل للخيط الرئيسي
-        from app.core.config import manager # تأكد من مسار الـ manager لديك
-        
-        # إذا كنت تستخدم FastAPI، الأفضل جعل الدالة async أو استخدام background_tasks
-        # ولكن كحل سريع ومباشر يعمل مع خيوط العمل:
-        asyncio.run(manager.broadcast(new_stats)) 
-    except Exception as ws_error:
-        print(f"WebSocket Broadcast Failed: {ws_error}")
-        # لا نجعل خطأ الـ WebSocket يوقف العملية الأساسية التي نجحت في القاعدة
 
     return {"status": "success", "new_qty": variant.quantity_available}
 
@@ -399,10 +380,7 @@ async def delete_order_logic(db: Session, order_id: int):
 
         # 6. الحفظ النهائي
         db.commit()
-        new_stats = get_inventory_dashboard_stats(db)
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(manager.broadcast(new_stats))
+    
         
         return {
             "status": "success", 
@@ -457,44 +435,48 @@ def _update_basic_info(db_order: Order, update_data: Dict):
     if "customer_phones" in update_data:
         db_order.customer_phones = update_data["customer_phones"]    
 
-
-
 def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
+    # جلب العناصر الحالية
     current_items = {item.variant_id: item for item in db_order.items if item.deleted_at is None}
-    # فصل المنتجات المطلوبة عن المنتجات المراد حذفها (التي كميتها 0)
     new_items_dict = {item['variant_id']: item for item in new_items if item['quantity'] > 0}
     to_be_removed_ids = [item['variant_id'] for item in new_items if item['quantity'] <= 0]
+    
     total_price = Decimal('0.00')
     items_changed = False
 
     # 1. معالجة المحذوف والمعدل
     for v_id, db_item in current_items.items():
-        variant = db.query(ProductVariant).filter(ProductVariant.id == v_id).first()
+        # استخدام query مع populate_existing لضمان جلب أحدث بيانات للمخزن
+        variant = db.query(ProductVariant).filter(ProductVariant.id == v_id).with_for_update().first()
         
         if v_id not in new_items_dict or v_id in to_be_removed_ids:
-            # صنف محذوف: إعادة الكمية للمخزن
             _reverse_stock(db_order.status, variant, db_item.quantity)
             db_item.deleted_at = datetime.now()
+            db_item.picked_quantity = 0 
             items_changed = True
         else:
-            # صنف موجود: فحص تغير الكمية
             new_qty = new_items_dict[v_id]['quantity']
             if db_item.quantity != new_qty:
                 _adjust_stock(db_order.status, variant, db_item.quantity, new_qty)
-                db_item.quantity = new_qty
-                db_item.picked_quantity = 0 # إعادة ضبط المسح للصفر
+                db_item.quantity = new_qty # تحديث الكمية في الكائن
+                
+                if new_qty < db_item.picked_quantity: 
+                    
+                    removed_from_box = db_item.picked_quantity - new_qty
+                    db_item.picked_quantity = new_qty
+                    print(f"ALERT: Remove {removed_from_box} pieces of {variant.id} from box")
                 items_changed = True
             
-            total_price += (db_item.price_at_order * db_item.quantity)
-            del new_items_dict[v_id] # إزالته ليبقى المضاف حديثاً فقط
+            # حساب السعر بناءً على الكمية الجديدة المحققة (new_qty)
+            total_price += (db_item.price_at_order * Decimal(str(db_item.quantity)))
+            del new_items_dict[v_id]
 
     # 2. معالجة المضاف الجديد
     for v_id, item_data in new_items_dict.items():
-        variant = db.query(ProductVariant).filter(ProductVariant.id == v_id).first()
-        if variant.quantity_available < item_data['quantity']:
+        variant = db.query(ProductVariant).filter(ProductVariant.id == v_id).with_for_update().first()
+        if not variant or variant.quantity_available < item_data['quantity']:
             raise HTTPException(status_code=400, detail=f"المخزون غير كافٍ للمنتج {v_id}")
         
-        # حجز الكمية للمنتج الجديد
         variant.quantity_available -= item_data['quantity']
         variant.quantity_reserved += item_data['quantity']
         
@@ -508,9 +490,11 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
             picked_quantity=0
         )
         db.add(new_item)
-        total_price += (product_price * item_data['quantity'])
+        total_price += (product_price * Decimal(str(item_data['quantity'])))
         items_changed = True
 
+    # إجبار التغييرات على النزول لجدول الأصناف قبل العودة للدالة الأم
+    db.flush() 
     return total_price, items_changed
 
 def _reverse_stock(status, variant, qty):
@@ -522,61 +506,76 @@ def _reverse_stock(status, variant, qty):
 
 def _adjust_stock(status, variant, old_qty, new_qty):
     diff = new_qty - old_qty
-    if diff > 0: # زيادة طلب
-        if variant.quantity_available < diff:
-            raise HTTPException(status_code=400, detail="المخزون لا يكفي للزيادة")
-        variant.quantity_available -= diff
-        variant.quantity_reserved += diff
-    else: # تقليل طلب
-        variant.quantity_available += abs(diff)
-        variant.quantity_reserved -= abs(diff)
+    abs_diff = abs(diff)
 
-
+    if status == 'prepared':
+        # --- القاعدة الذهبية للطلبات الجاهزة (التعامل مع المباع) ---
+        if diff > 0: # زيادة في طلب مكتمل (نأخذ من المتاح ونضيف للمباع)
+            if variant.quantity_available < diff:
+                raise HTTPException(status_code=400, detail="المخزون لا يكفي للزيادة")
+            variant.quantity_available -= diff
+            variant.total_sold = (variant.total_sold or 0) + diff
+        else: # تقليل في طلب مكتمل (نطرح من المباع ونعيد للمتاح)
+            variant.quantity_available += abs_diff
+            variant.total_sold = max(0, (variant.total_sold or 0) - abs_diff)
+    else:
+        # --- القاعدة الذهبية للطلبات المعلقة أو قيد التجهيز (التعامل مع المحجوز) ---
+        if diff > 0: # زيادة (نأخذ من المتاح ونضيف للمحجوز)
+            if variant.quantity_available < diff:
+                raise HTTPException(status_code=400, detail="المخزون لا يكفي للزيادة")
+            variant.quantity_available -= diff
+            variant.quantity_reserved = (variant.quantity_reserved or 0) + diff
+        else: # تقليل (نطرح من المحجوز ونعيد للمتاح)
+            variant.quantity_available += abs_diff
+            variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - abs_diff)
 
 async def update_order_master_logic(db: Session, order_id: int, update_data: Dict, user_id: int):
-    # 1. التحقق والقفل
-    new_item_ids = [it['variant_id'] for it in update_data.get('items', [])]
+    new_item_ids = [it['variant_id'] for it in update_data.get('items', [])] if 'items' in update_data else []
     db_order = _get_locked_order_and_variants(db, order_id, new_item_ids)
 
-    # 2. حماية حالة الشحن
     if db_order.status == 'shipped' and 'items' in update_data:
         raise HTTPException(status_code=400, detail="ممنوع تعديل منتجات طلب تم شحنه")
 
     try:
-        # 3. تحديث البيانات الأساسية
         _update_basic_info(db_order, update_data)
 
-        # 4. مزامنة المخزون والسعر
         if 'items' in update_data:
             new_total, changed = _apply_inventory_delta(db, db_order, update_data['items'])
             db_order.total_price = new_total
             
-            # 5. التصحيح التلقائي للحالة (Status Auto-Correction)
-            if changed and db_order.status in ['prepared', 'in_preparation']:
-                db_order.status = 'pending' # العودة للبداية لإعادة المسح والتجهيز
+            # إجبار تحديث كائنات OrderItem داخل db_order.items
+            db.expire(db_order, ['items']) 
+            
+            if changed:
+                # جلب العناصر النشطة بعد التعديل مباشرة من DB
+                active_items = db.query(OrderItem).filter(
+                    OrderItem.order_id == order_id, 
+                    OrderItem.deleted_at.is_(None)
+                ).all()
+                
+                if not active_items:
+                    db_order.status = 'pending'
+                else:
+                    total_qty = sum(it.quantity for it in active_items)
+                    total_picked = sum(it.picked_quantity for it in active_items)
+                    
+                    if total_picked == 0:
+                        db_order.status = 'pending'
+                    elif total_picked >= total_qty: # استخدام >= للأمان
+                        db_order.status = 'prepared'
+                    else:
+                        db_order.status = 'in_preparation'
 
-        # 6. توثيق وتحديث التوقيت
         db_order.updated_at = datetime.now()
-        db.add(OrderAction(
-            order_id=order_id, 
-            user_id=user_id, 
-            action_type="order_edit_full"
-        ))
+        db.add(OrderAction(order_id=order_id, user_id=user_id, action_type="order_edit_full"))
 
-        db.commit()
+        db.commit() # الحفظ النهائي
         db.refresh(db_order)
-        new_stats = get_inventory_dashboard_stats(db)
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(manager.broadcast(new_stats))
         return db_order
-        
 
     except Exception as e:
         db.rollback()
         raise e
-
-
   #===================================================
   #                 دوال العرض للطلب     
   #===================================================

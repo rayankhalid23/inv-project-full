@@ -24,8 +24,8 @@ class OrderUpdate(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
     items: Optional[List[OrderItemCreate]] = None
-    delivery_name: str
-    delivery_type: str
+    delivery_name: Optional[str] = None 
+    delivery_type: Optional[str] = None
 
 
 class DeliveryAssignRequest(BaseModel):

@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from app.core.websocket_manager import manager
 from fastapi.responses import StreamingResponse
 from app.core.database import get_db
-
+from app.services.order_service import get_inventory_dashboard_stats
+from app.core.websocket_manager import ConnectionManager
 from typing import List
 import json
 from app.models.user import User
@@ -27,9 +28,28 @@ from app.services.order_service import (
 router = APIRouter(tags=["Orders"])
 
 @router.post("/create", response_model=OrderResponse)
-def create_order(order_in: OrderCreate, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    # تم ربط user_id بالتوكن بدلاً من الرقم الثابت 1
-    return create_new_order_logic(db=db, order_data=order_in, user_id=current_user.id)
+def create_order(
+    order_in: OrderCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)):
+    # 1. تنفيذ منطق السيرفس (الذي نظفناه أعلاه)
+    new_order = create_new_order_logic(db, order_in , current_user.id)
+    
+    # 2. إرسال التحديث للوحة التحكم في الخلفية (الحل السحري)
+    async def notify_dashboard():
+        try:
+        
+            # جلب الإحصائيات الجديدة وبثها
+            new_stats = get_inventory_dashboard_stats(db)
+            await manager.broadcast(new_stats)
+        except Exception as e:
+            print(f"WebSocket Notification Failed: {e}")
+
+    background_tasks.add_task(notify_dashboard)
+
+    return new_order
+
 
 @router.get("/")
 async def read_orders(
@@ -56,27 +76,63 @@ async def read_orders(
 # عمليات الـ QR والخدمات المتقدمة
 @router.post("/{order_id}/scan")
 async def scan_order_item(order_id: int,
- request: QRScanRequest,
-  db: Session = Depends(get_db),
-  current_user: User = Depends(get_current_active_user)
+   request: QRScanRequest,
+   background_tasks: BackgroundTasks,
+   db: Session = Depends(get_db),
+   current_user: User = Depends(get_current_active_user)
   ):
-    # أضفنا await قبل الدالة و async قبل def
-    return await process_qr_scan_logic(
-    db=db, 
-    order_id=order_id, 
-    user_id=current_user.id, # لاحظ هنا مررنا employee_id كـ user_id
-    qr_code=request.qr_code
-    )  
+   
+    result = await process_qr_scan_logic(db=db, order_id=order_id, user_id=current_user.id, qr_code=request.qr_code)
+    #background_tasks.add_task(sync_dashboard, db) # أضفنا المزامنة هنا
+    return result
 
     
 @router.post("/return-item-by-qr")
-def return_item(qr_code: str, db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    return standalone_return_logic(db, qr_code, current_user.id)
+def return_item(
+    qr_code: str,
+    background_tasks: BackgroundTasks, 
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)):
+# 1. تنفيذ منطق المرتجع في القاعدة
+    result = standalone_return_logic(db, qr_code, current_user.id)
+    
+    # 2. مهمة المزامنة الخلفية
+    async def notify_ws():
+        try:
+          
+            stats = get_inventory_dashboard_stats(db)
+            await manager.broadcast(stats)
+        except Exception as e:
+            print(f"Return Sync Error: {e}")
+
+    background_tasks.add_task(notify_ws)
+    return result
 
 @router.post("/mark-as-damaged")
-def mark_damaged(qr_code: str, note: str = "توالف مخزنية", db: Session = Depends(get_db), current_user = Depends(get_current_user)):
-    return process_damage_logic(db, qr_code, current_user.id, note)
+async def mark_damaged(
+    qr_code: str, 
+    background_tasks: BackgroundTasks, 
+    db: Session = Depends(get_db), 
+    current_user = Depends(get_current_user),
+    note: str = "توالف مخزنية"
+):
+    # 1. تنفيذ منطق القاعدة (سريع ومباشر)
+    result = process_damage_logic(db, qr_code, current_user.id, note)
+    
+    # 2. تحديث الشاشة عبر الـ WebSocket في الخلفية
+    # هذا السطر يحل مشكلة الـ Event Loop لأنه يعمل في السياق الصحيح
+    async def notify_ws():
+        try:
+            from app.services.inventory_movement_service import get_inventory_dashboard_stats
+            from app.core.config import manager
+            stats = get_inventory_dashboard_stats(db)
+            await manager.broadcast(stats)
+        except Exception as e:
+            print(f"WS Sync Error: {e}")
 
+    background_tasks.add_task(notify_ws)
+    
+    return result
 
 
 @router.get("/{order_id}/details")
@@ -93,42 +149,59 @@ from app.services.order_service import update_order_master_logic
 @router.put("/{order_id}/update", response_model=OrderResponse)
 async def update_order(
     order_id: int, 
-    order_in: OrderUpdate, 
+    order_in: OrderUpdate,
+    background_tasks: BackgroundTasks, 
     db: Session = Depends(get_db), 
     current_user = Depends(get_current_user)
 ):
-    """تعديل بيانات الطلب"""
-    # تحويل الـ Pydantic model إلى Dictionary قبل تمريره
     update_data = order_in.dict(exclude_unset=True)
-    
-    # استدعاء الدالة بالاسم الصحيح
-    return await update_order_master_logic(
-        db=db, 
-        order_id=order_id, 
-        update_data=update_data, 
-        user_id=current_user.id
-    )
+    order = await update_order_master_logic(db=db, order_id=order_id, update_data=update_data, user_id=current_user.id)
+   # background_tasks.add_task(sync_dashboard, db) # أضفنا المزامنة هنا
+    return order
 
 
 @router.post("/{order_id}/assign-delivery", response_model=OrderResponse)
 async def assign_delivery(
     order_id: int, 
     delivery_data: DeliveryAssignRequest, 
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db), 
     current_user = Depends(get_current_user)
-):
-    """إسناد الطلب لشركة شحن وتغيير حالته إلى مشحون"""
-    return await assign_delivery_logic(db=db, order_id=order_id, delivery_data=delivery_data, user_id=current_user.id)
+):# 1. تنفيذ الإسناد
+    order = await assign_delivery_logic(db=db, order_id=order_id, delivery_data=delivery_data, user_id=current_user.id)
+    
+    # 2. تحديث اللوحة
+    async def notify_ws():
+        try:
+            from app.core.config import manager
+            # بث رسالة بسيطة لتحديث عداد الشحنات
+            await manager.broadcast({"event": "ORDER_SHIPPED", "order_id": order_id})
+        except: pass
+
+    background_tasks.add_task(notify_ws)
+    return order
 
 @router.delete("/{order_id}/delete")
 async def delete_order(
     order_id: int, 
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db), 
     current_user = Depends(get_current_user)
-):
-    """حذف الطلب نهائياً (يفضل أن تكون بصلاحيات أدمن فقط)"""
-    return await delete_order_logic(db=db, order_id=order_id)
+):# 1. تنفيذ الحذف
+    result = await delete_order_logic(db=db, order_id=order_id)
+    
+    # 2. تحديث اللوحة لأن المخزون المحجوز سيعود للأصل
+    async def notify_ws():
+        try:
+            from app.services.inventory_movement_service import get_inventory_dashboard_stats
+            from app.core.config import manager
+            stats = get_inventory_dashboard_stats(db)
+            await manager.broadcast(stats)
+        except Exception as e:
+            print(f"Delete Sync Error: {e}")
 
+    background_tasks.add_task(notify_ws)
+    return result
 
 @router.websocket("/ws/inventory-stats")
 async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
