@@ -66,6 +66,7 @@ def update(
     name: str = Body(..., embed=True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
+    
 ):
     return crud_catalog.update_catalog(db, catalog_id=catalog_id, new_name=name)
 
@@ -83,8 +84,5 @@ def read_catalogs_summary(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_active_user)
 ):
-    """
-    يعيد قائمة بأسماء الكتالوجات ومعرفاتها وحالتها.
-    مثالي لبناء القوائم المنسدلة أو أزرار التنقل الرئيسية.
-    """
+    
     return crud_catalog.get_catalogs_summary(db)

@@ -85,19 +85,18 @@ def log_order_qr_scan(db: Session, user_id: int, order_id: int, variant_id: int,
 
 
 # أضف هذه الدالة في نهاية ملف audit_service.py
-def log_order_initialization(db: Session, order_id: int, user_id: int, initial_status: str = "pending"):
-    """
-    تسجيل لحظة إنشاء الطلب وتوثيق الموظف المسؤول عن العملية.
-    """
-    details = {
-        "status": initial_status,
-        "message": "تم إنشاء الطلب وبدء دورة حياته في النظام"
-    }
-    return create_order_action_log(
-        db=db, 
-        order_id=order_id, 
-        user_id=user_id, 
-        action_type='initialized', 
-        details=details
+def log_order_initialization(db, user_id, order_id, customer_name, source):
+    # بدلاً من استخدام متغير غير معرف initial_status
+    # استخدم القيمة 'pending' مباشرة أو مررها من الدالة
+    new_action = OrderAction(
+        order_id=order_id,
+        user_id=user_id,
+        action_type="order_created",
+        details={
+            "customer": customer_name,
+            "source": source,
+            "status": "pending"  # تم استبدال initial_status بالقيمة الثابتة
+        }
     )
-
+    db.add(new_action)
+    # لا تقم بعمل db.commit() هنا لأن الدالة الأساسية ستقوم بذلك

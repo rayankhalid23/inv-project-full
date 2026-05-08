@@ -17,6 +17,7 @@ from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, func, Num
 from sqlalchemy.orm import relationship
 from app.models.base import Base
 
+
 class Catalog(Base):
     __tablename__ = "catalogs"
     id = Column(Integer, primary_key=True, index=True)
@@ -28,37 +29,76 @@ class Catalog(Base):
     deleted_at = Column(TIMESTAMP, nullable=True)
     
     products = relationship("Product", back_populates="catalog")
-
 class Product(Base):
     __tablename__ = "products"
+
     id = Column(Integer, primary_key=True, index=True)
     catalog_id = Column(Integer, ForeignKey("catalogs.id"), nullable=False)
+    
+    # حقول البيانات الأساسية
     name = Column(String(255), nullable=False)
     code = Column(String(100), unique=True, nullable=False)
+    main_image = Column(String(500), nullable=True) # الحقل الناقص (رابط الصورة)
+    description = Column(String(1000), nullable=False)
+    
+    # الحقول المالية
     cost_price = Column(Numeric(12, 2), nullable=False)
     selling_price = Column(Numeric(12, 2), nullable=False)
     
-    # الإحصائيات التجميعية (يتم تحديثها عبر sync_product_metrics)
+    # إدارة المخزون
+    # تم تغييره إلى Integer ليتوافق مع الصورة ومنطق العد
+    min_stock_threshold = Column(Integer, default=0, nullable=False) 
+
+    # الإحصائيات التجميعية (تحدث تلقائياً عبر الدالة التي شرحناها سابقاً)
     total_available = Column(Integer, default=0)
     total_reserved = Column(Integer, default=0)
     total_sold = Column(Integer, default=0)
     total_damaged = Column(Integer, default=0)
     total_returns = Column(Integer, default=0)
     
-    deleted_at = Column(TIMESTAMP, nullable=True)
-    catalog = relationship("Catalog", back_populates="products")
-    colors = relationship("ProductColor", back_populates="product", cascade="all, delete")
+    # حقول التتبع والتدقيق (Audit Fields) - هامة جداً للبيع كـ ERP
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True) # من أضاف المنتج
+    created_at = Column(TIMESTAMP, server_default=func.now()) # تاريخ الإضافة
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now()) # تاريخ التعديل
+    deleted_at = Column(TIMESTAMP, nullable=True) # للحذف الناعم
 
+    # العلاقات (Relationships)
+    catalog = relationship("Catalog", back_populates="products")
+    colors = relationship("ProductColor", back_populates="product", cascade="all, delete-orphan")
+    
+  
 
 class ProductColor(Base):
     __tablename__ = "product_colors"
+
     id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(Integer, ForeignKey("products.id"))
-    color_name = Column(String(100))
+    
+    # ربط اللون بالمنتج (يجب أن يكون nullable=False لضمان التكامل)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    
+    # اسم اللون وصورة اختيارية لهذا اللون تحديداً
+    color_name = Column(String(100), nullable=False)
     color_image = Column(String(255), nullable=True)
     
+    # --- الحقول الناقصة بناءً على الصورة ---
+    # تاريخ الإنشاء (يُملأ تلقائياً عند الإضافة)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    
+    # تاريخ التعديل (يُحدث تلقائياً عند أي تعديل على السجل)
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    
+    # الحذف الناعم (ضروري جداً لعمل دالة sync_product_metrics بشكل صحيح)
+    deleted_at = Column(TIMESTAMP, nullable=True)
+    
+    # --- العلاقات (Relationships) ---
+    # العلاقة مع المنتج الأب
     product = relationship("Product", back_populates="colors")
-    variants = relationship("ProductVariant", back_populates="color")
+    
+    # العلاقة مع المتغيرات (المقاسات) التابعة لهذا اللون
+    # أضفنا cascade لضمان حذف المقاسات عند حذف اللون
+    variants = relationship("ProductVariant", back_populates="color", cascade="all, delete-orphan")
+
+    
 
 class Size(Base):
     __tablename__ = "sizes"
@@ -66,31 +106,52 @@ class Size(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(50), nullable=False)
     sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, onupdate=func.now())
-    deleted_at = Column(DateTime, nullable=True)
+    
+    # استخدام TIMESTAMP للتوحيد مع بقية الجداول
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(TIMESTAMP, nullable=True)
 
-    # العلاقة العكسية
     variants = relationship("ProductVariant", back_populates="size")
 
 class ProductVariant(Base):
     __tablename__ = "product_variants"
-    id = Column(Integer, primary_key=True, index=True)
-    product_color_id = Column(Integer, ForeignKey("product_colors.id"), nullable=False)
-    size_id = Column(Integer, ForeignKey("sizes.id"))
-    qr_code = Column(String(500), nullable=True)
     
+    id = Column(Integer, primary_key=True, index=True)
+    product_color_id = Column(Integer, ForeignKey("product_colors.id", ondelete="CASCADE"), nullable=False)
+    size_id = Column(Integer, ForeignKey("sizes.id"), nullable=True) # nullable=True إذا كان هناك منتجات بلا مقاس
+    
+    # إحصائيات المخزن لكل متغير (كما تظهر في الصورة)
     quantity_available = Column(Integer, default=0)
     quantity_reserved = Column(Integer, default=0)
     damaged_quantity = Column(Integer, default=0)
     returned_quantity = Column(Integer, default=0)
-    total_sold = Column(Integer, default=0)
+    
+    # الحقل الناقص في الكود والموجود في الصورة
+    min_stock_threshold = Column(Integer, default=0) 
+    
+    qr_code = Column(String(500), nullable=True)
+    
+    # حقول الوقت والتتبع (موجودة في الصورة)
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
     deleted_at = Column(TIMESTAMP, nullable=True)
+    
+    total_sold = Column(Integer, default=0)
 
+    # العلاقات
     color = relationship("ProductColor", back_populates="variants")
-    movements = relationship("InventoryMovement", back_populates="variant")
     size = relationship("Size", back_populates="variants")
+    movements = relationship("InventoryMovement", back_populates="variant", cascade="all, delete-orphan")
 
+    # الحل الذكي (Property)
+    @property
+    def product_id(self):
+        """جلب رقم المنتج من علاقة الألوان تلقائياً"""
+        if self.color:
+            return self.color.product_id
+        return None
+     
 class InventoryMovement(Base):
     __tablename__ = "inventory_movements"
     id = Column(Integer, primary_key=True)
@@ -120,7 +181,7 @@ class SystemAuditLog(Base):
     ip_address = Column(String(45), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    
+
 # إعداد المسارات والخطوط
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_PATH = os.path.join(BASE_DIR, "static", "fonts", "Amiri-Regular.ttf")
@@ -130,6 +191,8 @@ try:
     ARABIC_FONT = "ArabicFont"
 except:
     ARABIC_FONT = "Helvetica"
+
+
 
 class QRGeneratorService:
     # مقاس الملصق 50x50 ملم

@@ -70,8 +70,11 @@ async def create_product_variants(
 
         if created_count > 0:
             # 5. حفظ التغييرات ومزامنة إحصائيات المنتج الرئيسي
-            db.commit()
+            db.flush()
+
             sync_product_metrics(db, product.id)
+
+            db.commit()
             return {
                 "status": "success", 
                 "message": f"تم إنشاء {created_count} مقاسات وتوليد أكواد QR بنجاح."
@@ -107,6 +110,9 @@ async def delete_full_product(product_id: int, db: Session = Depends(get_db),cur
 
         if product.main_image: delete_old_image(product.main_image)
         product.deleted_at = datetime.utcnow()
+
+        sync_product_metrics(db, product_id)
+
         db.commit()
         return {"detail": "تم حذف المنتج وكافة ملحقاته بنجاح"}
     except Exception as e:
@@ -155,6 +161,7 @@ async def update_variant_partial(
     try:
         # تحديث توقيت التعديل الأخير
         variant.updated_at = datetime.utcnow()
+        db.flush()
         
         # 4. البحث عن سجل اللون المرتبط لتنفيذ المزامنة الشاملة للمنتج
         color_entry = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
@@ -230,9 +237,11 @@ async def delete_color_group(
             # تصفير الكمية المتاحة حتى لا تظهر في المخزون (اختياري ولكنه مفضل برمجياً)
             variant.quantity_available = 0 
 
+        db.flush()
         # 5. الحفظ والمزامنة
-        db.commit()
+        
         sync_product_metrics(db, color.product_id)
+        db.commit()
 
         return {"status": "success", "message": "تم حذف اللون وجميع مقاساته بنجاح."}
 
@@ -275,12 +284,12 @@ async def delete_single_variant(
         # 4. جلب معرف المنتج لعمل المزامنة
         color = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
 
+        if color:
+            sync_product_metrics(db, color.product_id) # المزامنة والعملية لا تزال مفتوحة
+
         # 5. الحفظ والمزامنة
         db.commit()
         
-        if color:
-            sync_product_metrics(db, color.product_id)
-
         return {"status": "success", "message": "تم حذف المقاس المخصص بنجاح."}
 
     except Exception as e:

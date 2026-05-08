@@ -1,123 +1,70 @@
-import re
-from pydantic import BaseModel, Field, validator
-from typing import List, Optional
+from pydantic import BaseModel, ConfigDict
+from typing import List, Optional, Union
 from decimal import Decimal
 from datetime import datetime
 
+# ==================== Requests (الاستقبال) ==================== #
+
 class OrderItemCreate(BaseModel):
-    variant_id: int = Field(..., gt=0)
-    quantity: int = Field(..., gt=0)
+    variant_id: int
+    quantity: int
 
 class OrderCreate(BaseModel):
-    customer_name: Optional[str] = Field(None, max_length=100)
-    customer_phones: List[str] = Field(..., min_items=1)
-    address: str = Field(..., min_length=1)
+    customer_name: str
+    customer_phones: Union[List[str], str] # يدعم استقبال قائمة أو نص
+    address: str
     social_media_source: Optional[str] = None
     notes: Optional[str] = None
-    items: List[OrderItemCreate] = Field(..., min_items=1)
-
-    @validator('customer_phones')
-    def validate_libyan_phones(cls, v):
-        cleaned_phones = [p.strip() for p in v if p and p != "string" and re.match(r'^09[124]\d{7}$', p)]
-        if not cleaned_phones:
-            raise ValueError("يجب تزويد رقم هاتف ليبي واحد صحيح على الأقل.")
-        return cleaned_phones
+    items: List[OrderItemCreate]
 
 class OrderUpdate(BaseModel):
     customer_name: Optional[str] = None
-    customer_phones: Optional[str] = None
+    customer_phones: Optional[Union[List[str], str]] = None
     address: Optional[str] = None
-    status: Optional[str] = None # pending, prepared, shipped, etc.
+    status: Optional[str] = None
     notes: Optional[str] = None
-    # إضافة إمكانية تحديث العناصر إذا لزم الأمر
-    items: Optional[List[OrderItemCreate]] = None 
+    items: Optional[List[OrderItemCreate]] = None
+    delivery_name: str
+    delivery_type: str
 
-    class Config:
-        from_attributes = True        
+
+class DeliveryAssignRequest(BaseModel):
+    delivery_name: str
+    delivery_type: str
+
+class QRScanRequest(BaseModel):
+    qr_code: str
+    
+
+
+# ==================== Responses (الإرجاع) ==================== #
 
 class OrderResponse(BaseModel):
     id: int
-    customer_name: Optional[str]
+    customer_name: str
+    total_price: Decimal
+    status: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class OrderItemDetailResponse(BaseModel):
+    id: int
+    product_name: str
+    variant_id: int
+    quantity: int
+    price_at_order: Decimal
+    image_url: Optional[str] = None
+    color_name: Optional[str] = None
+    size: Optional[str] = None
+
+class OrderFullDetailResponse(BaseModel):
+    id: int
+    customer_name: str
     customer_phones: List[str]
     address: str
     total_price: Decimal
     status: str
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-# سكيما الرد (Response) لعرض بيانات الطلب
-class OrderItemOut(BaseModel):
-    id: int
-    variant_id: int
-    product_id: int
-    quantity: int
-    picked_quantity: int
-    price_at_order: Decimal
-
-    class Config:
-        from_attributes = True
-
-class OrderOut(BaseModel):
-    id: int
-    customer_name: str
-    customer_phones: Optional[str]
-    address: Optional[str]
-    total_price: Decimal
-    status: str
-    created_at: datetime
-    items: List[OrderItemOut]
-
-    class Config:
-        from_attributes = True
-
-# سكيمات إضافية قد يحتاجها الـ Router الخاص بك
-class DeliveryAssignRequest(BaseModel):
-    delivery_name: str
-    delivery_type: str # شركة شحن أو سائق خاص
-
-class QRScanRequest(BaseModel):
-    qr_code: str        
-
-
-class VariantDetail(BaseModel):
-    id: int
-    size_name: Optional[str] = None
-    color_name: Optional[str] = None
-    product_name: Optional[str] = None
-    qr_code: Optional[str] = None
-
-    class Config:
-        from_attributes = True
-
-class OrderItemDetail(BaseModel):
-    id: int
-    variant_id: int
-    quantity: int
-    picked_quantity: int
-    price_at_order: Decimal
-    variant: Optional[VariantDetail] = None # لربط تفاصيل المقاس واللون
-
-    class Config:
-        from_attributes = True
-
-# هذه هي السكيما التي تسبب الخطأ حالياً
-class OrderFullDetailResponse(BaseModel):
-    id: int
-    customer_name: str
-    customer_phones: Optional[str]
-    address: Optional[str]
-    notes: Optional[str]
-    total_price: Decimal
-    status: str
-    created_at: datetime
-    items: List[OrderItemDetail]
+    items: List[OrderItemDetailResponse]
     
-    # حقول إضافية للرقابة
-    delivery_info: Optional[str] = None
-    social_media_source: Optional[str] = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
