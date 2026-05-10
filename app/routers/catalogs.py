@@ -68,7 +68,12 @@ def update(
     current_user: User = Depends(get_current_active_user)
     
 ):
-    return crud_catalog.update_catalog(db, catalog_id=catalog_id, new_name=name)
+    return crud_catalog.update_catalog(
+        db=db, 
+        catalog_id=catalog_id, 
+        name=name, 
+        user_id=current_user.id
+    )
 
 @router.patch("/{catalog_id}/toggle", summary="تغيير حالة الكتالوج (نشط/معطل)")
 def toggle_status(
@@ -76,8 +81,11 @@ def toggle_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    return crud_catalog.toggle_catalog_status(db, catalog_id=catalog_id)
-
+    return crud_catalog.toggle_catalog_status(
+        db=db, 
+        catalog_id=catalog_id, 
+        user_id=current_user.id
+    )
 
 @router.get("/summary", summary="قائمة الكتالوجات المختصرة")
 def read_catalogs_summary(

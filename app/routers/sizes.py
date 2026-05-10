@@ -1,14 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+
 from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
+from app.models.inventory import Size, ProductVariant, Product,ProductColor
 from typing import List, Optional
 from datetime import datetime
 
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from datetime import datetime
+from typing import List
+
+# استيراد الأدوات الأساسية
 from app.core.database import get_db
 from app.core.deps import RoleChecker
-from app.models.inventory import Size
+
+# استيراد النماذج (Models) - تأكد من صحة مسارات الاستيراد في مشروعك
+from app.models.inventory import Size, ProductVariant, Product
 from app.models.user import User
+from app.services.audit_service import create_system_audit_log
+
 
 router = APIRouter(prefix="/sizes", tags=["Sizes"])
 
@@ -42,8 +52,23 @@ def add_size(
 
         new_size = Size(name=clean_name, sort_order=sort_order)
         db.add(new_size)
+        db.flush()
+        
+
+
+        # سطر المراقبة (إضافة)
+        create_system_audit_log(
+            db=db, 
+            user_id=current_user.id, 
+            action_target='size', 
+            target_id=new_size.id, 
+            action_type='create', 
+            details={"name": new_size.name, "sort_order": new_size.sort_order}
+        )
+
         db.commit()
         db.refresh(new_size)
+
         return new_size
 
     except IntegrityError:
@@ -70,20 +95,76 @@ def list_sizes(db: Session = Depends(get_db)):
             detail="حدث خطأ فني أثناء محاولة جلب قائمة المقاسات، يرجى المحاولة لاحقاً."
         )
 
-
-        
-@router.delete("/{size_id}")
-def delete_size(size_id: int, db: Session = Depends(get_db), current_user: User = Depends(RoleChecker([1, 2]))):
-    # البحث عن المقاس
+@router.delete("/{size_id}", summary="حذف مقاس مع فحص الارتباط الاحترافي")
+def delete_size(
+    size_id: int, 
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(RoleChecker([1, 2]))
+):
+    # 1. البحث عن المقاس
     size = db.query(Size).filter(Size.id == size_id, Size.deleted_at == None).first()
     
     if not size:
-        raise HTTPException(status_code=404, detail="خطأ: لم يتم العثور على المقاس المطلوبة، أو قد يكون محذوفاً بالفعل.")
-    
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="عذراً، المقاس المطلوب غير موجود أو ربما تم حذفه مسبقاً."
+        )
+
+    # 2. الفحص الذكي (تم تصحيح الربط هنا)
+    # ملاحظة: سنستخدم .all() ثم نستخرج الأسماء يدوياً لتجنب خطأ scalars
+    linked_results = db.query(Product.name).join(
+        ProductColor, Product.id == ProductColor.product_id
+    ).join(
+        ProductVariant, ProductColor.id == ProductVariant.product_color_id
+    ).filter(
+        ProductVariant.size_id == size_id,
+        ProductVariant.deleted_at == None,
+        ProductColor.deleted_at == None,
+        Product.deleted_at == None
+    ).distinct().all()
+
+    # 3. إذا وجدنا ارتباطاً، ننسق الرسالة باحترافية
+    if linked_results:
+        # استخراج الأسماء من نتائج الاستعلام (تحويلها من صفوف إلى نصوص)
+        product_names_list = [row[0] for row in linked_results]
+        formatted_names = " • " + " • ".join(product_names_list)
+        
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"لا يمكن حذف المقاس '{size.name}' حالياً لارتباطه بمنتجات نشطة في المخزن. "
+                f"يرجى إزالة المقاس من المنتجات التالية أولاً لضمان دقة التقارير: ["
+                f"{formatted_names}"
+                f" ]"
+            )
+        )
+
+    # 4. تنفيذ الحذف الناعم في حال عدم وجود ارتباط
     try:
         size.deleted_at = datetime.now()
+        
+       
+        create_system_audit_log(
+            db=db, 
+            user_id=current_user.id, 
+            action_target='size', 
+            target_id=size_id, 
+            action_type='delete', 
+            details={"name": size.name}
+        )
+        
         db.commit()
-        return {"status": "success", "detail": f"تم حذف المقاس '{size.name}' بنجاح."}
+        
+        return {
+            "status": "success", 
+            "message": f"تمت أرشفة المقاس '{size.name}' بنجاح وتحديث السجلات."
+        }
+        
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail="فشل تنفيذ عملية الحذف في قاعدة البيانات.")
+        # طباعة الخطأ في وحدة التحكم (Terminal) للمطور فقط
+        print(f"Error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="حدث خطأ تقني أثناء محاولة الحذف. يرجى مراجعة الدعم الفني."
+        )

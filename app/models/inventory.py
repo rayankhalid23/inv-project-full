@@ -173,18 +173,19 @@ class InventoryMovement(Base):
 
     # العلاقات لسهولة جلب البيانات لاحقاً
     variant = relationship("ProductVariant", back_populates="movements")
+
+
 class SystemAuditLog(Base):
     __tablename__ = "system_audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True) # من قام بالعملية
-    action_target = Column(String(50))  # الهدف: 'user', 'product', 'order'
-    target_id = Column(Integer)         # رقم العنصر المتأثر (رقم الموظف أو المنتج)
-    action_type = Column(String(50))    # نوع الفعل: 'created', 'updated', 'deleted'
-    details = Column(JSON, nullable=True) # تفاصيل إضافية بصيغة JSON
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action_target = Column(String(100))  # قمنا بزيادة الحجم لـ 100 للامان
+    target_id = Column(Integer, nullable=True) 
+    action_type = Column(String(100))    # قمنا بزيادة الحجم لـ 100 للامان
+    details = Column(JSON, nullable=True) 
     ip_address = Column(String(45), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
 
 # إعداد المسارات والخطوط
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

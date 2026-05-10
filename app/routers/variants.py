@@ -15,6 +15,14 @@ from app.models.inventory import Product, ProductColor, ProductVariant, Size
 from app.utils import generate_variant_qr
 from app.crud.inventory_sync import sync_product_metrics
 
+# استيراد دوال المراقبة من ملفك
+from app.services.audit_service import (
+    create_inventory_log, 
+    create_system_audit_log,
+    log_color_action
+)
+
+
 router = APIRouter(tags=["Product Variants"])
 
 
@@ -66,13 +74,31 @@ async def create_product_variants(
             # 4. توليد الـ QR Code (يجب أن تكون الدالة async)
             qr_path = await generate_variant_qr(new_variant.id, product.code)
             new_variant.qr_code = qr_path
+
+            # --- [إضافة: مراقبة المخزون] ---
+            # تسجيل الكمية المضافة كـ "رصيد افتتاحي"
+            if item.qty > 0:
+                create_inventory_log(
+                    db=db, variant_id=new_variant.id, product_id=product.id,
+                    user_id=current_user.id, movement_type='initial_stock',
+                    quantity_change=item.qty, quantity_before=0,
+                    notes="إضافة رصيد افتتاحي عند إنشاء المقاس",
+                    details={"initial_qty": item.qty}
+                )
+                
             created_count += 1
 
         if created_count > 0:
             # 5. حفظ التغييرات ومزامنة إحصائيات المنتج الرئيسي
             db.flush()
-
             sync_product_metrics(db, product.id)
+
+            # --- [إضافة: رقابة النظام] ---
+            create_system_audit_log(
+                db=db, user_id=current_user.id, action_target="product_color",
+                target_id=product_color_id, action_type="bulk_variants_created",
+                details={"count": created_count}
+            )
 
             db.commit()
             return {
@@ -89,36 +115,6 @@ async def create_product_variants(
         db.rollback()
         print(f"Error in batch-create: {str(e)}")
         raise HTTPException(status_code=500, detail=f"حدث خطأ أثناء الإنشاء: {str(e)}")
-
-
-@router.delete("/product/{product_id}")
-async def delete_full_product(product_id: int, db: Session = Depends(get_db),current_user: User = Depends(RoleChecker([1, 2]))):
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product or product.deleted_at:
-        raise HTTPException(status_code=404, detail="المنتج غير موجود")
-
-    try:
-        # حذف الصور والارتباطات (الألوان والمقاسات)
-        colors = db.query(ProductColor).filter(ProductColor.product_id == product_id).all()
-        for c in colors:
-            variants = db.query(ProductVariant).filter(ProductVariant.product_color_id == c.id).all()
-            for v in variants:
-                if v.qr_code: delete_old_image(v.qr_code)
-                v.deleted_at = datetime.utcnow()
-            if c.color_image: delete_old_image(c.color_image)
-            c.deleted_at = datetime.utcnow()
-
-        if product.main_image: delete_old_image(product.main_image)
-        product.deleted_at = datetime.utcnow()
-
-        sync_product_metrics(db, product_id)
-
-        db.commit()
-        return {"detail": "تم حذف المنتج وكافة ملحقاته بنجاح"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 
 
@@ -139,18 +135,36 @@ async def update_variant_partial(
         raise HTTPException(status_code=404, detail="المقاس المطلوب غير موجود أو تم حذفه.")
 
     has_changes = False
+    old_qty = variant.quantity_available
+    old_min_stock = variant.min_stock_threshold
+    audit_details = {}
 
-    # 2. تحديث الكمية المتاحة (qty)
+    # مراقبة تغيير الكمية
     if update_data.qty is not None:
-        if update_data.qty < 0:
-            raise HTTPException(status_code=400, detail="لا يمكن أن تكون الكمية بالسالب.")
-        variant.quantity_available = update_data.qty
-        has_changes = True
+        if update_data.qty != old_qty:
+            diff = update_data.qty - old_qty
+            # --- [إضافة: مراقبة المخزون - جرد يدوي] ---
+            color_entry = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
+            create_inventory_log(
+                db=db, variant_id=variant.id, product_id=color_entry.product_id,
+                user_id=current_user.id, movement_type='manual_adjust',
+                quantity_change=diff, quantity_before=old_qty,
+                notes="تعديل كمية يدوي من شاشة التحكم"
+            )
+            variant.quantity_available = update_data.qty
+            audit_details["quantity_available"] = {"from": old_qty, "to": update_data.qty}
+            has_changes = True
 
     # 3. تحديث حد المخزون الأدنى (min_stock)
     if update_data.min_stock is not None:
         if update_data.min_stock < 0:
             raise HTTPException(status_code=400, detail="حد المخزون لا يمكن أن يكون بالسالب.")
+            
+        audit_details["min_stock_threshold"] = {
+            "from": variant.min_stock_threshold, 
+            "to": update_data.min_stock
+        }
+           
         variant.min_stock_threshold = update_data.min_stock
         has_changes = True
 
@@ -165,10 +179,17 @@ async def update_variant_partial(
         
         # 4. البحث عن سجل اللون المرتبط لتنفيذ المزامنة الشاملة للمنتج
         color_entry = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
-        
+
         if color_entry:
             # تحديث إحصائيات المنتج الرئيسي (الإجمالي، المتاح، إلخ) قبل الحفظ النهائي
             sync_product_metrics(db, color_entry.product_id)
+
+        # --- [إضافة: رقابة النظام] ---
+        create_system_audit_log(
+            db=db, user_id=current_user.id, action_target="variant",
+            target_id=variant.id, action_type="updated", details=audit_details
+        )
+
 
         # 5. تثبيت كافة التغييرات في خطوة واحدة (Atomic Operation)
         db.commit()
@@ -230,17 +251,42 @@ async def delete_color_group(
     try:
         # 4. تطبيق الحذف الناعم (Soft Delete)
         delete_time = datetime.utcnow()
-        color.deleted_at = delete_time
+
+        for v in variants:
+            # --- [نقطة مراقبة المخزون: سحب رصيد المقاسات التابعة لهذا اللون] ---
+            if v.quantity_available > 0:
+                create_inventory_log(
+                    db=db, 
+                    variant_id=v.id, 
+                    product_id=color.product_id, 
+                    user_id=current_user.id,
+                    movement_type='system_deduction', 
+                    quantity_change=-v.quantity_available, 
+                    quantity_before=v.quantity_available,
+                    notes=f"سحب رصيد بسبب حذف مجموعة اللون (ID:{color_id})"
+                )
+
         
         for variant in variants:
             variant.deleted_at = delete_time
             # تصفير الكمية المتاحة حتى لا تظهر في المخزون (اختياري ولكنه مفضل برمجياً)
-            variant.quantity_available = 0 
-
-        db.flush()
-        # 5. الحفظ والمزامنة
+            v.deleted_at = delete_time
+            v.quantity_available = 0
         
+
+        color.deleted_at = delete_time # [تعديل] نقلها خارج حلقة المقاسات لتحسين الأداء
+        db.flush()
         sync_product_metrics(db, color.product_id)
+       
+
+        log_color_action(
+            db=db, 
+            user_id=current_user.id, 
+            color_id=color_id, 
+            action_type="deleted",
+            details={"product_id": color.product_id, "variants_count": len(variants)}
+        )
+
         db.commit()
 
         return {"status": "success", "message": "تم حذف اللون وجميع مقاساته بنجاح."}
@@ -278,14 +324,32 @@ async def delete_single_variant(
 
     try:
         # 3. تطبيق الحذف الناعم
-        variant.deleted_at = datetime.utcnow()
-        variant.quantity_available = 0 # تصفير الكمية لسحبها من إجمالي المنتج
+        
         
         # 4. جلب معرف المنتج لعمل المزامنة
         color = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
-
+        # --- [إضافة: مراقبة المخزون - سحب الكمية من النظام] ---
+        if variant.quantity_available > 0:
+            create_inventory_log(
+                db=db, variant_id=variant.id, product_id=color.product_id if color else 0,
+                user_id=current_user.id, movement_type='system_deduction',
+                quantity_change=-variant.quantity_available,
+                quantity_before=variant.quantity_available,
+                notes="تصفير الكمية بسبب حذف سجل المقاس"
+        ) 
+        
+        variant.deleted_at = datetime.utcnow()
+        variant.quantity_available = 0
+        db.flush()
+         
         if color:
             sync_product_metrics(db, color.product_id) # المزامنة والعملية لا تزال مفتوحة
+
+        # --- [إضافة: رقابة النظام] ---
+        create_system_audit_log(
+            db=db, user_id=current_user.id, action_target="variant",
+            target_id=variant.id, action_type="deleted"
+        )    
 
         # 5. الحفظ والمزامنة
         db.commit()
@@ -296,3 +360,56 @@ async def delete_single_variant(
         db.rollback()
         print(f"Error deleting single variant: {str(e)}")
         raise HTTPException(status_code=500, detail="حدث خطأ أثناء عملية الحذف.")
+
+
+
+
+@router.delete("/product/{product_id}")
+async def delete_full_product(product_id: int, db: Session = Depends(get_db),current_user: User = Depends(RoleChecker([1, 2]))):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product or product.deleted_at:
+        raise HTTPException(status_code=404, detail="المنتج غير موجود")
+
+    try:
+        # حذف الصور والارتباطات (الألوان والمقاسات)
+        colors = db.query(ProductColor).filter(ProductColor.product_id == product_id).all()
+        for c in colors:
+            variants = db.query(ProductVariant).filter(ProductVariant.product_color_id == c.id).all()
+            for v in variants:
+
+                # [إضافة] توثيق خروج بضاعة المنتج بالكامل من المخزن
+                if v.quantity_available > 0:
+                    create_inventory_log(
+                        db=db, variant_id=v.id, product_id=product_id, user_id=current_user.id,
+                        movement_type='system_deduction', quantity_change=-v.quantity_available,
+                        quantity_before=v.quantity_available, notes=f"حذف شامل للمنتج: {product.name}"
+                    )
+
+                if v.qr_code: delete_old_image(v.qr_code)
+                v.deleted_at = datetime.utcnow()
+                v.quantity_available = 0
+                
+            if c.color_image: delete_old_image(c.color_image)
+            c.deleted_at = datetime.utcnow()
+
+        if product.main_image: delete_old_image(product.main_image)
+        product.deleted_at = datetime.utcnow()
+
+        sync_product_metrics(db, product_id)
+
+        # --- [نقطة المراقبة الإدارية: تسجيل عملية الحذف الكبرى] ---
+        create_system_audit_log(
+            db=db, 
+            user_id=current_user.id, 
+            action_target="product",
+            target_id=product_id, 
+            action_type="deleted",
+            details={"product_name": product.name, "message": "تم حذف المنتج وكافة ملحقاته وتصفير مخزونه"}
+        )
+
+        db.commit()
+        return {"detail": "تم حذف المنتج وكافة ملحقاته بنجاح"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+

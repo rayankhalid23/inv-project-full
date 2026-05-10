@@ -1,8 +1,10 @@
 from decimal import Decimal
 import traceback
 from app.core.websocket_manager import manager
+from app.services.audit_service import create_system_audit_log
 from typing import Optional
 from sqlalchemy import or_, and_, func
+from app.models.inventory import InventoryMovement
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi.responses import StreamingResponse
 import asyncio
@@ -51,6 +53,7 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
     try:
         total_order_price = Decimal('0.00')
         order_items_to_add = []
+        movements_to_add = []
         unique_product_ids = set()
 
         # ترتيب العناصر لمنع التعارض (Deadlocks)
@@ -84,9 +87,11 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
             # 3. تحديث المخزون
             if variant.quantity_available < item.quantity:
                 raise HTTPException(status_code=400, detail=f"المخزون غير كافٍ لـ {product.name}")
-
+            
+            q_before = variant.quantity_available
             variant.quantity_available -= item.quantity
             variant.quantity_reserved += item.quantity
+            q_after = variant.quantity_available
             
             # إبلاغ SQLAlchemy أن الكائن تغير (هام جداً)
             db.add(variant)
@@ -102,6 +107,18 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
                 price_at_order=current_price
             ))
 
+
+            movements_to_add.append(InventoryMovement(
+                variant_id=variant.id,
+                product_id=product.id,        # موجود في جدولك
+                user_id=user_id,
+                quantity_change=item.quantity, # هذا هو الاسم الصحيح في جدولك
+                quantity_before=q_before,     # ملء حقل القبل
+                quantity_after=q_after,       # ملء حقل البعد
+                movement_type='sale',          # الحقل في جدولك اسمه movement_type
+                notes="سيتم التحديث برقم الطلب"
+            ))
+
         # 4. معالجة الهواتف (تأكد أنها قائمة وليست نص)
         phones = order_data.customer_phones
         if isinstance(phones, str):
@@ -110,7 +127,8 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
             except:
                 phones = [phones] # تحويلها لقائمة إذا كانت نصاً عادياً
 
-        # 5. إنشاء الطلب
+
+
         new_order = Order(
             customer_name=order_data.customer_name,
             customer_phones=phones,
@@ -128,6 +146,21 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
         for o_item in order_items_to_add:
             o_item.order_id = new_order.id
             db.add(o_item)
+
+
+        for movement in movements_to_add:
+            movement.related_order_id = new_order.id
+            movement.notes = f"Order #{new_order.id} - Sale"
+            db.add(movement)   
+
+
+        log_order_initialization(
+            db=db,
+            user_id=user_id,
+            order_id=new_order.id,
+            customer_name=order_data.customer_name,
+            source=order_data.social_media_source or "غير محدد"
+        )    
 
         # 6. المزامنة (قبل الـ Commit)
         db.flush() # ضروري لكي ترى دالة المزامنة التغييرات التي حدثت أعلاه
@@ -226,19 +259,19 @@ async def process_qr_scan_logic(
                 
             order.status = 'prepared'
 
-        # 6. توثيق العملية (Audit Log)
-        new_action = OrderAction(
+        
+# 5. التوثيق (لا يتم الوصول لهذا السطر إلا في حالة النجاح التام)
+        create_order_action_log(
+            db=db,
             order_id=order_id,
             user_id=user_id,
             action_type="manual_scan" if variant_id else "qr_scan_success",
             details={
                 "variant_id": variant.id, 
                 "is_complete": is_order_complete,
-                "method": "manual" if variant_id else "qr_camera",
-                "scanned_by": user_id
+                "picked_qty": order_item.picked_quantity
             }
         )
-        db.add(new_action)
         
         # حفظ كل شيء دفعة واحدة
         db.commit()
@@ -266,9 +299,22 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
     variant = db.query(ProductVariant).filter(ProductVariant.qr_code == qr_code).with_for_update().first()
     if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
 
+    q_before = variant.quantity_available
+    variant.quantity_available += 1 # زيادة المخزن
+    q_after = variant.quantity_available
+
     # استدعاء الخدمة الموحدة (تقوم بالتحديث والتوثيق والمزامنة في خطوة واحدة)
     record_return_to_stock(db, variant_id=variant.id, user_id=user_id, quantity=1, notes=note)
-    
+
+    create_system_audit_log(
+        db=db,
+        user_id=user_id,
+        action_target="inventory_return",
+        target_id=variant.id,
+        action_type="return",
+        details={"qr_code": qr_code, "note": note}
+    )
+
     db.commit()
     return {"status": "success", "new_qty": variant.quantity_available}
    
@@ -281,9 +327,24 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
     if variant.quantity_available <= 0:
         raise HTTPException(status_code=400, detail="لا توجد كمية متاحة لإتلافها")
 
+
+    q_before = variant.quantity_available
+    variant.quantity_available -= 1 # خصم من المخزن
+    q_after = variant.quantity_available   
+
     # 2. تنفيذ عملية الإتلاف والمزامنة (التي أصلحناها سابقاً)
     record_damage_entry(db, variant.id, user_id, 1, "QR Scan Damage", note)
-    
+
+    create_system_audit_log(
+        db=db,
+        user_id=user_id,
+        action_target="inventory_damage",
+        target_id=variant.id,
+        action_type="damaged_qr",
+        details={"qr_code": qr_code, "note": note}
+    )
+
+
     db.commit() # حفظ كل شيء في القاعدة
 
     return {"status": "success", "new_qty": variant.quantity_available}
@@ -296,9 +357,16 @@ async def assign_delivery_logic(db: Session, order_id: int, delivery_data: Deliv
     
     # تحديث معلومات التوصيل
     db_order.delivery_info = f"{delivery_data.delivery_name} - {delivery_data.delivery_type}"
-    
     # تأكد أن 'shipped' مضافة في الـ ENUM الخاص بقاعدة البيانات قبل تنفيذ هذا السطر
     db_order.status = "shipped" 
+
+    create_order_action_log(
+        db=db,
+        order_id=order_id,
+        user_id=user_id,
+        action_type="delivery_assigned",
+        details={"delivery_info": db_order.delivery_info, "company": delivery_data.delivery_name}
+    )
     
     try:
         db.commit()
@@ -372,7 +440,13 @@ async def delete_order_logic(db: Session, order_id: int):
         
         # حذف العمليات المرتبطة بالطلب (اختياري حسب رغبتك في الاحتفاظ بالسجل)
         db.query(OrderAction).filter(OrderAction.order_id == order_id).update({"deleted_at": now})
-
+        create_order_action_log(
+            db=db,
+            order_id=order_id,
+            user_id=user_id,
+            action_type="order_cancelled",
+            notes="تم إلغاء الطلب وإرجاع المنتجات للمخزون"
+        )
         # 5. المزامنة مع المنتج الأب (Product Metrics)
         db.flush()
         for p_id in affected_product_ids:
@@ -568,6 +642,14 @@ async def update_order_master_logic(db: Session, order_id: int, update_data: Dic
 
         db_order.updated_at = datetime.now()
         db.add(OrderAction(order_id=order_id, user_id=user_id, action_type="order_edit_full"))
+
+        create_order_action_log(
+            db=db,
+            order_id=order_id,
+            user_id=user_id,
+            action_type="order_edit_full",
+            details={"updated_keys": list(update_data.keys())} # يسجل ما هي الحقول التي تم تعديلها
+        )
 
         db.commit() # الحفظ النهائي
         db.refresh(db_order)

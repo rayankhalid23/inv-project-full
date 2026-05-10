@@ -25,6 +25,9 @@ from app.services.pdf_generator import generate_catalog_pdf
 from app.crud.inventory_sync import sync_product_metrics
 from app.utils import delete_old_image
 
+from app.services.audit_service import create_system_audit_log,log_product_data_update
+
+
 router = APIRouter(prefix="/products", tags=["Products"])
 UPLOAD_DIR = "static/uploads/products"
 
@@ -44,6 +47,7 @@ async def create_product(
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2]))
 ):
+    image_path = None
     # تحققات السلامة (Validation)
     if not name or name.strip().lower() == "string":
         raise HTTPException(status_code=400, detail="اسم المنتج غير صالح أو فارغ")
@@ -51,6 +55,11 @@ async def create_product(
     try:
         if db.query(Product).filter(Product.name == name, Product.deleted_at == None).first():
             raise HTTPException(status_code=400, detail="هذا الاسم موجود مسبقاً")
+        
+        # إنشاء المنتج مع كود تلقائي
+        max_id = db.query(func.max(Product.id)).scalar()
+        next_id = (max_id or 0) + 1
+        product_code = f"PROD-{next_id:05d}"
 
         # حفظ الصورة
         image_path = None
@@ -64,9 +73,6 @@ async def create_product(
             except Exception as e:
                 raise HTTPException(status_code=500, detail="حدث خطأ أثناء حفظ صورة المنتج")
 
-        # إنشاء المنتج مع كود تلقائي
-        last_p = db.query(Product).order_by(Product.id.desc()).first()
-        product_code = str((last_p.id + 1) if last_p else 1)
 
         new_product = Product(
             name=name, catalog_id=catalog_id, selling_price=selling_price,
@@ -75,17 +81,32 @@ async def create_product(
             created_by=current_user.id
         )
         db.add(new_product)
+        db.flush()
+        
+        
+        # 5. تسجيل العملية في سجل الرقابة (Audit Log)
+        create_system_audit_log(
+          db=db,
+          user_id=current_user.id,
+          action_target="product",
+          target_id=new_product.id,
+          action_type="create",
+          details={"name": name, "code": product_code, "price": selling_price}
+        )
+
         db.commit()
         db.refresh(new_product)
+
         return {"status": "success", "data": new_product}
     
     except HTTPException as he:
         raise he
     except Exception as e:
         db.rollback()
+        # حذف الصورة إذا تم رفعها وفشلت عملية قاعدة البيانات
+        if image_path and os.path.exists(image_path):
+            os.remove(image_path)
         raise HTTPException(status_code=500, detail=f"خطأ غير متوقع: {str(e)}")
-
-
 @router.put("/{product_id}", status_code=status.HTTP_200_OK)
 async def update_product(
     product_id: int,
@@ -99,44 +120,58 @@ async def update_product(
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2])) 
 ):
-    # 1. البحث عن المنتج
+    # استخدام db.get لضمان الحصول على أحدث نسخة من قاعدة البيانات
     product = db.query(Product).filter(Product.id == product_id, Product.deleted_at == None).first()
     if not product:
-        raise HTTPException(status_code=404, detail="المنتج غير موجود أو قد تم حذفه.")
-
-    # 2. تحديث الاسم
-    if name is not None:
-        clean_name = name.strip()
-        if clean_name and clean_name.lower() != "string" and clean_name != product.name:
-            existing = db.query(Product).filter(Product.name == clean_name, Product.id != product_id, Product.deleted_at == None).first()
-            if existing:
-                raise HTTPException(status_code=400, detail="هذا الاسم مستخدم لمنتج آخر بالفعل.")
-            product.name = clean_name
-
-    # 3. تحديث الحقول الرقمية
-    if catalog_id is not None and catalog_id > 0:
-        product.catalog_id = catalog_id
+        raise HTTPException(status_code=404, detail="المنتج غير موجود.")
     
-    if selling_price is not None and selling_price > 0:
-        product.selling_price = selling_price
-        
-    if cost_price is not None and cost_price > 0:
-        product.cost_price = cost_price
-        
-    if min_stock_threshold is not None and min_stock_threshold >= 0:
-        product.min_stock_threshold = min_stock_threshold
+    # 1. التقاط الحالة القديمة "قبل التعديل" مباشرة
+    # نستخدم dict(vars(product)) أو بناء يدوي لضمان عدم تأثرها بالـ Session لاحقاً
+    old_snapshot = {
+        "name": product.name,
+        "catalog_id": product.catalog_id,
+        "cost_price": float(product.cost_price or 0.0),
+        "selling_price": float(product.selling_price or 0.0),
+        "min_stock_threshold": product.min_stock_threshold,
+        "description": product.description,
+        "main_image": product.main_image
+    }
 
-    # 4. تحديث الوصف
-    if description is not None:
-        clean_desc = description.strip()
-        if clean_desc and clean_desc.lower() != "string":
-            product.description = clean_desc
-
-    # 5. معالجة الصورة
+    has_actual_changes = False
     saved_path = None
-    if image_file and image_file.filename:
-        try:
-            old_image_path = product.main_image
+
+    try:
+        # تحديث الاسم
+        if name and name.strip().lower() != "string" and name.strip() != product.name:
+            if db.query(Product).filter(Product.name == name.strip(), Product.id != product_id, Product.deleted_at == None).first():
+                raise HTTPException(status_code=400, detail="الاسم مستخدم مسبقاً.")
+            product.name = name.strip()
+            has_actual_changes = True
+
+        # تحديث الكتالوج
+        if catalog_id is not None and catalog_id > 0 and catalog_id != product.catalog_id:
+            product.catalog_id = catalog_id
+            has_actual_changes = True
+
+        # تحديث الأسعار
+        if selling_price is not None and selling_price > 0 and float(selling_price) != float(product.selling_price or 0.0):
+            product.selling_price = selling_price
+            has_actual_changes = True
+
+        if cost_price is not None and cost_price > 0 and float(cost_price) != float(product.cost_price or 0.0):
+            product.cost_price = cost_price
+            has_actual_changes = True
+
+        # تحديث الوصف
+        if description is not None:
+            clean_desc = description.strip()
+            if clean_desc.lower() != "string" and clean_desc != (product.description or ""):
+                product.description = clean_desc
+                has_actual_changes = True
+
+        # تحديث الصورة (المكان الذي كان يسبب التكرار)
+        if image_file and image_file.filename:
+            old_img_path = product.main_image
             ext = os.path.splitext(image_file.filename)[1]
             filename = f"{uuid.uuid4().hex}{ext}"
             saved_path = os.path.join(UPLOAD_DIR, filename)
@@ -145,26 +180,42 @@ async def update_product(
                 shutil.copyfileobj(image_file.file, buffer)
             
             product.main_image = saved_path
+            has_actual_changes = True
             
-            if old_image_path and os.path.exists(old_image_path):
-                try: os.remove(old_image_path)
+            # نحذف القديمة فقط بعد التأكد من نجاح حفظ الجديدة في الذاكرة
+            if old_img_path and os.path.exists(old_img_path):
+                try: os.remove(old_img_path)
                 except: pass
-        except Exception as e:
-            raise HTTPException(status_code=500, detail="فشل في معالجة وحفظ الصورة الجديدة.")
 
-    # 6. الحفظ النهائي
-    try:
-        product.updated_at = datetime.utcnow() 
+        if not has_actual_changes:
+            return {"status": "success", "message": "لا يوجد تغييرات فعلية.", "data": product}
+
+        # 2. مزامنة التغييرات مع قاعدة البيانات مؤقتاً لنحصل على الحالة الجديدة
+        db.flush()
+
+        new_snapshot = {
+            "name": product.name,
+            "catalog_id": product.catalog_id,
+            "cost_price": float(product.cost_price or 0.0),
+            "selling_price": float(product.selling_price or 0.0),
+            "min_stock_threshold": product.min_stock_threshold,
+            "description": product.description,
+            "main_image": product.main_image
+        }
+
+        # 3. إرسال البيانات للمراقبة
+        log_product_data_update(db, current_user.id, product.id, old_snapshot, new_snapshot)
+        
+        product.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(product)
         return {"status": "success", "message": "تم التحديث بنجاح", "data": product}
+
     except Exception as e:
         db.rollback()
-        if saved_path and os.path.exists(saved_path):
-            os.remove(saved_path)
-        raise HTTPException(status_code=500, detail="حدث خطأ في قاعدة البيانات أثناء محاولة تحديث المنتج.")
-
-
+        if saved_path and os.path.exists(saved_path): os.remove(saved_path)
+        raise e
+        
 @router.get("/dashboard", response_model=PaginatedProductDashboard)
 async def get_products_dashboard(
     page: int = Query(1, ge=1, description="رقم الصفحة"),
@@ -270,10 +321,11 @@ async def get_product_details(
 @router.get("/export-pdf")
 def export_products_pdf(
     size_name: str = Query(None),
-    category_id: int = Query(None),
+    catalog_id: int = Query(None),
     product_name: str = Query(None),
     product_ref: str = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2, 3]))
 ):
     query = db.query(Product).filter(Product.deleted_at == None).options(
         joinedload(Product.colors).joinedload(ProductColor.variants)
@@ -284,8 +336,8 @@ def export_products_pdf(
             and_(ProductVariant.size.has(name=size_name), ProductVariant.quantity_available > 0, ProductVariant.deleted_at == None)
         )))
 
-    if category_id:
-        query = query.filter(Product.category_id == category_id)
+    if catalog_id:
+        query = query.filter(Product.catalog_id == catalog_id)
 
     if product_name:
         query = query.filter(Product.name.icontains(product_name))
@@ -301,10 +353,20 @@ def export_products_pdf(
         buffer = io.BytesIO()
         generate_catalog_pdf(products_data, buffer)
         buffer.seek(0)
+        create_system_audit_log(
+          db=db,
+          user_id=current_user.id, # ستحتاج لإضافة current_user كـ Depends في هذه الدالة
+          action_target="report",
+          target_id=0,
+          action_type="export_pdf",
+          details={"type": "catalog"}
+          )
+
         return StreamingResponse(
             buffer, 
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=BELLAGIO_Catalog.pdf"}
+
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail="فشل في توليد ملف الـ PDF")
@@ -312,7 +374,11 @@ def export_products_pdf(
 
 
 @router.get("/variant/{variant_id}")
-def export_single_qr(variant_id: int, db: Session = Depends(get_db)):
+def export_single_qr(
+    variant_id: int,
+     db: Session = Depends(get_db),
+     current_user = Depends(RoleChecker([1, 2, 3]))
+     ):
     """تصدير ملصق QR لمقاس معين (Single Variant)"""
     try:
         # استدعاء الخدمة المعدلة التي تعالج اللغة العربية داخلياً
@@ -335,7 +401,11 @@ def export_single_qr(variant_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="فشل في توليد ملف الـ QR.")
 
 @router.get("/product/{product_id}")
-def export_product_qrs(product_id: int, db: Session = Depends(get_db)):
+def export_product_qrs(
+    product_id: int,
+     db: Session = Depends(get_db),
+     current_user = Depends(RoleChecker([1, 2, 3]))
+     ):
     """تصدير ملصقات QR لجميع مقاسات منتج معين (Full Product)"""
     try:
         pdf_buffer = QRGeneratorService.get_product_all_qrs_pdf(db, product_id)
@@ -345,6 +415,15 @@ def export_product_qrs(product_id: int, db: Session = Depends(get_db)):
                 status_code=404, 
                 detail="لا توجد بيانات مقاسات لهذا المنتج أو المنتج غير موجود."
             )
+
+        create_system_audit_log(
+         db=db,
+         user_id=current_user.id, # ستحتاج لإضافة current_user كـ Depends في هذه الدالة
+         action_target="report",
+         target_id=0,
+         action_type="export_pdf",
+         details={"type": "catalog"}
+        )     
             
         return StreamingResponse(
             pdf_buffer, 
@@ -355,7 +434,10 @@ def export_product_qrs(product_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="خطأ في استخراج رموز المنتج.")
 
 @router.get("/all")
-def export_all_active_qrs(db: Session = Depends(get_db)):
+def export_all_active_qrs(
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2, 3]))
+    ):
     """تصدير ملصقات QR لجميع المنتجات النشطة في المخزون"""
     try:
         pdf_buffer = QRGeneratorService.get_all_active_qrs_pdf(db)
@@ -365,6 +447,15 @@ def export_all_active_qrs(db: Session = Depends(get_db)):
                 status_code=404, 
                 detail="المخزون فارغ حالياً، لا توجد رموز لتصديرها."
             )
+
+        create_system_audit_log(
+            db=db,
+            user_id=current_user.id, # ستحتاج لإضافة current_user كـ Depends في هذه الدالة
+            action_target="report",
+            target_id=0,
+            action_type="export_pdf",
+            details={"type": "catalog"}
+        )    
             
         return StreamingResponse(
             pdf_buffer, 

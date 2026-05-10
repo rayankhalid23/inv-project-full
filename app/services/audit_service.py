@@ -13,7 +13,7 @@ except ImportError:
 
 def create_inventory_log(db: Session, variant_id: int, product_id: int, user_id: int, 
                          movement_type: str, quantity_change: int, quantity_before: int, 
-                         related_order_id: int = None, damage_reason: str = None, notes: str = None):
+                         related_order_id: int = None, damage_reason: str = None, notes: str = None,details=None):
     """
     المحرك الخام لتسجيل أي حركة في المخزون.
     """
@@ -43,7 +43,7 @@ def create_order_action_log(db: Session, order_id: int, user_id: int, action_typ
         user_id=user_id,
         action_type=action_type,
         details=details,
-        notes=notes
+    
     )
     db.add(new_action)
     return new_action
@@ -69,15 +69,44 @@ def create_system_audit_log(db: Session, user_id: int, action_target: str, targe
 
 # --- دوال الرقابة المتخصصة (Specialized Loggers) ---
 
-def log_product_data_update(db: Session, admin_id: int, product_id: int, old_product: dict, new_product: dict, ip: str = None):
-    all_changes = {}
-    basic_fields = ['name', 'code', 'cost_price', 'selling_price']
-    field_changes = {f: {"from": old_product.get(f), "to": new_product.get(f)} 
-                     for f in basic_fields if old_product.get(f) != new_product.get(f)}
-    
-    if field_changes: all_changes['basic_info'] = field_changes
-    return create_system_audit_log(db, admin_id, 'product', product_id, 'updated', all_changes, ip)
+def log_product_data_update(db, admin_id, product_id, old_product, new_product):
+    changes = {}
 
+    fields_to_track = [
+        "name", "catalog_id", "selling_price", 
+        "cost_price", "min_stock_threshold", 
+        "description", "main_image"
+    ]
+
+    for field in fields_to_track:
+        old_val = old_product.get(field)
+        new_val = new_product.get(field)
+
+        # التعامل مع الأسعار (تحويل دقيق للـ Float)
+        if field in ["selling_price", "cost_price"]:
+            if round(float(old_val or 0), 2) != round(float(new_val or 0), 2):
+                changes[field] = {"من": old_val, "إلى": new_val}
+        
+        # التعامل مع النصوص والكتالوج
+        elif field != "main_image":
+            if old_val != new_val:
+                changes[field] = {"من": old_val, "إلى": new_val}
+        
+        # التعامل الخاص مع الصورة: لا تسجل تغييراً إلا إذا كان المسار مختلفاً فعلاً
+        else:
+            if old_val != new_val and new_val is not None:
+                # التحقق أن المسار الجديد ليس فارغاً وأنه تغير عن المسار القديم
+                changes[field] = {"التحديث": "تم رفع صورة جديدة"}
+
+    if changes:
+        create_system_audit_log(
+            db=db,
+            user_id=admin_id,
+            action_target="product",
+            target_id=product_id,
+            action_type="updated",
+            details=changes
+        )
 # 3. رقابة الطلبات
 def log_order_qr_scan(db: Session, user_id: int, order_id: int, variant_id: int, qr_code: str):
     details = {"variant_id": variant_id, "scanned_qr_code": qr_code}
@@ -100,3 +129,19 @@ def log_order_initialization(db, user_id, order_id, customer_name, source):
     )
     db.add(new_action)
     # لا تقم بعمل db.commit() هنا لأن الدالة الأساسية ستقوم بذلك
+
+
+
+def log_color_action(db: Session, user_id: int, color_id: int, action_type: str, details: dict, ip: str = None):
+    """
+    سجل خاص بعمليات الألوان (إضافة، تعديل، حذف)
+    """
+    return create_system_audit_log(
+        db=db,
+        user_id=user_id,
+        action_target="product_color",
+        target_id=color_id,
+        action_type=action_type,
+        details=details,
+        ip_address=ip
+    )    

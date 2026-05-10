@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.services.order_service import get_inventory_dashboard_stats
 from app.core.websocket_manager import ConnectionManager
 from typing import List
+from app.services.audit_service import create_order_action_log
 import json
 from app.models.user import User
 from app.core.deps import get_current_active_user
@@ -238,12 +239,27 @@ def test_inventory_stats(db: Session = Depends(get_db)):
         )
 
 @router.get("/orders/{order_id}/invoice")
-async def get_order_invoice(order_id: int, db: Session = Depends(get_db)):
+async def get_order_invoice(order_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
     # 1. جلب البيانات من الدالة القوية التي صنعناها سابقاً
     order_data = await get_order_full_details_logic(db, order_id)
     if not order_data:
         raise HTTPException(status_code=404, detail="Order not found")
     
+
+    create_order_action_log(
+        db=db,
+        order_id=order_id,
+        user_id=current_user.id,
+        action_type="invoice_downloaded",
+        notes="تم تصدير فاتورة الطلب كملف PDF"
+    )
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Error logging invoice generation: {e}")
+
     # 2. توليد الـ PDF
     pdf_buffer = OrderInvoiceService.generate_order_pdf(order_data)
     

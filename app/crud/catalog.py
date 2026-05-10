@@ -1,20 +1,21 @@
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
-from app.models.inventory import Catalog, Product
+from app.models.inventory import Catalog
+from app.services.audit_service import create_system_audit_log
 from datetime import datetime
 from typing import Optional
 
-def get_catalogs(db: Session, status: str = "active"):
+def get_catalogs(db: Session, status_filter: str = "active"):
     """جلب قائمة الكتالوجات بناءً على حالتها (نشط/محذوف)."""
     query = db.query(Catalog)
-    if status == "active":
+    if status_filter == "active":
         return query.filter(Catalog.deleted_at == None).all()
-    elif status == "deleted":
+    elif status_filter == "deleted":
         return query.filter(Catalog.deleted_at != None).all()
     return query.all()
     
 def create_catalog(db: Session, catalog_in: dict, user_id: int):
-    """إنشاء كتالوج جديد مع التحقق من تكرار الاسم لضمان عدم التضارب."""
+    """إنشاء كتالوج جديد مع تسجيل الرقابة الإدارية."""
     existing = db.query(Catalog).filter(Catalog.name == catalog_in.name, Catalog.deleted_at == None).first()
     if existing:
         raise HTTPException(
@@ -24,68 +25,74 @@ def create_catalog(db: Session, catalog_in: dict, user_id: int):
 
     new_catalog = Catalog(name=catalog_in.name, created_by=user_id)
     db.add(new_catalog)
+    db.flush() # لحجز ID الكتالوج قبل استخدامه في سجل الرقابة
+    
+    # تسجيل عملية الإنشاء في الرقابة الإدارية
+    create_system_audit_log(
+        db=db, user_id=user_id, action_target='catalog', 
+        target_id=new_catalog.id, action_type='create', 
+        details={"name": new_catalog.name}
+    )
+
     db.commit()
     db.refresh(new_catalog)
+    return new_catalog
 
-
-    return {
-        "status": "success",
-        "message": "تم انشاء كاتولاج جديد بنجاح" 
-    }
-
-def update_catalog(db: Session, catalog_id: int, name: str):
-    """تحديث بيانات الكتالوج مع فحص القيود لضمان تفرد الأسماء."""
+def update_catalog(db: Session, catalog_id: int, name: str, user_id: int):
+    """تحديث بيانات الكتالوج وتسجيل القيم القديمة والجديدة."""
     catalog = db.query(Catalog).filter(Catalog.id == catalog_id, Catalog.deleted_at == None).first()
     if not catalog:
         raise HTTPException(status_code=404, detail="خطأ: لم يتم العثور على الكتالوج المطلوب")
+
+    old_name = catalog.name
 
     existing = db.query(Catalog).filter(Catalog.name == name, Catalog.id != catalog_id, Catalog.deleted_at == None).first()
     if existing:
         raise HTTPException(status_code=400, detail="فشل التحديث: هذا الاسم محجوز لكتالوج آخر")
 
     catalog.name = name
+    
+    # تم تصحيح: admin_id -> user_id | new_name -> name
+    create_system_audit_log(
+        db=db, user_id=user_id, action_target='catalog', 
+        target_id=catalog_id, action_type='update', 
+        details={"old_name": old_name, "new_name": name}
+    )    
+    
     db.commit()
     db.refresh(catalog)
+    return catalog
 
-
-    return {
-        "status": "success",
-        "message": "تم التعديل بنجاح"
-    }
-
-# 3. تبديل الحالة (تنشيط / إلغاء تنشيط)
-def toggle_catalog_status(db: Session, catalog_id: int):
+def toggle_catalog_status(db: Session, catalog_id: int, user_id: int):
+    """تبديل حالة التنشيط وتسجيل الحركة."""
     catalog = db.query(Catalog).filter(Catalog.id == catalog_id).first()
     if not catalog:
         raise HTTPException(status_code=404, detail="الكتالوج غير موجود")
     
-    # عكس الحالة الحالية
     catalog.is_active = not catalog.is_active
+
+    # تم تصحيح: admin_id -> user_id
+    create_system_audit_log(
+        db=db, user_id=user_id, action_target='catalog', 
+        target_id=catalog_id, action_type='toggle_status', 
+        details={"is_active": catalog.is_active}
+    )
+
     db.commit()
     db.refresh(catalog)
-    
-    status_text = "تنشيطه" if catalog.is_active else "تعطيله"
-    return {"status": "success", "message": f"تم {status_text} الكتالوج بنجاح", "is_active": catalog.is_active}
-
-
-
+    return catalog
 
 def get_catalogs_summary(db: Session):
-    """
-    جلب ملخص الكتالوجات (المعرف، الاسم، الحالة) فقط.
-    يتم استثناء المحذوف منها (deleted_at == None).
-    """
-    # جلب الحقول المحددة فقط لتحسين الأداء
+    """جلب ملخص الكتالوجات لتحسين أداء القوائم المنسدلة."""
     results = db.query(Catalog.id, Catalog.name, Catalog.is_active).filter(
         Catalog.deleted_at == None
     ).all()
     
-    # تحويل النتائج إلى قائمة مرتبة
     return [
         {
             "id": item.id,
             "name": item.name,
             "status": "نشط" if item.is_active else "معطل",
-            "is_active": item.is_active # مفيد للاستخدام البرمجي في Frontend
+            "is_active": item.is_active 
         } for item in results
     ]

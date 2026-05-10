@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_, desc
 from datetime import datetime, timedelta
 from typing import Optional, List
+import asyncio
 from fastapi import HTTPException, status
 from app.models.inventory import Product, ProductVariant,InventoryMovement
 from app.services.audit_service import create_inventory_log
@@ -91,7 +92,7 @@ def record_return_to_stock(db: Session, variant_id: int, user_id: int, quantity:
         variant_id=variant_id, 
         product_id=variant.product_id, # سيستخدم الـ property التي تجلب الـ id من اللون
         user_id=user_id,
-        movement_type='return_to_stock', 
+        movement_type='return', 
         quantity_change=quantity,
         quantity_before=quantity_before, 
         related_order_id=order_id, 

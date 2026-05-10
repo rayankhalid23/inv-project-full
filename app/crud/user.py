@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError
 from fastapi import HTTPException, status
 from app.models.user import User
+from app.services.audit_service import create_system_audit_log
 from sqlalchemy import or_
 from app.models.role import Role
 from app.schemas.user import UserCreate, UserUpdate
@@ -20,6 +21,7 @@ def get_users(db: Session, status: Optional[str] = "active"):
     }
     current_filter = filters.get(status, filters["active"])
     return query.filter(*current_filter).all()
+
 def create_user(db: Session, user_in: UserCreate , admin_id: int):
     """إضافة موظف جديد مع فحص الرتبة والبيانات الفريدة (هاتف/اسم)."""
     try:
@@ -50,16 +52,17 @@ def create_user(db: Session, user_in: UserCreate , admin_id: int):
             is_active=True
         )
         db.add(db_user)
+        db.flush()
+
+        create_system_audit_log(
+            db=db, user_id=admin_id, action_target='user', target_id=db_user.id,
+            action_type='create', details={"name": db_user.name, "role_id": db_user.role_id}
+        )
+
         db.commit()
         db.refresh(db_user)
 
-      
-
-        return {
-           "status": "success",
-           "message": f"تمت إضافة الموظف/ {db_user.name} بنجاح إلى النظام.",
-           "data": db_user
-        }
+        return db_user
 
     except OperationalError:
         db.rollback()
@@ -70,16 +73,24 @@ def update_user(db: Session, target_user_id: int, user_in: UserUpdate, current_u
     target_user = db.query(User).filter(User.id == target_user_id, User.deleted_at == None).first()
     if not target_user:
         raise HTTPException(status_code=404, detail="الموظف المطلوب غير موجود في النظام.")
+    
 
-    # 2. تحويل البيانات المرسلة إلى قاموس
-    is_self_update = (target_user.id == current_user.id)
+    # --- حل المشكلة: حفظ البيانات القديمة قبل التعديل ---
+    old_data = {
+        "name": target_user.name,
+        "phone": target_user.phone,
+        "role_id": target_user.role_id
+    }
+
+
+    
     update_data = user_in.model_dump(exclude_unset=True)
-
     if not update_data:
         raise HTTPException(status_code=400, detail="لم يتم إرسال أي بيانات جديدة لتعديلها.")
 
     # متغير لمراقبة ما إذا كانت الرتبة ستتغير فعلياً
     role_was_changed = False
+    is_self_update = (target_user.id == current_user.id)
 
     # --- 3. فحص الصلاحيات ---
     if is_self_update:
@@ -125,24 +136,30 @@ def update_user(db: Session, target_user_id: int, user_in: UserUpdate, current_u
         for field, value in update_data.items():
             if hasattr(target_user, field):
                 setattr(target_user, field, value)
+
+        # --- إضافة التتبع ---
+        create_system_audit_log(
+        db=db, user_id=current_user.id, action_target='user', target_id=target_user_id,
+        action_type='update', details={"changes": update_data, "previous_state": old_data}
+         )        
         
         db.commit()
         db.refresh(target_user)
+        
+
     except Exception as e:
         db.rollback()
         print(f"Update Error: {str(e)}")
         raise HTTPException(status_code=500, detail="فشل تحديث البيانات في قاعدة البيانات.")
 
-    # --- 7. استجابة النجاح ---
-    # اختيار الرسالة المناسبة بناءً على تغير الرتبة
-    if role_was_changed:
-        final_message = "تم تحديث بيانات الموظف بنجاح. يرجى إبلاغ الموظف بتسجيل الخروج والدخول مرة أخرى لتفعيل صلاحياته الجديدة."
-    else:
-        final_message = "تم تحديث بيانات الموظف بنجاح."
 
+    final_message = "تم التحديث بنجاح."
+    if role_was_changed:
+        final_message += " يرجى إبلاغ الموظف بإعادة تسجيل الدخول لتفعيل صلاحياته."
     return {
         "status": "success",
         "message": final_message,
+        "data": target_user
     
     }
    
@@ -154,6 +171,12 @@ def soft_delete_user(db: Session, user_id: int, admin_id: int):
         
     db_user.deleted_at = datetime.now()
     db_user.is_active = False 
+
+    # --- إضافة التتبع ---
+    create_system_audit_log(
+        db=db, user_id=admin_id, action_target='user', target_id=user_id,
+        action_type='delete', details={"name": db_user.name}
+    )
 
     db.commit()
     db.refresh(db_user)
@@ -169,6 +192,12 @@ def restore_user(db: Session, user_id: int, admin_id: int):
     
     db_user.deleted_at = None 
     db_user.is_active = True  
+
+    # --- إضافة التتبع ---
+    create_system_audit_log(
+        db=db, user_id=admin_id, action_target='user', target_id=user_id,
+        action_type='restore', details={"name": db_user.name}
+    )
 
     db.commit()
     db.refresh(db_user)

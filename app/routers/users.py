@@ -4,6 +4,7 @@ from typing import List, Optional
 from app.crud import user as crud_user  # أضف 'as crud_user' ليعرف الكود هذا الاسم
 
 from app.core.database import get_db
+from app.services.audit_service import create_system_audit_log
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 from app.models.user import User
 from app.core.deps import get_current_active_user, RoleChecker,get_current_user
@@ -12,20 +13,24 @@ from app.crud import user as crud_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
-@router.post("/")
+@router.post("/", response_model=UserResponse) # أضفنا response_model ليكون احترافياً
 def add_new_user(
     user: UserCreate, 
     db: Session = Depends(get_db), 
     current_user: User = Depends(RoleChecker([1, 2]))
 ):
-    # المدير (Role 2) يضيف موظفين (Role 3) فقط
+    # 1. التحقق من الصلاحيات
     if current_user.role_id == 2 and user.role_id != 3:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="صلاحياتك كمدير تسمح لك بإضافة موظفين (الرتبة 3) فقط."
         )
-    return create_user(db=db, user_in=user , admin_id=current_user.id)
 
+    # 2. إنشاء المستخدم (مرة واحدة فقط)
+    db_user = create_user(db=db, user_in=user, admin_id=current_user.id)
+
+
+    return db_user
 
 
 
@@ -41,12 +46,13 @@ def update_existing_user(
     تعديل بيانات موظف (يدعم التعديل الجزئي والصلاحيات)
     """
     # 👈 هنا نمرر البيانات بالأسماء الجديدة التي تتطابق مع دالة CRUD
-    return update_user(
-        db=db, 
-        target_user_id=user_id, 
-        user_in=user_in, 
-        current_user=current_user
-    )
+    result = update_user(
+        db=db,
+         target_user_id=user_id, 
+         user_in=user_in, 
+         current_user=current_user)
+   
+    return result
 
 
 # ---------------------------------------------------------
