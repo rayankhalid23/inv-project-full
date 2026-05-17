@@ -5,13 +5,21 @@ from app.services.audit_service import create_system_audit_log
 from datetime import datetime
 from typing import Optional
 
-def get_catalogs(db: Session, status_filter: str = "active"):
-    """جلب قائمة الكتالوجات بناءً على حالتها (نشط/محذوف)."""
-    query = db.query(Catalog)
-    if status_filter == "active":
-        return query.filter(Catalog.deleted_at == None).all()
-    elif status_filter == "deleted":
-        return query.filter(Catalog.deleted_at != None).all()
+def get_catalogs(db: Session, status_filter: str = "الكل"):
+    """
+    جلب الكتالوجات بناءً على الحالة النشطة مع استبعاد المحذوف منطقياً (Soft Deleted).
+    بناءً على مخطط الجدول في image_48595a.png
+    """
+    # القاعدة الأساسية: لا نجلب أي كتالوج تم حذفه (deleted_at ليس نول)
+    query = db.query(Catalog).filter(Catalog.deleted_at == None)
+    
+    if status_filter == "نشط":
+        return query.filter(Catalog.is_active == True).all()
+    
+    elif status_filter == "غير نشط":
+        return query.filter(Catalog.is_active == False).all()
+    
+    # في حالة "الكل" يجلب كل ما هو غير محذوف (سواء نشط أو غير نشط)
     return query.all()
     
 def create_catalog(db: Session, catalog_in: dict, user_id: int):

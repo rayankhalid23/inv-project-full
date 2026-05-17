@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import OperationalError
+from sqlalchemy import func
 from fastapi import HTTPException, status
 from app.models.user import User
 from app.services.audit_service import create_system_audit_log
@@ -9,6 +10,13 @@ from app.schemas.user import UserCreate, UserUpdate
 from app.core.security import get_password_hash
 from datetime import datetime
 from typing import Optional
+from app.models.user import User
+from app.models.inventory import SystemAuditLog,InventoryMovement,Catalog,Product
+from app.models.order import OrderAction
+
+
+
+
 
 def get_users(db: Session, status: Optional[str] = "active"):
     """جلب الموظفين حسب الحالة (نشط، موقوف، أرشيف)."""
@@ -123,6 +131,17 @@ def update_user(db: Session, target_user_id: int, user_in: UserUpdate, current_u
 
     if "phone" in update_data:
         new_phone = update_data["phone"]
+        
+        # القيد الجديد: يجب أن يبدأ بـ 09 ويكون طوله 10 خانات
+        if not (new_phone.startswith("09") and len(new_phone) == 10 and new_phone.isdigit()):
+            raise HTTPException(
+                status_code=400, 
+                detail="رقم الهاتف غير صحيح. يجب أن يبدأ بـ 09 ويتكون من 10 أرقام تماماً."
+            )
+                    
+
+    if "phone" in update_data:
+        new_phone = update_data["phone"]
         phone_exists = db.query(User).filter(User.phone == new_phone, User.id != target_user_id).first()
         if phone_exists:
             raise HTTPException(status_code=400, detail="رقم الهاتف مسجل بالفعل لموظف آخر.")
@@ -205,38 +224,35 @@ def restore_user(db: Session, user_id: int, admin_id: int):
 
     return db_user
 
-
 def get_all_users_mini(
     db: Session, 
-    query: str = None, 
-    role_id: int = None, 
-    is_active: Optional[bool] = None, # جعلناه Optional للسماح بجلب الجميع
-    include_deleted: bool = False,    # معامل جديد للتحكم في المحذوفين
+    query: Optional[str] = None, 
+    role_id: Optional[int] = None, 
+    is_active: Optional[bool] = None, 
+    include_deleted: bool = False,
     page: int = 1, 
     limit: int = 20
 ):
     offset = (page - 1) * limit
     
-    # الاستعلام الأساسي مع إضافة الحقول المطلوبة
+    # الاستعلام الأساسي مع الربط المباشر بجدول الرتب
     db_query = db.query(
         User.id, 
         User.name, 
         User.phone, 
         User.role_id, 
-        User.is_active,
-        User.deleted_at # أضفناه هنا لنعرف حالة الحذف في الواجهة
-    )
+        User.is_active, 
+        User.deleted_at,
+        Role.name.label("role_name")
+    ).join(Role, User.role_id == Role.id)
 
-    # المنطق الذكي للتعامل مع المحذوفين
+    # 1. منطق سلة المحذوفات
     if include_deleted:
-        # إذا كان المطلوب المحذوفين فقط أو الكل (حسب حاجتك)
-        # هنا سنعرض الموظفين الذين لديهم تاريخ حذف (سلة المحذوفات)
         db_query = db_query.filter(User.deleted_at != None)
     else:
-        # الوضع الافتراضي: عرض الموظفين غير المحذوفين فقط
         db_query = db_query.filter(User.deleted_at == None)
 
-    # البحث الشامل (بالاسم أو الهاتف)
+    # 2. البحث (بالاسم أو الهاتف)
     if query:
         db_query = db_query.filter(
             or_(
@@ -245,18 +261,21 @@ def get_all_users_mini(
             )
         )
 
-    # الفلترة حسب الرتبة
+    # 3. الفلترة حسب الرتبة
     if role_id:
         db_query = db_query.filter(User.role_id == role_id)
 
-    # الفلترة حسب حالة الحساب (نشط / موقوف)
+    # 4. الفلترة حسب حالة الحساب (نشط / موقوف)
     if is_active is not None:
         db_query = db_query.filter(User.is_active == is_active)
 
+    # الحساب الإجمالي بعد الفلترة وقبل التجزئة (Pagination)
     total_count = db_query.count()
+    
+    # جلب النتائج مرتبة
     users_rows = db_query.order_by(User.id.desc()).offset(offset).limit(limit).all()
     
-    # تحويل النتائج إلى قائمة قواميس (لحل مشكلة الـ JSON)
+    # تحويل لقاموس ليتوافق مع JSON
     users_list = []
     for row in users_rows:
         users_list.append({
@@ -264,13 +283,12 @@ def get_all_users_mini(
             "name": row.name,
             "phone": row.phone,
             "role_id": row.role_id,
+            "role_name": row.role_name if row.role_name else "بدون رتبة",
             "is_active": row.is_active,
-            "is_deleted": row.deleted_at is not None # علامة بسيطة للفرونت إند
+            "is_deleted": row.deleted_at is not None 
         })
 
     return {"users": users_list, "total": total_count}
-
-
 
 def get_employee_info(db: Session, user_id: int):
     # جلب المستخدم مع بيانات الرتبة المرتبطة به
@@ -289,4 +307,108 @@ def get_employee_info(db: Session, user_id: int):
         "تاريخ التسجيل": user.created_at.strftime("%Y-%m-%d"),
         "الرتبة": user.role.name if user.role else "غير محدد",
         "الحالة": "نشط" if user.is_active else "موقف"
+    }
+
+
+def get_user_full_activity_stats(db: Session, user_id: int):
+    # 1. جلب بيانات المستخدم مع الرتبة (للهوية الشخصية والتحقق من الصلاحيات)
+    user = db.query(User).options(joinedload(User.role)).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="الموظف غير موجود في النظام"
+        )
+
+    # تحديد ما إذا كان المستخدم موظفاً عادياً (لتقييد رؤية بعض الإحصائيات)
+    is_employee = user.role_id == 3
+
+    # --- الجزء الأول: بناء معلومات الهوية (employee_info) ---
+    employee_info = {
+        "الاسم": user.name,
+        "رقم الهاتف": user.phone,
+        "تاريخ التسجيل": user.created_at.strftime("%Y-%m-%d"),
+        "الرتبة": user.role.name if user.role else "غير محدد",
+        "الحالة": "نشط" if user.is_active else "موقف"
+    }
+
+    # --- الجزء الثاني: تجميع الإحصائيات من سجلات النظام ---
+
+    # أ. سجل النظام العام (Audit Log)
+    audit_data = db.query(
+        SystemAuditLog.action_target, 
+        SystemAuditLog.action_type, 
+        func.count(SystemAuditLog.id)
+    ).filter(SystemAuditLog.user_id == user_id)\
+     .group_by(SystemAuditLog.action_target, SystemAuditLog.action_type).all()
+
+    audit_map = {(row[0], row[1]): row[2] for row in audit_data}
+
+    # ب. سجل عمليات الطلبات (Order Actions)
+    order_actions = db.query(OrderAction.action_type, func.count(OrderAction.id))\
+                      .filter(OrderAction.user_id == user_id)\
+                      .group_by(OrderAction.action_type).all()
+    order_act_dict = {row[0]: row[1] for row in order_actions}
+
+    # ج. سجل حركة المخزون (Inventory Movements)
+    inv_dict = {}
+    if not is_employee:
+        inv_movements = db.query(InventoryMovement.movement_type, func.count(InventoryMovement.id))\
+                          .filter(InventoryMovement.user_id == user_id)\
+                          .group_by(InventoryMovement.movement_type).all()
+        inv_dict = {row[0]: row[1] for row in inv_movements}
+
+    # --- تنظيم البيانات في المجموعات المطلوبة للفرونت إند ---
+
+    # 1. إحصائيات المنتجات
+    product_stats = {"adds": 0, "updates": 0, "deletes": 0}
+    if not is_employee:
+        for (target, action), count in audit_map.items():
+            if target in ['products', 'catalogs', 'product']:
+                if action in ['create', 'created', 'bulk_variants_created']: product_stats["adds"] += count
+                elif action in ['update', 'updated']: product_stats["updates"] += count
+                elif action in ['delete', 'deleted']: product_stats["deletes"] += count
+
+    # 2. إحصائيات إدارة الموظفين
+    emp_activity_stats = {"adds": 0, "updates": 0, "deletes": 0}
+    if not is_employee:
+        for (target, action), count in audit_map.items():
+            if target in ['users', 'user', 'employees']:
+                if action in ['create', 'created']: emp_activity_stats["adds"] += count
+                elif action in ['update', 'updated', 'toggle_status']: emp_activity_stats["updates"] += count
+                elif action in ['delete', 'deleted']: emp_activity_stats["deletes"] += count
+
+    # 3. إحصائيات الطلبات
+    order_stats = {
+        "adds": order_act_dict.get('created', 0) + order_act_dict.get('order_created', 0),
+        "updates": order_act_dict.get('updated', 0) + order_act_dict.get('order_edit_full', 0) + \
+                   order_act_dict.get('delivery_assigned', 0),
+        "deletes": order_act_dict.get('order_cancelled', 0) + \
+                   audit_map.get(('orders', 'delete'), 0) + \
+                   audit_map.get(('orders', 'deleted'), 0)
+    }
+
+    # 4. اللوجستيات
+    logistics_stats = {
+        "damages": inv_dict.get('damage', 0) + audit_map.get(('inventory', 'mark_damaged_qr'), 0),
+        "returns": inv_dict.get('return', 0) + order_act_dict.get('return', 0),
+        "scans": order_act_dict.get('qr_scanned', 0) + order_act_dict.get('qr_scan_success', 0)
+    }
+
+    # حساب الإجمالي الكلي
+    grand_total = (
+        sum(product_stats.values()) + 
+        sum(emp_activity_stats.values()) + 
+        sum(order_stats.values()) + 
+        sum(logistics_stats.values())
+    )
+
+    # --- النتيجة النهائية المتوافقة تماماً مع React Modal ---
+    return {
+        "employee_info": employee_info,
+        "grand_total": grand_total,
+        "products_activity": product_stats,
+        "employees_activity": emp_activity_stats,
+        "orders_activity": order_stats,
+        "logistics_activity": logistics_stats
     }

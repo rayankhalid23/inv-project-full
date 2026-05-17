@@ -51,3 +51,36 @@ class VariantUpdatePartial(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+
+from pydantic import BaseModel, Field
+from typing import List, Optional
+
+# سكيمة عنصر المتغير داخل المصفوفة
+class VariantFilterItemResponse(BaseModel):
+    variant_id: int
+    product_id: int
+    product_name: str
+    product_code: str
+    color_id: int
+    color_name: Optional[str] = None
+    size_id: int
+    size_name: str
+    quantity_available: int
+    min_stock_threshold: int
+    quantity_reserved: int
+    is_low_stock: bool
+    qr_code: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+# سكيمة الاستجابة الشاملة المحدثة
+class PaginatedVariantFilterResponse(BaseModel):
+    total_count: int = Field(..., description="إجمالي المتغيرات المطابقة")
+    low_stock_count: int = Field(..., description="إجمالي المتغيرات ناقصة المخزون")
+    page: int
+    page_size: int
+    matched_product_ids: List[int] = Field(..., description="قائمة بجميع معرفات المنتجات الفريدة المطابقة للفلاتر (تتأثر بالفلتر ولا تتأثر بالتنقيل)")
+    items: List[VariantFilterItemResponse]

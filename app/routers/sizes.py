@@ -22,6 +22,9 @@ from app.services.audit_service import create_system_audit_log
 
 router = APIRouter(prefix="/sizes", tags=["Sizes"])
 
+
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def add_size(
     name: str, 
@@ -77,24 +80,27 @@ def add_size(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"حدث خطأ غير متوقع في الخادم أثناء إضافة المقاس: {str(e)}")
-
-@router.get("/", summary="جلب أسماء المقاسات فقط")
+        
+@router.get("/", summary="جلب معرفات وأسماء المقاسات")
 def list_sizes(db: Session = Depends(get_db)):
     try:
-        # استعلام لجلب عمود الاسم فقط للمقاسات غير المحذوفة
-        results = db.query(Size.name).filter(Size.deleted_at == None).order_by(Size.sort_order.asc()).all()
+        # 1. نعدل الاستعلام ليشمل العمودين id و name كما يظهر في image_2c2e1a.png
+        results = db.query(Size.id, Size.name)\
+            .filter(Size.deleted_at == None)\
+            .order_by(Size.sort_order.asc())\
+            .all()
         
-        # تحويل النتائج من قائمة صفوف (Rows) إلى قائمة نصوص بسيطة (Strings)
-        # ملاحظة: item تعود هنا كـ Row، لذا نصل للقيمة عبر item[0] أو item.name
-        return [item[0] for item in results]
+        # 2. تحويل النتائج إلى قائمة قواميس (List of Dicts) لسهولة التعامل معها في JSON
+        return [{"id": item.id, "name": item.name} for item in results]
         
     except Exception as e:
-        # تسجيل الخطأ داخلياً (اختياري) ثم رفع استثناء للمستخدم
+        # طباعة الخطأ في السيرفر للتشخيص
+        print(f"Error in list_sizes: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            status_code=500, 
             detail="حدث خطأ فني أثناء محاولة جلب قائمة المقاسات، يرجى المحاولة لاحقاً."
         )
-
+        
 @router.delete("/{size_id}", summary="حذف مقاس مع فحص الارتباط الاحترافي")
 def delete_size(
     size_id: int, 

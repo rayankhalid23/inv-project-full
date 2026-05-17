@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Body, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
+from app.core.database import SessionLocal
 from app.core.database import get_db
 from app.core.deps import get_current_active_user
 from app.schemas.catalog import CatalogCreate, CatalogUpdate, CatalogResponse
@@ -14,9 +15,30 @@ from app.utils import delete_old_image
 
 router = APIRouter(prefix="/catalogs", tags=["Catalogs"])
 
+
+
+@router.get("/names-only", response_model=List[dict])
+def get_catalog_names_for_filter(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker([1, 2, 3]))
+):
+    try:
+        # نحن نحتاج فقط المعرف والاسم للكتالوجات النشطة وغير المحذوفة
+        catalogs = db.query(Catalog.id, Catalog.name)\
+            .filter(Catalog.deleted_at == None, Catalog.is_active == True)\
+            .order_by(Catalog.name.asc())\
+            .all()
+        
+        # تحويل النتائج إلى قائمة قواميس بسيطة
+        return [{"id": c.id, "name": c.name} for c in catalogs]
+    
+    except Exception as e:
+        print(f"Error fetching catalog names: {str(e)}")
+        return []
+
 @router.get("/", response_model=List[CatalogResponse])
 def read_catalogs(
-    status: str = Query("active", enum=["active", "inactive", "deleted", "all"]),
+    status: str = Query("active", enum=["active", "inactive"]),
     db: Session = Depends(get_db), 
     current_user: User = Depends(RoleChecker([1, 2, 3]))
 ):
@@ -26,10 +48,7 @@ def read_catalogs(
         query = query.filter(Catalog.deleted_at == None, Catalog.is_active == True)
     elif status == "inactive":
         query = query.filter(Catalog.deleted_at == None, Catalog.is_active == False)
-    elif status == "deleted":
-        query = query.filter(Catalog.deleted_at != None)
-    elif status == "all":
-        query = query.filter(Catalog.deleted_at == None)
+ 
 
     results = query.order_by(Catalog.created_at.desc()).all()
     
@@ -40,6 +59,8 @@ def read_catalogs(
         final_result.append(catalog_dict)
         
     return final_result
+
+
 
 @router.post("/", response_model=CatalogResponse)
 def add_catalog(

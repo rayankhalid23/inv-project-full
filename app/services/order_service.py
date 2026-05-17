@@ -3,6 +3,7 @@ import traceback
 from app.core.websocket_manager import manager
 from app.services.audit_service import create_system_audit_log
 from typing import Optional
+from sqlalchemy import func, case, and_
 from sqlalchemy import or_, and_, func
 from app.models.inventory import InventoryMovement
 from sqlalchemy.exc import SQLAlchemyError
@@ -300,7 +301,7 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
     if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
 
     q_before = variant.quantity_available
-    variant.quantity_available += 1 # زيادة المخزن
+   
     q_after = variant.quantity_available
 
     # استدعاء الخدمة الموحدة (تقوم بالتحديث والتوثيق والمزامنة في خطوة واحدة)
@@ -329,7 +330,7 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
 
 
     q_before = variant.quantity_available
-    variant.quantity_available -= 1 # خصم من المخزن
+   
     q_after = variant.quantity_available   
 
     # 2. تنفيذ عملية الإتلاف والمزامنة (التي أصلحناها سابقاً)
@@ -379,7 +380,7 @@ async def assign_delivery_logic(db: Session, order_id: int, delivery_data: Deliv
    
 
 
-async def delete_order_logic(db: Session, order_id: int):
+async def delete_order_logic(db: Session, order_id: int, user_id: int):
     """
     إلغاء الطلب وإعادة المخزون بناءً على حالة الطلب الحالية.
     يمنع الحذف إذا كانت الحالة 'shipped'.
@@ -641,7 +642,7 @@ async def update_order_master_logic(db: Session, order_id: int, update_data: Dic
                         db_order.status = 'in_preparation'
 
         db_order.updated_at = datetime.now()
-        db.add(OrderAction(order_id=order_id, user_id=user_id, action_type="order_edit_full"))
+        
 
         create_order_action_log(
             db=db,
@@ -845,26 +846,61 @@ async def get_order_full_details_logic(db: Session, order_id: int):
         }
     }
 
+
 def get_inventory_dashboard_stats(db: Session):
-    # الربط الصحيح باستخدام المسميات الموجودة في الـ Schema الخاصة بك
-    stats = db.query(
-        func.sum(ProductVariant.quantity_available).label("total_available"),
-        func.sum(ProductVariant.quantity_reserved).label("total_reserved"),
-        func.sum(ProductVariant.total_sold).label("total_sold")
-    ).join(ProductColor, ProductColor.id == ProductVariant.product_color_id) \
-     .join(Product, Product.id == ProductColor.product_id) \
-     .filter(
-         ProductVariant.deleted_at.is_(None), 
-         ProductColor.deleted_at.is_(None), 
-         Product.deleted_at.is_(None)
-     ).first()
+    # 1. إحصائيات المنتجات والمخزون (من جداول المنتجات والأنواع)
+    # ملاحظة: استخدمنا جدول Product مباشرة لأن الأعمدة (total_available, etc) موجودة فيه حسب المخطط
+    inventory_stats = db.query(
+        func.count(Product.id).label("total_products_count"),
+        func.sum(Product.total_available).label("total_inventory"),
+        func.sum(Product.total_reserved).label("total_reserved"),
+        func.sum(Product.total_sold).label("total_sold"),
+        func.sum(Product.total_damaged).label("total_damaged"),
+        func.sum(Product.total_returns).label("total_returns")
+    ).filter(Product.deleted_at.is_(None)).first()
+
+    # 2. إحصائيات الطلبات (بناءً على الحالة Status)
+    # نستخدم case للعد بناءً على الحالة في استعلام واحد سريع
+    order_stats = db.query(
+        func.count(Order.id).label("total_orders"),
+        func.sum(case((Order.status == 'pending', 1), else_=0)).label("pending_orders"),
+        func.sum(case((Order.status == 'in_preparation', 1), else_=0)).label("processing_orders")
+    ).filter(Order.deleted_at.is_(None)).first()
+    
+    user_stats = db.query(
+        func.count(User.id).label("total_users"),
+        func.sum(case((and_(User.is_active == True, User.deleted_at.is_(None)), 1), else_=0)).label("active_users"),
+        func.sum(case((User.deleted_at.is_not(None), 1), else_=0)).label("deleted_users"),
+        func.sum(case((User.role_id == 2, 1), else_=0)).label("managers_count"),
+        func.sum(case((User.role_id == 3, 1), else_=0)).label("staff_count")
+    ).first()
 
     return {
-        "total_available": int(stats.total_available or 0),
-        "total_reserved": int(stats.total_reserved or 0),
-        "total_sold": int(stats.total_sold or 0)
+        # بيانات المخزون والمنتجات
+        "inventory": {
+            "total_products": int(inventory_stats.total_products_count or 0),
+            "total_inventory": int(inventory_stats.total_inventory or 0),
+            "total_reserved": int(inventory_stats.total_reserved or 0),
+            "total_sold": int(inventory_stats.total_sold or 0),
+            "damaged": int(inventory_stats.total_damaged or 0),
+            "returns": int(inventory_stats.total_returns or 0),
+            "waste_rate": round((inventory_stats.total_damaged or 0) / (inventory_stats.total_inventory or 1) * 100, 2)
+        },
+        # بيانات الطلبات
+        "orders": {
+            "total": int(order_stats.total_orders or 0),
+            "pending": int(order_stats.pending_orders or 0),
+            "processing": int(order_stats.processing_orders or 0)
+        },
+        # بيانات الموظفين (إضافة قيمة مضافة للوحة التحكم)
+        "users": {
+            "total_system_users": int(user_stats.total_users or 0),
+            "active_now": int(user_stats.active_users or 0),
+            "deleted_history": int(user_stats.deleted_users or 0),
+            "managers_level": int(user_stats.managers_count or 0),
+            "staff_level": int(user_stats.staff_count or 0)
+        }
     }
-
 
 
 # --- الإعدادات العامة (نفس التي استعملناها سابقاً) ---

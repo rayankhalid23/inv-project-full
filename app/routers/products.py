@@ -4,14 +4,19 @@ import shutil
 import math
 import arabic_reshaper
 from bidi.algorithm import get_display
+from app.core.database import SessionLocal
 import io
+from  app.schemas.PD import VariantSchema,ColorSchema,ProductFullDetailSchema
 from datetime import datetime
 from typing import Optional, List
+from app.core.deps import RoleChecker
+from app.core.websocket_manager import manager
 
-from fastapi import APIRouter, Depends, Form, File, UploadFile, status, HTTPException, Query
+from fastapi import APIRouter, Depends, Form, File, UploadFile, status, HTTPException, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import or_, and_, func
+from app.services.order_service import get_inventory_dashboard_stats
 
 # استيراد الموديلات والخدمات الخاصة بالمشروع
 from app.core.database import get_db
@@ -37,6 +42,7 @@ if not os.path.exists(UPLOAD_DIR):
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_product(
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     catalog_id: int = Form(...),
     selling_price: float = Form(...),
@@ -47,7 +53,9 @@ async def create_product(
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2]))
 ):
-    image_path = None
+    disk_image_path = None  # المسار الفعلي على الهارد ديسك (للسيرفر)
+    db_image_path = None    # المسار الذي سيخزن في القاعدة (للمتصفح)
+  
     # تحققات السلامة (Validation)
     if not name or name.strip().lower() == "string":
         raise HTTPException(status_code=400, detail="اسم المنتج غير صالح أو فارغ")
@@ -67,9 +75,14 @@ async def create_product(
             try:
                 ext = os.path.splitext(image_file.filename)[1]
                 filename = f"{uuid.uuid4().hex}{ext}"
-                image_path = os.path.join(UPLOAD_DIR, filename)
-                with open(image_path, "wb") as buffer:
+
+                disk_image_path = os.path.join(UPLOAD_DIR, filename)
+
+
+                with open(disk_image_path, "wb") as buffer:
                     shutil.copyfileobj(image_file.file, buffer)
+
+                db_image_path = f"/static/uploads/products/{filename}"
             except Exception as e:
                 raise HTTPException(status_code=500, detail="حدث خطأ أثناء حفظ صورة المنتج")
 
@@ -77,7 +90,7 @@ async def create_product(
         new_product = Product(
             name=name, catalog_id=catalog_id, selling_price=selling_price,
             cost_price=cost_price, min_stock_threshold=min_stock_threshold,
-            description=description, code=product_code, main_image=image_path,
+            description=description, code=product_code, main_image=db_image_path,
             created_by=current_user.id
         )
         db.add(new_product)
@@ -96,6 +109,7 @@ async def create_product(
 
         db.commit()
         db.refresh(new_product)
+        background_tasks.add_task(refresh_dashboard_ws)
 
         return {"status": "success", "data": new_product}
     
@@ -107,6 +121,9 @@ async def create_product(
         if image_path and os.path.exists(image_path):
             os.remove(image_path)
         raise HTTPException(status_code=500, detail=f"خطأ غير متوقع: {str(e)}")
+
+
+
 @router.put("/{product_id}", status_code=status.HTTP_200_OK)
 async def update_product(
     product_id: int,
@@ -162,6 +179,10 @@ async def update_product(
             product.cost_price = cost_price
             has_actual_changes = True
 
+        if min_stock_threshold is not None and min_stock_threshold >= 0 and min_stock_threshold != product.min_stock_threshold:
+            product.min_stock_threshold = min_stock_threshold
+            has_actual_changes = True    
+
         # تحديث الوصف
         if description is not None:
             clean_desc = description.strip()
@@ -210,112 +231,106 @@ async def update_product(
         db.commit()
         db.refresh(product)
         return {"status": "success", "message": "تم التحديث بنجاح", "data": product}
-
     except Exception as e:
         db.rollback()
         if saved_path and os.path.exists(saved_path): os.remove(saved_path)
         raise e
+
         
-@router.get("/dashboard", response_model=PaginatedProductDashboard)
+@router.get("/dashboard", response_model=List[ProductDashboardItem])
 async def get_products_dashboard(
-    page: int = Query(1, ge=1, description="رقم الصفحة"),
-    size: int = Query(20, ge=1, le=100, description="عدد العناصر في الصفحة"),
+    offset: int = Query(0, ge=0, description="عدد العناصر التي تم تخطيها"),
+    limit: int = Query(20, ge=1, le=100, description="عدد العناصر المراد جلبها في كل سحبة"),
     search: Optional[str] = Query(None, description="بحث بالاسم أو الكود"),
     catalog_id: Optional[int] = Query(None, description="فلترة بالتصنيف"),
-    out_of_stock: bool = Query(False, description="عرض المنتجات المنتهية فقط"),
-    low_stock: bool = Query(False, description="عرض المنتجات التي بها مقاس وصل للحد الأدنى"),
+    size_id: Optional[int] = Query(None, description="فلترة بالمقاس"),
+    out_of_stock: bool = Query(False),
+    low_stock: bool = Query(False),
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2, 3]))
 ):
     try:
+        # بناء الاستعلام الأساسي مع استبعاد المحذوفات
         query = db.query(Product).filter(Product.deleted_at == None)
 
+        # 1. الفلترة بالبحث
         if search:
             search_term = f"%{search}%"
-            query = query.filter(or_(Product.name.ilike(search_term), Product.code.ilike(search_term)))
-        
+            query = query.filter(or_(
+                Product.name.ilike(search_term),
+                Product.code.ilike(search_term)
+            ))
+
+        # 2. الفلترة بالكتالوج
         if catalog_id:
             query = query.filter(Product.catalog_id == catalog_id)
 
-        if out_of_stock:
-            query = query.filter(Product.total_available == 0)
-
-        if low_stock:
-            query = query.filter(
-                Product.colors.any(
-                    and_(
-                        ProductColor.deleted_at == None,
-                        ProductColor.variants.any(
-                            and_(
-                                ProductVariant.deleted_at == None,
-                                ProductVariant.quantity_available <= ProductVariant.min_stock_threshold
-                            )
-                        )
-                    )
+        # 3. الربط للفلترة بالمقاس أو المخزون المنخفض (بناءً على image_2c2e1a.png و image_2c2b38.png)
+        if size_id or low_stock:
+            query = query.join(ProductColor, Product.id == ProductColor.product_id) \
+                         .join(ProductVariant, ProductColor.id == ProductVariant.product_color_id)
+            
+            if size_id:
+                query = query.filter(
+                    ProductVariant.size_id == size_id,
+                    ProductVariant.deleted_at == None
                 )
-            )
 
-        total_items = query.count()
-        if total_items == 0:
-            return PaginatedProductDashboard(total_items=0, total_pages=0, current_page=page, items=[])
+            if low_stock:
+                query = query.filter(
+                    ProductVariant.deleted_at == None,
+                    ProductVariant.quantity_available <= ProductVariant.min_stock_threshold
+                )
+            
+            query = query.distinct()
 
-        total_pages = math.ceil(total_items / size)
-        products = query.options(selectinload(Product.colors)).order_by(Product.created_at.desc()).offset((page - 1) * size).limit(size).all()
+        if out_of_stock:
+            query = query.filter(Product.total_available <= 0)
+
+        # جلب البيانات باستخدام offset و limit للتحميل اللانهائي
+        products = query.options(selectinload(Product.colors)) \
+                        .order_by(Product.created_at.desc()) \
+                        .offset(offset) \
+                        .limit(limit) \
+                        .all()
 
         items = []
         for p in products:
-            active_color_images = [c.color_image for c in p.colors if c.deleted_at is None and c.color_image is not None]
+            # استخراج صور الألوان النشطة (image_2c2b38.png)
+            active_color_images = [
+                c.color_image for c in p.colors 
+                if c.deleted_at is None and c.color_image is not None
+            ]
+            
+            # منطق الصورة الاحترافي:
+            # 1. الصورة الأساسية للمنتج أولاً
+            # 2. إذا لم توجد، يأخذ أول صورة من المتغيرات (الألوان)
+            # 3. إذا لم يوجد شيء، يبقى None (أو نص فارغ حسب الـ Schema)
+            display_main_image = p.main_image
+            if not display_main_image and active_color_images:
+                display_main_image = active_color_images[0]
+
             items.append(ProductDashboardItem(
-                id=p.id, name=p.name, code=p.code, main_image=p.main_image,
-                selling_price=p.selling_price, total_available=p.total_available,
-                total_reserved=p.total_reserved, total_sold=p.total_sold,
+                id=p.id,
+                name=p.name,
+                code=p.code,
+                main_image=display_main_image, # ستكون None إذا لم تتوفر أي صورة
+                selling_price=p.selling_price or 0.0,
+                total_available=p.total_available or 0,
+                total_reserved=p.total_reserved or 0,
+                total_sold=p.total_sold or 0,
                 color_images=active_color_images
             ))
 
-        return PaginatedProductDashboard(total_items=total_items, total_pages=total_pages, current_page=page, items=items)
+        return items
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب بيانات لوحة التحكم")
+        print(f"Developer Log - Error: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="فشل جلب البيانات، تأكد من اتصالات قاعدة البيانات"
+        )
 
-
-@router.get("/{product_id}/details", response_model=ProductDeepDiveOut)
-async def get_product_details(
-    product_id: int,
-    db: Session = Depends(get_db),
-    current_user = Depends(RoleChecker([1, 2, 3]))
-):
-    product = db.query(Product).filter(Product.id == product_id, Product.deleted_at == None).options(
-        selectinload(Product.colors).selectinload(ProductColor.variants).joinedload(ProductVariant.size)
-    ).first()
-
-    if not product:
-        raise HTTPException(status_code=404, detail="المنتج غير موجود أو تم حذفه.")
-
-    tree_colors = []
-    for color in product.colors:
-        if color.deleted_at is not None: continue
-            
-        tree_variants = []
-        for variant in color.variants:
-            if variant.deleted_at is not None: continue
-            tree_variants.append({
-                "id": variant.id,
-                "size_name": variant.size.name if variant.size else "N/A",
-                "quantity_available": variant.quantity_available,
-                "qr_code": variant.qr_code
-            })
-            
-        tree_colors.append({
-            "id": color.id,
-            "color_name": color.color_name,
-            "color_image": color.color_image,
-            "variants": tree_variants
-        })
-
-    return {
-        "id": product.id, "name": product.name, "description": product.description,
-        "selling_price": product.selling_price, "main_image": product.main_image,
-        "colors": tree_colors
-    }
 
 
 @router.get("/export-pdf")
@@ -464,3 +479,92 @@ def export_all_active_qrs(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail="فشل في تصدير الرموز الكلية.")
+
+
+async def refresh_dashboard_ws():
+    # نفتح جلسة جديدة لأن هذه المهمة تعمل في الخلفية بعد رد السيرفر
+    from app.core.database import SessionLocal 
+    db = SessionLocal()
+    try:
+        stats = get_inventory_dashboard_stats(db)
+        await manager.broadcast(stats)
+    finally:
+        db.close()
+
+
+@router.get("/{product_id}/details")
+async def get_product_full_details(
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2, 3])) # الصلاحيات المناسبة
+):
+    """
+    جلب كافة معلومات المنتج التفصيلية:
+    - البيانات الأساسية والمالية.
+    - معلومات الكتالوج.
+    - الألوان المرتبطة وصورها.
+    - المقاسات لكل لون مع الكميات والـ QR Code.
+    """
+    
+    # استخدام Eager Loading لتحميل كافة المستويات في استعلام واحد كفؤ
+    product = db.query(Product).filter(
+        Product.id == product_id, 
+        Product.deleted_at == None
+    ).options(
+        joinedload(Product.catalog), # جلب اسم الكتالوج
+        selectinload(Product.colors) # جلب الألوان
+            .selectinload(ProductColor.variants) # جلب المقاسات داخل الألوان
+            .joinedload(ProductVariant.size) # جلب اسم المقاس
+    ).first()
+
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="المنتج غير موجود أو تم حذفه مسبقاً."
+        )
+
+    # تجهيز مصفوفة الألوان مع تصفية المحذوف منها
+    processed_colors = []
+    for color in product.colors:
+        if color.deleted_at is not None:
+            continue
+            
+        processed_variants = []
+        for variant in color.variants:
+            if variant.deleted_at is not None:
+                continue
+            
+            processed_variants.append({
+                "id": variant.id,
+                "size_id": variant.size_id,
+                "size_name": variant.size.name if variant.size else "N/A",
+                "quantity_available": variant.quantity_available,
+                "qr_code": variant.qr_code
+            })
+            
+        processed_colors.append({
+            "id": color.id,
+            "color_name": color.color_name,
+            "color_image": color.color_image,
+            "variants": processed_variants
+        })
+
+    # إرجاع البيانات النهائية متوافقة مع الـ Schema
+    return {
+        "id": product.id,
+        "name": product.name,
+        "code": product.code,
+        "description": product.description,
+        "catalog_id": product.catalog_id,
+        "catalog_name": product.catalog.name if product.catalog else None,
+        "main_image": product.main_image,
+        "selling_price": product.selling_price or 0.0,
+        "cost_price": product.cost_price or 0.0,
+        "min_stock_threshold": product.min_stock_threshold or 0,
+        "total_available": product.total_available or 0,
+        "total_reserved": product.total_reserved or 0,
+        "total_sold": product.total_sold or 0,
+        "colors": processed_colors
+    }        
+
+    

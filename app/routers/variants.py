@@ -1,11 +1,16 @@
 import os
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List , Optional
 from app.models.user import User 
 from datetime import datetime
+from app.core.database import SessionLocal
 from pydantic import BaseModel
-from app.schemas.inventory import VariantUpdatePartial, VariantCreate
+from app.schemas.inventory import VariantUpdatePartial, VariantCreate,PaginatedVariantFilterResponse,VariantFilterItemResponse
+from app.core.deps import RoleChecker
+from app.core.websocket_manager import manager
+from sqlalchemy import or_, and_
+from fastapi import Query
 
 from app.core.database import get_db
 from app.core.deps import RoleChecker
@@ -14,6 +19,7 @@ from app.utils import generate_variant_qr, delete_old_image
 from app.models.inventory import Product, ProductColor, ProductVariant, Size
 from app.utils import generate_variant_qr
 from app.crud.inventory_sync import sync_product_metrics
+from app.services.order_service import get_inventory_dashboard_stats
 
 # استيراد دوال المراقبة من ملفك
 from app.services.audit_service import (
@@ -29,7 +35,8 @@ router = APIRouter(tags=["Product Variants"])
 @router.post("/batch-create")
 async def create_product_variants(
     product_color_id: int,
-    variants_data: List[VariantCreate], # سيستخدم السكيمة الموحدة من الملف الخارجي
+    variants_data: List[VariantCreate],
+    background_tasks: BackgroundTasks, # سيستخدم السكيمة الموحدة من الملف الخارجي
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2, 3]))
 ):
@@ -101,6 +108,7 @@ async def create_product_variants(
             )
 
             db.commit()
+            background_tasks.add_task(refresh_dashboard_ws)
             return {
                 "status": "success", 
                 "message": f"تم إنشاء {created_count} مقاسات وتوليد أكواد QR بنجاح."
@@ -122,6 +130,7 @@ async def create_product_variants(
 async def update_variant_partial(
     variant_id: int,
     update_data: VariantUpdatePartial,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2])) # الصلاحيات للإدارة والمشرفين
 ):
@@ -194,6 +203,7 @@ async def update_variant_partial(
         # 5. تثبيت كافة التغييرات في خطوة واحدة (Atomic Operation)
         db.commit()
         db.refresh(variant)
+        background_tasks.add_task(refresh_dashboard_ws)
 
         return {
             "status": "success",
@@ -222,6 +232,7 @@ async def update_variant_partial(
 @router.delete("/color/{color_id}", status_code=status.HTTP_200_OK)
 async def delete_color_group(
     color_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2])) # صلاحيات الإدارة فقط
 ):
@@ -287,7 +298,10 @@ async def delete_color_group(
             details={"product_id": color.product_id, "variants_count": len(variants)}
         )
 
+        
+
         db.commit()
+        background_tasks.add_task(refresh_dashboard_ws)
 
         return {"status": "success", "message": "تم حذف اللون وجميع مقاساته بنجاح."}
 
@@ -303,6 +317,7 @@ async def delete_color_group(
 @router.delete("/{variant_id}", status_code=status.HTTP_200_OK)
 async def delete_single_variant(
     variant_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2]))
 ):
@@ -353,6 +368,7 @@ async def delete_single_variant(
 
         # 5. الحفظ والمزامنة
         db.commit()
+        background_tasks.add_task(refresh_dashboard_ws)
         
         return {"status": "success", "message": "تم حذف المقاس المخصص بنجاح."}
 
@@ -365,7 +381,7 @@ async def delete_single_variant(
 
 
 @router.delete("/product/{product_id}")
-async def delete_full_product(product_id: int, db: Session = Depends(get_db),current_user: User = Depends(RoleChecker([1, 2]))):
+async def delete_full_product(product_id: int,background_tasks: BackgroundTasks, db: Session = Depends(get_db),current_user: User = Depends(RoleChecker([1, 2]))):
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product or product.deleted_at:
         raise HTTPException(status_code=404, detail="المنتج غير موجود")
@@ -408,8 +424,129 @@ async def delete_full_product(product_id: int, db: Session = Depends(get_db),cur
         )
 
         db.commit()
+        background_tasks.add_task(refresh_dashboard_ws)
         return {"detail": "تم حذف المنتج وكافة ملحقاته بنجاح"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+async def refresh_dashboard_ws():
+    db = SessionLocal()
+    try:
+        stats = get_inventory_dashboard_stats(db)
+        await manager.broadcast(stats)
+    finally:
+        db.close()
+
+
+
+@router.get("/filter", response_model=PaginatedVariantFilterResponse, status_code=status.HTTP_200_OK)
+async def filter_product_variants(
+    search: Optional[str] = Query(None, description="البحث باسم المنتج أو كود المنتج"),
+    catalog_id: Optional[int] = Query(None, description="معرف الكتالوج/القسم الافتراضي None يعطي الكل"),
+    size_id: Optional[int] = Query(None, description="فلترة بحسب معرف المقاس المحدود"),
+    low_stock_only: bool = Query(False, description="عرض المخزون الناقص فقط (الكمية <= حد الأمان)"),
+    page: int = Query(1, ge=1, description="رقم الصفحة"),
+    page_size: int = Query(20, ge=1, le=100, description="عدد العناصر في الصفحة الواحده"),
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2, 3]))
+):
+    """
+    نظام فلترة ذكي وشامل ومطور:
+    1. يدعم الفلترة بالكتالوج (والافتراضي جلب الكل).
+    2. يعيد قائمة بكافة معرفات المنتجات الفريدة المطابقة لخيارات البحث الحالية.
+    """
+    
+    # 1. بناء الاستعلام الأساسي مع عمل الروابط (Joins) وعزل المحذوف ناعماً
+    query = db.query(
+        ProductVariant,
+        Product.id.label("product_id"),
+        Product.name.label("product_name"),
+        Product.code.label("product_code"),
+        Size.name.label("size_name"),
+        ProductColor.id.label("color_id")
+    ).join(
+        ProductColor, ProductVariant.product_color_id == ProductColor.id
+    ).join(
+        Product, ProductColor.product_id == Product.id
+    ).join(
+        Size, ProductVariant.size_id == Size.id
+    ).filter(
+        ProductVariant.deleted_at == None,
+        ProductColor.deleted_at == None,
+        Product.deleted_at == None
+    )
+
+    # 2. فلتر الكتالوج (إذا كان None أو لم يرسل، يتخطى الشرط تلقائياً ويعرض الكل)
+    if catalog_id is not None:
+        query = query.filter(Product.catalog_id == catalog_id)
+
+    # 3. تطبيق فلتر البحث الذكي (اسم المنتج أو كود المنتج)
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            or_(
+                Product.name.ilike(search_filter),
+                Product.code.ilike(search_filter)
+            )
+        )
+
+    # 4. تطبيق فلتر المقاس
+    if size_id:
+        query = query.filter(ProductVariant.size_id == size_id)
+
+    # 5. تطبيق الفلتر الذكي للمخزون الناقص
+    if low_stock_only:
+        query = query.filter(ProductVariant.quantity_available <= ProductVariant.min_stock_threshold)
+
+    # [مهم جداً] 6. استخراج معرفات المنتجات الفريدة المطابقة للفلاتر بالكامل قبل الـ Pagination
+    # التابع with_entities يغير حقول الـ SELECT بذكاء ليعيد فقط الـ ID الخاص بالمنتج بصيغة DISTINCT
+    matched_product_ids = [
+        row[0] for row in query.with_entities(Product.id).distinct().all()
+    ]
+
+    # 7. حساب العدادات الكلية
+    total_count = query.count()
+    low_stock_count = query.filter(
+        ProductVariant.quantity_available <= ProductVariant.min_stock_threshold
+    ).count()
+
+    # 8. تطبيق نظام التنقيل (Pagination) وترتيب النتائج بحسب النقص أولاً
+    offset = (page - 1) * page_size
+    results = query.order_by(
+        ProductVariant.quantity_available.asc()
+    ).offset(offset).limit(page_size).all()
+
+    # 9. تحويل المخرجات إلى الهيكل المطلوب
+    items = []
+    for row in results:
+        variant, p_id, p_name, p_code, s_name, c_id = row
+        is_low = variant.quantity_available <= variant.min_stock_threshold
+        
+        items.append(
+            VariantFilterItemResponse(
+                variant_id=variant.id,
+                product_id=p_id,
+                product_name=p_name,
+                product_code=p_code,
+                color_id=c_id,
+                size_id=variant.size_id,
+                size_name=s_name,
+                quantity_available=variant.quantity_available,
+                min_stock_threshold=variant.min_stock_threshold,
+                quantity_reserved=variant.quantity_reserved,
+                is_low_stock=is_low,
+                qr_code=variant.qr_code
+            )
+        )
+
+    return PaginatedVariantFilterResponse(
+        total_count=total_count,
+        low_stock_count=low_stock_count,
+        page=page,
+        page_size=page_size,
+        matched_product_ids=matched_product_ids, # الحقل الجديد المضاف
+        items=items
+    )

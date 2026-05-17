@@ -2,7 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* هذا الجزء يضمن أن التطبيق يأخذ عرض الشاشة بالكامل */
+#root {
+  width: 100%;
+  margin: 0;
+  display: block; /* تأكد أنها ليست flex إذا كان هناك مشاكل */
+}
+
 body {
   margin: 0;
-  font-family: sans-serif;
+  display: block;
+  min-width: 100vw;
+  overflow-x: hidden;
 }

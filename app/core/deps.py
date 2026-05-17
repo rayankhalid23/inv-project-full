@@ -7,7 +7,7 @@ from app.core.config import SECRET_KEY, ALGORITHM
 from app.models.user import User
 
 # تعريف مخطط الأمان لاستخراج التوكن من الـ Header (Bearer Token)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     """
     التحقق من هوية المستخدم، فك تشفير التوكن، والتأكد من حالة الحساب (نشط وغير محذوف).
@@ -72,3 +72,12 @@ class RoleChecker:
                 detail=f"وصول مرفوض: دورك الوظيفي لا يسمح بدخول هذا القسم"
             )
         return current_user
+
+
+from fastapi import Depends, HTTPException, status
+from app.models import User
+
+
+def get_reporting_user(current_user: User = Depends(get_current_user)):
+    # هذه الدالة فقط تمرر المستخدم للخدمة لنتحقق من رتبته هناك
+    return current_user       

@@ -2,6 +2,7 @@ from typing import List, Any, Optional, Dict
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
+from app.core.database import SessionLocal
 
 from app.core.database import init_db
 from app.core.database import get_db
