@@ -32,7 +32,7 @@ const MainLayout = ({ children }) => {
 
     const filteredSidebarItems = sidebarItems.filter(item => {
       if (!item.roles) return true;
-      return item.roles.includes(roleId);
+      return item.roles.includes(Number(roleId));
     });
 
   const NavItem = ({ item, isMobile = false }) => {

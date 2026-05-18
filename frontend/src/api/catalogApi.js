@@ -334,19 +334,51 @@ getFilteredVariants: async (filters = {}) => {
                 page_size: filters.pageSize || 20,
             },
         });
-
-        /* 
-           البيانات العائدة بالشكل الجديد تحتوي على:
-           - total_count (إجمالي العناصر المطابقة)
-           - low_stock_count (إجمالي النواقص)
-           - matched_product_ids (مصفوفة الـ IDs للمنتجات المطابقة فقط دون تأثر بالصفحة)
-           - items (مصفوفة العناصر المعروضة في الصفحة الحالية)
-        */
         return response.data;
     } catch (error) {
         console.error("Error in getFilteredVariants API:", error.response?.data || error.message);
         throw error.response?.data?.detail || "حدث خطأ أثناء تصفية بيانات المخزون.";
     }
-},    
+}, 
+
+/**
+     * الدالة الأولى: حذف "مجموعة" كاملة (اللون وجميع مقاساته المرتبطة به)
+     * @param {number} colorId - الرقم التعريفي للون المراد حذفه
+     * @returns {Promise<object>} - رسالة النجاح من السيرفر
+     */
+deleteColorGroup: async (colorId) => {
+    try {
+        // يتطابق المسار تماماً مع: @router.delete("/color/{color_id}")
+        const response = await api.delete(`/variants/color/${colorId}`);
+        return response.data;
+    } catch (error) {
+        console.error(`Error deleting color group with ID ${colorId}:`, error);
+        // نقوم بتمرير الخطأ كما هو لكي يتم التقاطه في الـ UI (عرض رسالة صمام الأمان للمستخدم في حال وجود طلبات معلقة)
+        throw error;
+    }
+},
+
+/**
+ * الدالة الثانية: حذف "ارتباط واحد" (مقاس محدد للون محدد)
+ * @param {number} variantId - الرقم التعريفي للمقاس المراد حذفه
+ * @returns {Promise<object>} - رسالة النجاح من السيرفر
+ */
+deleteSingleVariant: async (variantId) => {
+    try {
+      const intVariantId = parseInt(variantId, 10);
+      if (isNaN(intVariantId)) {
+        console.error("🚨 رفض طلب الحذف: variantId غير صالح");
+        return null;
+      }
+      
+      // 🚀 تم تعديل المسار ليطابق تماماً /variants/{variant_id} الظاهر في الصورة
+      const response = await api.delete(`/variants/${intVariantId}`);
+      return response.data;
+    } catch (error) {
+      console.error(`Error deleting single variant with ID ${variantId}:`, error);
+      throw error;
+    }
+  }
+
 };
 

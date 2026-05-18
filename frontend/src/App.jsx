@@ -10,6 +10,7 @@ import Employees from './pages/Employees';
 import ProductsPage from "./pages/Products/ProductsPage";
 import SalesPage from "./pages/SalesPage";
 import StockMovementsPage from "./pages/StockMovementsPage";
+import { Reports } from './pages/Reports/Reports';
 
 
 /**
@@ -67,12 +68,13 @@ function App() {
             }
           >
             {/* جميع المسارات هنا سيتم رندرها داخل الـ <Outlet /> الموجود في MainLayout */}
-            <Route path="/" element={<Dashboard />} />
+            <Route index element={<Dashboard />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/employees" element={<Employees />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/sales" element={<SalesPage />} />
             <Route path="/stock-movements" element={<StockMovementsPage />} />
+            <Route path="/reports" element={<Reports />} />
             
 
           </Route>

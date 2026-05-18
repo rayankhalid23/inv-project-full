@@ -3,7 +3,7 @@ import { ArrowRight, Plus, Search, FileDown, Loader2, AlertCircle } from 'lucide
 import ProductCard from './ProductCard';
 import { catalogApi } from "../../../api/catalogApi";
 
-const CatalogProductsView = ({ catalog, onBack , onEditProduct, onAddProduct, onDownloadQR, refreshTrigger }) => {
+const CatalogProductsView = ({ catalog, onBack , onEditProduct, onAddProduct, onDownloadQR, refreshTrigger, ...props }) => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -63,6 +63,7 @@ const CatalogProductsView = ({ catalog, onBack , onEditProduct, onAddProduct, on
                 product={p} 
                 onEdit={onEditProduct}
                 onDownloadQR={onDownloadQR} 
+                
               />
             ))
           }

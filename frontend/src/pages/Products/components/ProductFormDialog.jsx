@@ -54,6 +54,14 @@ const ProductFormDialog = ({ open, onOpenChange, productToEdit, onSaveSuccess, i
   const [dbCatalogs, setDbCatalogs] = useState([]);
   const [viewData, setViewData] = useState(null);
   const [showSizeInput, setShowSizeInput] = useState(false); 
+  // حالتي تأكيد حديثة لحذف اللون والمقاس لمنع الرسائل البدائية
+  const [colorToDelete, setColorToDelete] = useState(null);
+  const [sizeToDelete, setSizeToDelete] = useState(null);
+
+  const storedUser = localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : null;
+  const roleId = storedUser?.role_id ?? localStorage.getItem('role_id');
+  const canManage = roleId !== undefined && roleId !== null ? Number(roleId) !== 3 : false;
+
 
   // 🛠️ حزام أمان محلي لمعالجة مسارات الصور في حال عدم تمريرها من الأب
 const safeGetFullUrl = (path) => {
@@ -147,20 +155,46 @@ const handleDownloadQR = async (variantId) => {
   }
 };
 
-  const handleAddNewSizeToDB = async (sizeName) => {
-    if (!sizeName.trim()) return;
-    try {
-      // الربط بالدالة الجديدة وتمرير الاسم مباشرة كمُعامل
-      await catalogApi.createSize(sizeName); 
-      showToast("تم إضافة المقاس الجديد لقاعدة البيانات بنجاح", "success");
-      
-      // 2. إعادة جلب المقاسات المحدثة لكي تظهر في القائمة فوراً
-      const updatedSizes = await catalogApi.getSizeNames();
-      setDbSizes(updatedSizes);
-    } catch (e) {
-      showToast("فشل إضافة المقاس الجديد، قد يكون مكرراً");
+const handleAddNewSizeToDB = async (sizeName) => {
+  if (!sizeName.trim()) return;
+  
+  try {
+    // 🛡️ حزام الأمان لضمان عدم إنكسار الـ API إذا كان catalogApi غير معرف في سياق معين
+    const apiToUse = (typeof catalogApi !== 'undefined' && catalogApi) || (typeof activeApi !== 'undefined' && activeApi);
+    
+    if (!apiToUse) {
+      console.error("🚨 لم يتم العثور على كائن الـ API الخاص بالمنتجات!");
+      if (typeof triggerToast === "function") triggerToast("فشل الاتصال بالخادم", "error");
+      return;
     }
-  };
+
+    // 1. إرسال المقاس الجديد للسيرفر
+    // 💡 ملاحظة: إذا كان الباك إند يتوقع نصاً صريحاً نتركه كما هو، وإذا كان يتوقع Object جرب تمريره كـ { size_name: sizeName.trim() }
+    await apiToUse.createSize(sizeName.trim()); 
+    
+    if (typeof triggerToast === "function") {
+      triggerToast("تم إضافة المقاس الجديد لقاعدة البيانات بنجاح", "success");
+    }
+    
+    // 2. إعادة جلب المقاسات المحدثة لكي تظهر في القائمة فوراً
+    if (typeof apiToUse.getSizeNames === "function") {
+      const updatedSizes = await apiToUse.getSizeNames();
+      setDbSizes(updatedSizes);
+    }
+    
+  } catch (e) {
+    console.error("❌ خطأ أثناء إنشاء المقاس بالسيرفر:", e);
+    
+    // قراءة رسالة الخطأ القادمة من الباك إند إن وجدت
+    const backendError = e.response?.data?.detail || "فشل إضافة المقاس الجديد، قد يكون مكرراً أو غير مسموح به";
+    
+    if (typeof triggerToast === "function") {
+      triggerToast(backendError, "error");
+    } else {
+      alert("🚨 تنبيه: " + backendError);
+    }
+  }
+};
 
   useEffect(() => {
     if (open) {
@@ -296,57 +330,60 @@ if (data.variants && data.variants.length > 0) {
   }
 }
 
-      } else {
-        // --- ثانياً: حالة إنشاء منتج جديد ---
-        const productFormData = new FormData();
-        if (selectedFile) {
-          productFormData.append('image_file', selectedFile);
-        }
+} else {
+  // --- ثانياً: حالة إنشاء منتج جديد ---
+  const productFormData = new FormData();
+  if (selectedFile) {
+    productFormData.append('image_file', selectedFile);
+  }
 
-        productFormData.append('name', data.name);
-        productFormData.append('catalog_id', String(data.catalog_id));
-        productFormData.append('selling_price', String(data.selling_price));
-        productFormData.append('cost_price', String(data.cost_price || 0.0));
-        productFormData.append('min_stock_threshold', String(data.min_stock_threshold || 5));
-        
-        if (data.description) {
-          productFormData.append('description', data.description);
-        }
+  productFormData.append('name', data.name);
+  productFormData.append('catalog_id', String(data.catalog_id));
+  productFormData.append('selling_price', String(data.selling_price));
+  productFormData.append('cost_price', String(data.cost_price || 0.0));
+  productFormData.append('min_stock_threshold', String(data.min_stock_threshold || 5));
+  
+  if (data.description) {
+    productFormData.append('description', data.description);
+  }
 
-        const productResponse = await catalogApi.createProduct(productFormData);
-        const createdProductId = productResponse?.data?.id || productResponse?.id;
+  // 🔥 استخدام المرجع المؤمن المحمول والمضمون لمنع الـ undefined
+  const productResponse = await apiToUse.createProduct(productFormData);
+  const createdProductId = productResponse?.data?.id || productResponse?.id;
 
-        if (!createdProductId) {
-          throw new Error("فشل استخراج معرف المنتج المستلم من السيرفر");
-        }
+  if (!createdProductId) {
+    throw new Error("فشل استخراج معرف المنتج المستلم من السيرفر");
+  }
 
-        if (data.variants && data.variants.length > 0) {
-          for (const variant of data.variants) {
-            const colorFormData = new FormData();
-            colorFormData.append('product_id', String(createdProductId)); 
-            colorFormData.append('color_name', variant.color_name);
+  if (data.variants && data.variants.length > 0) {
+    for (const variant of data.variants) {
+      const colorFormData = new FormData();
+      colorFormData.append('product_id', String(createdProductId)); 
+      colorFormData.append('color_name', variant.color_name);
 
-            const actualColorFile = variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : variant.color_image);
+      const actualColorFile = variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : variant.color_image);
 
-if (actualColorFile) {
-  colorFormData.append('image_file', actualColorFile); 
-}
-
-            const colorResponse = await catalogApi.addColor(colorFormData);
-            const createdColorId = colorResponse?.data?.id || colorResponse?.id;
-
-            if (createdColorId && variant.sizes && variant.sizes.length > 0) {
-              const variantsArray = variant.sizes.map(s => ({
-                size_id: Number(s.size_id), 
-                qty: Number(s.quantity || 0),                   // 👈 تحويل الاسم لـ qty ليطابق السيرفر
-                min_stock: Number(data.min_stock_threshold || 5) // 👈 تمرير حد الأمان المطلوب إجبارياً
-              }));
-
-              await catalogApi.createBatchVariants(createdColorId, variantsArray);
-            }
-          }
-        }
+      if (actualColorFile) {
+        colorFormData.append('image_file', actualColorFile); 
       }
+
+      // 🔥 استخدام المرجع المؤمن هنا أيضاً
+      const colorResponse = await apiToUse.addColor(colorFormData);
+      const createdColorId = colorResponse?.data?.id || colorResponse?.id;
+
+      if (createdColorId && variant.sizes && variant.sizes.length > 0) {
+        const variantsArray = variant.sizes.map(s => ({
+          size_id: Number(s.size_id), 
+          qty: Number(s.quantity || 0),                   
+          min_stock: Number(data.min_stock_threshold || 5) 
+        }));
+
+        // 🔥 استخدام المرجع المؤمن هنا أيضاً
+        await apiToUse.createBatchVariants(createdColorId, variantsArray);
+      }
+    }
+  }
+}
 
       alert("تم حفظ المنتج مع الصورة بنجاح وتحديث المخزون!");
       onSaveSuccess();
@@ -450,10 +487,11 @@ if (!open) return null;
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {productToEdit && (
-               <button onClick={() => setIsViewMode(!isViewMode)} className="px-4 py-2 rounded-xl text-[10px] font-black border border-slate-100 hover:bg-slate-50 transition-colors flex items-center gap-2">
-                 {isViewMode ? <><Edit3 size={14}/> تعديل المنتج</> : <><Eye size={14}/> وضع العرض</>}
-               </button>
+            
+          {productToEdit && canManage && (
+  <button onClick={() => setIsViewMode(!isViewMode)} className="px-4 py-2 rounded-xl text-[10px] font-black border border-slate-100 hover:bg-slate-50 transition-colors flex items-center gap-2">
+    {isViewMode ? <><Edit3 size={14}/> تعديل المنتج</> : <><Eye size={14}/> وضع العرض</>}
+  </button>          
             )}
             <button onClick={() => onOpenChange(false)} className="p-2 hover:bg-slate-50 rounded-full text-slate-400"><X size={20} /></button>
           </div>
@@ -863,22 +901,26 @@ showToast("تم نسخ الكود", "success");
                 {/* قائمة عرض بطاقات الألوان المحسنة كلياً مرنة وعصرية */}
          {/* قائمة عرض بطاقات الألوان المحسنة كلياً مرنة وعصرية */}
 <div className="space-y-2 mt-2">
-  {colorFields.map((field, index) => (
-    <VariantCard
-      key={field.id}
-      control={control}
-      register={register}
-      setValue={setValue}
-      watch={watch} // 👈 هذا السطر يضمن توصيل دالة المراقبة للكارت
-      colorIndex={index}
-      colorItem={field}
-      removeColor={removeColor}
-      dbSizes={dbSizes}
-      errors={errors}
-      showToast={showToast}
-      catalogApi={activeApi}
-    />
-  ))}
+{colorFields.map((colorItem, colorIndex) => (
+  <VariantCard
+    key={colorItem.id}
+    colorIndex={colorIndex}
+    colorItem={colorItem}
+    control={control}
+    register={register}
+    setValue={setValue}
+    watch={watch}
+    dbSizes={dbSizes}
+    errors={errors}
+    triggerToast={triggerToast}
+    catalogApi={catalogApi}
+    getFullUrl={getFullUrl}
+    colorToDelete={colorToDelete}        
+    setColorToDelete={setColorToDelete}  
+    setSizeToDelete={setSizeToDelete}
+  />
+))}
+
 </div>
              </div>
 
@@ -891,12 +933,117 @@ showToast("تم نسخ الكود", "success");
           </form>
         )}
       </div>
+ 
+{/* 1️⃣ نافذة تأكيد حذف المقاس */}
+{sizeToDelete !== null && (
+  <div className="fixed inset-0 z-[200] flex items-center justify-center font-arabic animate-in fade-in duration-200" dir="rtl">
+    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSizeToDelete(null)} />
+    <div className="relative bg-white rounded-[2rem] p-6 shadow-2xl max-w-sm w-full mx-4 text-center border border-slate-100 scale-100 animate-in zoom-in-95 duration-200">
+      <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+        <AlertCircle size={24} />
+      </div>
+      <h3 className="text-sm font-black text-slate-800 mb-1">حذف المقاس</h3>
+      <p className="text-xs text-slate-500 mb-6 leading-relaxed">هل ترغب في إزالة مقاس <span className="text-[#800000] font-black">({sizeToDelete.label})</span> من لون {sizeToDelete.colorName}؟</p>
+      <div className="flex gap-3">
+        <button 
+          type="button" 
+          onClick={async () => {
+            if (sizeToDelete) {
+              const colorIdx = sizeToDelete.colorIdx ?? sizeToDelete.colorIndex ?? sizeToDelete.color_index;
+              const sizeIdx = sizeToDelete.sizeIdx ?? sizeToDelete.sizeIndex ?? sizeToDelete.size_index;
+              const currentFormVariants = watch("variants");
+              const sizeFormObject = currentFormVariants?.[colorIdx]?.sizes?.[sizeIdx];
+              const variantId = sizeFormObject?.id || sizeFormObject?.variant_id || sizeToDelete.id;
+              const label = sizeToDelete.label || sizeToDelete.size_label || sizeToDelete.size_name || "";
+          
+              const apiToUse = activeApi; 
+          
+              if (variantId && !String(variantId).startsWith('new-')) {
+                try {
+                  if (typeof showToast === "function") showToast("جاري الحذف من قاعدة البيانات...", "success");
+                  await apiToUse.deleteSingleVariant(variantId);
+                } catch (error) {
+                  const backendError = error.response?.data?.detail || "لا يمكن حذف المقاس لارتباطه بطلبيات أو فواتير قيد التنفيذ";
+                  alert("🚨 تنبيه النظام: " + backendError);
+                  setSizeToDelete(null);
+                  return;
+                }
+              }
+          
+              const currentVariants = watch("variants");
+              if (currentVariants?.[colorIdx]?.sizes) {
+                currentVariants[colorIdx].sizes.splice(sizeIdx, 1);
+                setValue("variants", [...currentVariants], { shouldDirty: true, shouldValidate: true });
+                
+                if (typeof showToast === "function") {
+                  showToast(`تم إزالة المقاس (${label}) بنجاح`, "success");
+                }
+                
+                if (typeof onSaveSuccess === "function") onSaveSuccess();
+              }
+            }
+            setSizeToDelete(null);
+          }} 
+          className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-3 rounded-2xl text-xs font-black shadow-lg shadow-rose-600/10 transition-colors"
+        >
+          تأكيد الحذف
+        </button>
+        <button type="button" onClick={() => setSizeToDelete(null)} className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-600 py-3 rounded-xl text-xs font-black border border-slate-100 transition-colors">إلغاء</button>
+      </div>
+    </div>
+  </div>
+)}
+
+{/* 2️⃣ نافذة تأكيد حذف اللون بالكامل */}
+{colorToDelete !== null && (
+  <div className="fixed inset-0 z-[200] flex items-center justify-center font-arabic animate-in fade-in duration-200" dir="rtl">
+    <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setColorToDelete(null)} />
+    <div className="relative bg-white rounded-[2rem] p-6 shadow-2xl max-w-sm w-full mx-4 text-center border border-slate-100 scale-100 animate-in zoom-in-95 duration-200">
+      <div className="w-12 h-12 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+        <AlertCircle size={24} />
+      </div>
+      <h3 className="text-sm font-black text-slate-800 mb-1">حذف مجموعة اللون بالكامل</h3>
+      <p className="text-xs text-slate-500 mb-6 leading-relaxed">هل أنت متأكد من حذف لون <span className="text-red-600 font-black">({colorToDelete.color_name || `رقم ${colorToDelete.colorIndex}`})</span> بكافة مقاساته وكمياته نهائياً؟</p>
+      <div className="flex gap-3">
+        <button
+          type="button"
+          onClick={async () => {
+            const colorIdx = colorToDelete.colorIndex ?? colorToDelete.colorIdx;
+            const currentVariants = watch("variants");
+            const targetColorObj = currentVariants?.[colorIdx];
+            const serverColorId = targetColorObj?.color_id || targetColorObj?.id;
+
+            if (serverColorId && !String(serverColorId).startsWith('new-')) {
+              try {
+                if (typeof showToast === "function") showToast("جاري حذف مجموعة اللون من السيرفر...", "success");
+                await activeApi.deleteColorGroup(serverColorId);
+              } catch (error) {
+                alert("🚨 خطأ: " + (error.response?.data?.detail || "فشل حذف اللون من السيرفر"));
+                setColorToDelete(null);
+                return;
+              }
+            }
+            
+            removeColor(colorIdx); 
+            if (typeof showToast === "function") showToast("تم حذف اللون وكافة مقاساته بنجاح", "success");
+            if (typeof onSaveSuccess === "function") onSaveSuccess();
+            setColorToDelete(null);
+          }}
+          className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-2xl text-xs font-black shadow-lg shadow-red-600/10 transition-colors"
+        >
+          تأكيد الحذف التام
+        </button>
+        <button type="button" onClick={() => setColorToDelete(null)} className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-600 py-3 rounded-xl text-xs font-black border border-slate-100 transition-colors">إلغاء</button>
+      </div>
+    </div>
+  </div>
+)}
+
     </div>
   );
 };
 
-
-const VariantCard = ({ control, register, setValue, watch, colorIndex, colorItem, removeColor, dbSizes = [], errors, showToast, catalogApi, getFullUrl }) => {
+const VariantCard = ({ control, register, setValue, watch, colorIndex, colorItem, removeColor, dbSizes = [], errors, showToast, catalogApi, getFullUrl, colorToDelete, setColorToDelete, setSizeToDelete }) => {
   const fileInputRef = useRef(null);
   
   // حزام أمان ذكي وموحد لاستدعاء الـ API والـ Toast
@@ -927,8 +1074,7 @@ const VariantCard = ({ control, register, setValue, watch, colorIndex, colorItem
       
       {/* زر حذف اللون بالكامل في الزاوية العليا اليسرى (أقصى اليسار) */}
       <button 
-        type="button" 
-        onClick={() => removeColor(colorIndex)} 
+        type="button" onClick={() => setColorToDelete({ colorIndex: colorIndex, color_name: colorItem.color_name })}
         className="absolute top-2 left-2 p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all z-10"
         title="حذف هذا اللون بالكامل"
       >
@@ -1009,17 +1155,19 @@ onChange={(e) => {
 <span className="text-[8px] text-slate-400 font-bold px-1">انقر لتعديل الاسم أو الصورة</span>
 </div>
         </div>
+      </div>
 
-        {/* قائمة المقاسات المخصصة الدائرية - تفتح لأسفل دائماً */}
+              {/* قائمة المقاسات المخصصة الدائرية - تفتح لأسفل دائماً */}
 <div className="pr-7 w-full flex justify-start relative">
-<details className="w-full max-w-[150px] group">
-  <summary className="w-full p-2 pr-4 pl-8 rounded-full border border-slate-200 bg-slate-50 text-[10px] font-black text-[#800000] list-none cursor-pointer flex items-center justify-between hover:bg-slate-100 hover:border-[#800000]/30 transition-all select-none relative">
-    <span>+ إضافة مقاس للون</span>
-    <ChevronDown size={10} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#800000] transition-transform duration-200 group-open:rotate-180" />
-  </summary>
+{/* 1️⃣ السطر المعدل: أضفنا كلاس relative لتقييد القائمة الطائرة داخل حدود الزر */}
+<details className="w-full max-w-[180px] md:max-w-[200px] group relative">
+<summary className="w-full py-1.5 px-2.5 rounded-xl border border-slate-200 bg-slate-50 text-[10px] md:text-[11px] font-black text-[#800000] list-none cursor-pointer flex items-center justify-between hover:bg-slate-100 hover:border-[#800000]/30 transition-all select-none relative h-auto min-h-0 whitespace-nowrap">
+<span className="flex items-center gap-1">+ إضافة مقاس للون</span>
+<ChevronDown size={11} className="text-[#800000] transition-transform duration-200 group-open:rotate-180 shrink-0 mr-1" />
+</summary>
   
-  {/* القائمة المنسدلة لأسفل بقوة الـ z-index والحواف الدائرية المحمية */}
-  <div className="absolute top-full right-7 mt-1 w-full max-w-[150px] bg-white border border-slate-150 rounded-2xl shadow-xl z-50 max-h-[140px] overflow-y-auto custom-scrollbar animate-in slide-in-from-top-2 duration-150">
+  {/* 2️⃣ السطر المعدل: جعلنا المحاذاة right-0 وضبطنا العرض بدقة w-[150px] ليكون متطابقاً */}
+  <div className="absolute top-full right-0 mt-1 w-[180px] md:w-[200px] bg-white border border-slate-150 rounded-2xl shadow-xl z-50 max-h-[140px] overflow-y-auto custom-scrollbar animate-in slide-in-from-top-2 duration-150">
     {dbSizes.map(s => (
       <button
         key={s.id}
@@ -1033,7 +1181,6 @@ onChange={(e) => {
           } else {
             triggerToast("المقاس مضاف مسبقاً لهذا اللون", "error");
           }
-          // إغلاق القائمة بعد الاختيار تلقائياً
           e.currentTarget.closest('details').removeAttribute('open');
         }}
       >
@@ -1043,7 +1190,6 @@ onChange={(e) => {
   </div>
 </details>
 </div>
-      </div>
 
       {/* شبكة عرض المقاسات - تختفي وتظهر بناءً على حالة الـ collapse والـ animation */}
       <div className={`transition-all duration-300 overflow-hidden ${isCollapsed ? 'max-h-0 opacity-0 mt-0' : 'max-h-[500px] opacity-100 mt-1'}`}>
@@ -1065,9 +1211,29 @@ onChange={(e) => {
               {/* زر حذف المقاس (X الدائري الصغير يظهر عند الهوفر فوق المربع) */}
               <button 
                 type="button" 
-                onClick={() => removeSize(si)} 
-                className="absolute -top-1 -right-1 hidden group-hover/size:flex items-center justify-center w-4 h-4 bg-white shadow-sm rounded-full text-red-500 border border-slate-100 hover:bg-red-50 transition-colors"
-              >
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                
+                  // 🎯 الخدعة السحرية: جلب بيانات اللون الحالي من الـ Form باستخدام المؤشر
+                  const currentVariants = watch("variants");
+                  const currentColor = currentVariants?.[colorIndex];
+                  // جلب كائن المقاس الدقيق باستخدام مؤشر المقاس الحالي
+                  // تم تغيير [sizeIndex] إلى [si] لأن الـ index المعرّف في الـ map لديك هو si
+const currentSizeObj = currentColor?.sizes?.[si];
+
+console.log("💥 تم التقاط الضغطة! كائن المقاس المستخرج برمجياً هو:", currentSizeObj);
+
+setSizeToDelete({
+  id: currentSizeObj?.id || currentSizeObj?.variant_id || currentSizeObj?.size_id || s.id, 
+  colorIdx: colorIndex,
+  sizeIdx: si, // 👈 تم التعديل إلى si ليرسل الرقم الصحيح
+  label: currentSizeObj?.size_label || currentSizeObj?.size_name || s.size_label || "مقاس غير معرف",
+  colorName: colorItem?.color_name || `لون ${colorIndex}`
+});
+                }}
+                className="absolute -top-1 -right-1 hidden group-hover/size:flex items-center justify-center w-4 h-4 bg-white shadow-sm rounded-full text-red-500 border border-slate-100 hover:bg-red-50 transition-colors cursor-pointer z-20" 
+                >
                 <X size={8} strokeWidth={3}/>
               </button>
             </div>
@@ -1082,6 +1248,7 @@ onChange={(e) => {
     </div>
   );
 };
+
 
 
 export default ProductFormDialog;

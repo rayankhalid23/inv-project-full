@@ -11,7 +11,8 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess })
   const [errorMessage, setErrorMessage] = useState(null); 
   const [successMessage, setSuccessMessage] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false); // حالة رسالة التأكيد المخصصة
-
+  
+  const isManager = Number(JSON.parse(localStorage.getItem('user'))?.role_id ?? localStorage.getItem('role_id')) !== 3;
   const BASE_URL = 'http://127.0.0.1:8000';
 
   // دالة مساعدة سريعة لتركيب الرابط وكسر كاش المتصفح فوراً عند الحفظ
@@ -106,6 +107,8 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess })
           </div>
         </div>
       )}
+      
+
 
       {/* 🛠 نافذة التأكيد المخصصة */}
       {showConfirm && (
@@ -185,14 +188,17 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess })
                   <button onClick={handleDownloadQR} className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors">
                       تحميل رمز QR <Download size={14} className="text-[#800000]" />
                   </button>
-
+                  {isManager && (
                   <button onClick={() => { onEdit(product); setShowMenu(false); }} className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50 transition-colors">
                       تعديل <Edit2 size={14} className="text-amber-500" />
                   </button>
+                  )}
                   <div className="h-px bg-slate-50 mx-2 my-1" />
+                  {isManager && (
                   <button onClick={() => { setShowConfirm(true); setShowMenu(false); }} className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-bold text-red-500 hover:bg-red-50 transition-colors">
                       حذف نهائي <Trash2 size={14} />
                   </button>
+                  )}
                 </div>
               </>
             )}

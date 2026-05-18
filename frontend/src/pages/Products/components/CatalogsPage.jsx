@@ -7,6 +7,8 @@ import {
 import { catalogApi } from "../../../api/catalogApi";
 import ProductCard from "./ProductCard"; 
 
+
+
 const CatalogsPage = ({ 
   catalogs = [], 
   loading, 
@@ -15,9 +17,34 @@ const CatalogsPage = ({
   onAddProduct, 
   onFilteredProductIdsChange, 
   isSearching,
-  onEditProduct,   
-  onDownloadQR
+  onEditProduct, 
+  canManage: passedCanManage,
+  onDownloadQR, ...props
 }) => {
+
+  // 🛡️ [حزام الأمان الذكي والنهائي المعتمد على role_id]
+  const canManage = useMemo(() => {
+    // إذا تم تمرير الصلاحية بوضوح عبر الـ Props نستخدمها مباشرة
+    if (passedCanManage !== undefined) return passedCanManage;
+    
+    try {
+      // 1. محاولة جلب كائن المستخدم بالكامل من localStorage
+      const storedUser = localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : null;
+      
+      // 2. استخراج الـ role_id من كائن المستخدم أو من التخزين المباشر كخطة بديلة
+      const roleId = storedUser?.role_id ?? localStorage.getItem('role_id');
+      
+      // 3. التحقق الصارم: إذا كان الـ role_id موجوداً ويساوي 3، فهو موظف (لا يملك صلاحية الإدارة)
+      if (roleId !== undefined && roleId !== null) {
+        return Number(roleId) !== 3; // سيرجع true للمسؤول (أي رقم غير 3)، و false للموظف (رقم 3)
+      }
+    } catch (e) {
+      console.error("Error reading role_id from localStorage", e);
+    }
+    
+    // افتراضياً في حال عدم وجود البيانات، نغلق الصلاحيات كإجراء أمان
+    return false;
+  }, [passedCanManage]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
   const [selectedSizeFilter, setSelectedSizeFilter] = useState('');
@@ -411,6 +438,7 @@ useEffect(() => {
         
         <div className="flex items-center gap-3 self-end sm:self-auto">
           {/* زر إضافة منتج - حجم متوسط */}
+          {canManage && (
           <button 
             onClick={onAddProduct} 
             className="flex items-center justify-center bg-white border border-slate-200 text-slate-700 rounded-xl font-bold shadow-sm transition-all active:scale-95 hover:bg-slate-50 whitespace-nowrap
@@ -420,8 +448,10 @@ useEffect(() => {
           >
             <Plus size={14} strokeWidth={3} className="text-[#800000] sm:w-4 sm:h-4" /> إضافة منتج
           </button>
+          )}
 
           {/* زر إضافة كتالوج - حجم متوسط */}
+          {canManage && (
           <button 
             onClick={() => { setModalMode('add'); resetModal(); setIsModalOpen(true); }} 
             className="flex items-center justify-center bg-[#800000] text-white rounded-xl font-bold shadow-md transition-all active:scale-95 hover:bg-[#600000] whitespace-nowrap
@@ -431,9 +461,10 @@ useEffect(() => {
           >
             <Plus size={14} strokeWidth={3} className="sm:w-4 sm:h-4" /> إضافة كتالوج
           </button>
+          )}
         </div>
       </div>
-
+      
       {/* العرض الشرطي المدعوم بالـ API الفوري */}
       {(searchTerm.trim() || selectedSizeFilter) ? (
         searchLoading ? (
@@ -473,6 +504,7 @@ useEffect(() => {
                 <div className="w-8 h-8 sm:w-12 sm:h-12 flex items-center justify-center rounded-xl sm:rounded-2xl bg-slate-50 text-[#800000] group-hover:bg-[#800000] group-hover:text-white transition-all">
                   <FolderOpen className="w-4 h-4 sm:w-[22px] sm:h-[22px]" />
                 </div>
+                {canManage && (
                 <div className="relative">
                   <button onClick={(e) => { e.stopPropagation(); setActiveMenu(activeMenu === catalog.id ? null : catalog.id); }} className="p-1 sm:p-2 text-slate-400 hover:text-[#800000]">
                     <MoreVertical className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -489,6 +521,7 @@ useEffect(() => {
                     </div>
                   )}
                 </div>
+                )}
               </div>
 
               {/* اسم الكتالوج - حجم خط مرن ومحمي من النزول لسطر جديد لعدم تخريب التصميم */}
