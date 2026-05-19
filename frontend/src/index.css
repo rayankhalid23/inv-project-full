@@ -15,3 +15,30 @@ body {
   min-width: 100vw;
   overflow-x: hidden;
 }
+
+
+/* تنسيق شريط التمرير المخصص للجداول */
+.custom-scrollbar::-webkit-scrollbar {
+  height: 5px; /* جعل الشريط نحيفاً جداً أفقياً */
+  width: 5px;  /* عمودياً إذا لزم الأمر */
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent; /* خلفية شفافة تماماً لعدم إشغال العين */
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #e2e8f0; /* لون رمادي فاتح وناعم جداً (slate-200) */
+  border-radius: 9999px; /* حواف دائرية بالكامل لمظهر عصري */
+  transition: background 0.2s ease;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1; /* يغمق قليلاً عند تمرير مؤشر الفأرة فوقه (slate-300) */
+}
+
+/* لدعم متصفحات Firefox */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #e2e8f0 transparent;
+}

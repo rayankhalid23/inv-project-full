@@ -9,6 +9,8 @@ from app.models.inventory import InventoryMovement
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi.responses import StreamingResponse
 import asyncio
+from sqlalchemy.orm import Session
+from sqlalchemy import func, case, and_, or_
 from app.core.websocket_manager import ConnectionManager
 import asyncio
 from sqlalchemy.orm import joinedload
@@ -854,63 +856,183 @@ async def get_order_full_details_logic(db: Session, order_id: int):
             "overall_progress_percentage": (total_picked / total_ordered * 100) if total_ordered > 0 else 0
         }
     }
+from sqlalchemy.orm import Session
+from sqlalchemy import func, case, and_, or_
+import traceback
+# الاستدعاءات صحيحة ومطابقة للمخطط بنسبة 100%
+from app.models.inventory import Product, ProductVariant, ProductColor, Size
+from app.models.order import Order
+from app.models.user import User 
 
+from sqlalchemy.orm import Session
+from sqlalchemy import func, case, and_, or_
+import traceback
+from app.models.inventory import Product, ProductVariant, ProductColor, Size
+from app.models.order import Order
+from app.models.user import User 
 
 def get_inventory_dashboard_stats(db: Session):
-    # 1. إحصائيات المنتجات والمخزون (من جداول المنتجات والأنواع)
-    # ملاحظة: استخدمنا جدول Product مباشرة لأن الأعمدة (total_available, etc) موجودة فيه حسب المخطط
-    inventory_stats = db.query(
-        func.count(Product.id).label("total_products_count"),
-        func.sum(Product.total_available).label("total_inventory"),
-        func.sum(Product.total_reserved).label("total_reserved"),
-        func.sum(Product.total_sold).label("total_sold"),
-        func.sum(Product.total_damaged).label("total_damaged"),
-        func.sum(Product.total_returns).label("total_returns")
-    ).filter(Product.deleted_at.is_(None)).first()
+    try:
+        # =========================================================================
+        # 1. إحصائيات المنتجات والمخزون العامة (مطابقة للجدول تماماً)
+        # =========================================================================
+        inventory_stats = db.query(
+            func.count(Product.id).label("total_products_count"),
+            func.sum(Product.total_available).label("total_inventory"),
+            func.sum(Product.total_reserved).label("total_reserved"),
+            func.sum(Product.total_sold).label("total_sold"),
+            func.sum(Product.total_damaged).label("total_damaged"),
+            func.sum(Product.total_returns).label("total_returns")
+        ).filter(Product.deleted_at.is_(None)).first()
 
-    # 2. إحصائيات الطلبات (بناءً على الحالة Status)
-    # نستخدم case للعد بناءً على الحالة في استعلام واحد سريع
-    order_stats = db.query(
-        func.count(Order.id).label("total_orders"),
-        func.sum(case((Order.status == 'pending', 1), else_=0)).label("pending_orders"),
-        func.sum(case((Order.status == 'in_preparation', 1), else_=0)).label("processing_orders")
-    ).filter(Order.deleted_at.is_(None)).first()
-    
-    user_stats = db.query(
-        func.count(User.id).label("total_users"),
-        func.sum(case((and_(User.is_active == True, User.deleted_at.is_(None)), 1), else_=0)).label("active_users"),
-        func.sum(case((User.deleted_at.is_not(None), 1), else_=0)).label("deleted_users"),
-        func.sum(case((User.role_id == 2, 1), else_=0)).label("managers_count"),
-        func.sum(case((User.role_id == 3, 1), else_=0)).label("staff_count")
-    ).first()
+        # =========================================================================
+        # 2. إحصائيات الطلبات
+        # =========================================================================
+        order_stats = db.query(
+            func.count(Order.id).label("total_orders"),
+            func.sum(case((Order.status == 'pending', 1), else_=0)).label("pending_orders"),
+            func.sum(case((Order.status == 'in_preparation', 1), else_=0)).label("processing_orders")
+        ).filter(Order.deleted_at.is_(None)).first()
+        
+        # =========================================================================
+        # 3. إحصائيات المستخدمين
+        # =========================================================================
+        user_stats = db.query(
+            func.count(User.id).label("total_users"),
+            func.sum(case((and_(User.is_active == True, User.deleted_at.is_(None)), 1), else_=0)).label("active_users"),
+            func.sum(case((User.deleted_at.is_not(None), 1), else_=0)).label("deleted_users"),
+            func.sum(case((User.role_id == 2, 1), else_=0)).label("managers_count"),
+            func.sum(case((User.role_id == 3, 1), else_=0)).label("staff_count")
+        ).first()
 
-    return {
-        # بيانات المخزون والمنتجات
-        "inventory": {
-            "total_products": int(inventory_stats.total_products_count or 0),
-            "total_inventory": int(inventory_stats.total_inventory or 0),
-            "total_reserved": int(inventory_stats.total_reserved or 0),
-            "total_sold": int(inventory_stats.total_sold or 0),
-            "damaged": int(inventory_stats.total_damaged or 0),
-            "returns": int(inventory_stats.total_returns or 0),
-            "waste_rate": round((inventory_stats.total_damaged or 0) / (inventory_stats.total_inventory or 1) * 100, 2)
-        },
-        # بيانات الطلبات
-        "orders": {
-            "total": int(order_stats.total_orders or 0),
-            "pending": int(order_stats.pending_orders or 0),
-            "processing": int(order_stats.processing_orders or 0)
-        },
-        # بيانات الموظفين (إضافة قيمة مضافة للوحة التحكم)
-        "users": {
-            "total_system_users": int(user_stats.total_users or 0),
-            "active_now": int(user_stats.active_users or 0),
-            "deleted_history": int(user_stats.deleted_users or 0),
-            "managers_level": int(user_stats.managers_count or 0),
-            "staff_level": int(user_stats.staff_count or 0)
+        # =========================================================================
+        # 4. استعلام تنبيهات المتغيرات (Variants Alerts) - دراسة العلاقة بدقة عبر جدول الألوان
+        # =========================================================================
+        variants_alerts_query = db.query(
+            ProductVariant,
+            Product.name.label("product_name"),
+            Product.code.label("product_code"),
+            ProductColor.color_name.label("color_name"),
+            ProductColor.color_image.label("color_image"),
+            Size.name.label("size_name")
+        ).select_from(ProductVariant)\
+         .join(ProductColor, ProductVariant.product_color_id == ProductColor.id, isouter=True)\
+         .join(Product, ProductColor.product_id == Product.id, isouter=True)\
+         .join(Size, ProductVariant.size_id == Size.id, isouter=True)\
+         .filter(
+             and_(
+                 ProductVariant.deleted_at.is_(None),
+                 or_(Product.deleted_at.is_(None), Product.deleted_at.is_(None)),
+                 or_(
+                     # الشرط الأول: نفاد تام (الكمية صفر) + مبيعات المتغير أكبر من صفر
+                     and_(ProductVariant.quantity_available == 0, ProductVariant.total_sold > 0),
+                     # الشرط الثاني: قارب على النفاد (الكمية أكبر من صفر وأقل من أو تساوي الحد الأدنى)
+                     and_(ProductVariant.quantity_available > 0, ProductVariant.quantity_available <= ProductVariant.min_stock_threshold)
+                 )
+             )
+         ).all()
+
+        out_of_stock_variants_list = []
+        low_stock_variants_list = []
+
+        for row in variants_alerts_query:
+            v = row.ProductVariant
+            variant_data = {
+                "variant_id": v.id,
+                "product_name": row.product_name or "بدون اسم",
+                "product_code": row.product_code or "N/A",
+                "color": row.color_name or "افتراضي",
+                "size": row.size_name or "افتراضي",
+                "image": row.color_image,
+                "available_quantity": int(v.quantity_available or 0),  # إضافة القيمة المتوفرة للمتغير
+                "total_sold": int(v.total_sold or 0),                  # إضافة القيمة المباعة للمتغير
+                "min_threshold": v.min_stock_threshold
+            }
+            if v.quantity_available == 0:
+                out_of_stock_variants_list.append(variant_data)
+            else:
+                low_stock_variants_list.append(variant_data)
+
+        # =========================================================================
+        # 5. استعلام تنبيهات المنتجات الأساسية (Products Alerts)
+        # =========================================================================
+        products_alerts_query = db.query(Product).filter(
+            and_(
+                Product.deleted_at.is_(None),
+                or_(
+                    # الشرط الأول: نفاد تام (الكمية صفر) + مبيعات المنتج أكبر من صفر
+                    and_(Product.total_available == 0, Product.total_sold > 0),
+                    # الشرط الثاني: قارب على النفاد (الكمية أكبر من صفر وأقل من أو تساوي الحد الأدنى)
+                    and_(Product.total_available > 0, Product.total_available <= Product.min_stock_threshold)
+                )
+            )
+        ).all()
+
+        out_of_stock_products_list = []
+        low_stock_products_list = []
+
+        for p in products_alerts_query:
+            product_data = {
+                "product_id": p.id,
+                "name": p.name,
+                "code": p.code,
+                "image": p.main_image,
+                "available_quantity": int(p.total_available or 0),  # إضافة القيمة المتوفرة للمنتج
+                "total_sold": int(p.total_sold or 0),              # إضافة القيمة المباعة للمنتج
+                "min_threshold": p.min_stock_threshold
+            }
+            if p.total_available == 0:
+                out_of_stock_products_list.append(product_data)
+            else:
+                low_stock_products_list.append(product_data)
+
+        # =========================================================================
+        # 6. إرجاع القاموس المنظم للفرونت إند
+        # =========================================================================
+        return {
+            "inventory": {
+                "total_products": int(inventory_stats.total_products_count or 0),
+                "total_inventory": int(inventory_stats.total_inventory or 0),
+                "total_reserved": int(inventory_stats.total_reserved or 0),
+                "total_sold": int(inventory_stats.total_sold or 0),
+                "damaged": int(inventory_stats.total_damaged or 0),
+                "returns": int(inventory_stats.total_returns or 0),
+                "waste_rate": round((inventory_stats.total_damaged or 0) / (inventory_stats.total_inventory or 1) * 100, 2)
+            },
+            "orders": {
+                "total": int(order_stats.total_orders or 0),
+                "pending": int(order_stats.pending_orders or 0),
+                "processing": int(order_stats.processing_orders or 0)
+            },
+            "users": {
+                "total_system_users": int(user_stats.total_users or 0),
+                "active_now": int(user_stats.active_users or 0),
+                "deleted_history": int(user_stats.deleted_users or 0),
+                "managers_level": int(user_stats.managers_count or 0),
+                "staff_level": int(user_stats.staff_count or 0)
+            },
+            "alerts": {
+                "counters": {
+                    "out_of_stock_products_count": len(out_of_stock_products_list),
+                    "low_stock_products_count": len(low_stock_products_list),
+                    "out_of_stock_variants_count": len(out_of_stock_variants_list),
+                    "low_stock_variants_count": len(low_stock_variants_list)
+                },
+                "products": {
+                    "out_of_stock": out_of_stock_products_list,
+                    "low_stock": low_stock_products_list
+                },
+                "variants": {
+                    "out_of_stock": out_of_stock_variants_list,
+                    "low_stock": low_stock_variants_list
+                }
+            }
         }
-    }
 
+    except Exception as e:
+        print("!!! DASHBOARD LOGIC ERROR !!!")
+        print(traceback.format_exc())
+        raise e
 
 # --- الإعدادات العامة (نفس التي استعملناها سابقاً) ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1049,3 +1171,157 @@ class OrderInvoiceService:
         c.save()
         buffer.seek(0)
         return buffer
+
+
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_
+import traceback
+
+async def get_products_with_variants_logic(db: Session):
+    try:
+        # 1. جلب المنتجات مع كافة العلاقات المتداخلة في استعلام واحد (Eager Loading)
+        # تم الربط من المنتج -> إلى الألوان -> إلى المتغيرات -> إلى المقاسات بناءً على الـ ERD
+        products = db.query(Product).options(
+            joinedload(Product.colors).joinedload(ProductColor.variants).joinedload(ProductVariant.size)
+        ).filter(
+            Product.deleted_at.is_(None)
+        ).order_by(Product.created_at.desc()).all()
+
+        result_list = []
+
+        # 2. المرور على المنتجات وتجميع البيانات والإجماليات
+        for p in products:
+            
+            # مصفوفة لتجميع كافة المتغيرات الخاصة بهذا المنتج عبر ألوانه المختلفة
+            product_variants_list = []
+            
+            # المرور عبر الألوان غير المحذوفة للمنتج لإنتاج شجرة المتغيرات
+            for color in p.colors:
+                if color.deleted_at is not None:
+                  continue
+                
+                for v in color.variants:
+                    # تصفية المتغيرات غير المحذوفة فقط
+                    if v.deleted_at is not None:
+                        continue
+                        
+                    product_variants_list.append({
+                        "variant_id": v.id,
+                        "color_name": color.color_name,      # من جدول product_colors
+                        "color_image": color.color_image,    # من جدول product_colors
+                        "size_name": v.size.name if v.size else "افتراضي", # من جدول sizes
+                        "quantity_available": int(v.quantity_available or 0),
+                        "quantity_reserved": int(v.quantity_reserved or 0),
+                        "total_sold": int(v.total_sold or 0),
+                        "returned_quantity": int(v.returned_quantity or 0),
+                        "damaged_quantity": int(v.damaged_quantity or 0)
+                    })
+
+            # 3. بناء هيكل الرد الخاص بالمنتج الرئيسي والإجماليات المخزنة (Cache Columns)
+            product_data = {
+                "product_id": p.id,
+                "product_name": p.name,
+                "product_code": p.code or "N/A",
+                "main_image": p.main_image,
+                "prices": {
+                    "cost_price": float(p.cost_price or 0.0),
+                    "selling_price": float(p.selling_price or 0.0)
+                },
+                "inventory_summary": {
+                    "total_available": int(p.total_available or 0),   # المتوفر حالياً
+                    "total_reserved": int(p.total_reserved or 0),     # المحجوز في طلبات قيد التحضير
+                    "total_sold": int(p.total_sold or 0),             # تم بيعه
+                    "total_returns": int(p.total_returns or 0),       # الراجع
+                    "total_damaged": int(p.total_damaged or 0)        # التالف
+                },
+                # دمج كافة المتغيرات التابعة له
+                "variants": product_variants_list
+            }
+
+            result_list.append(product_data)
+
+        # 4. إرجاع النتيجة النهائية المنظمة للفرونت إند
+        return {
+            "success": True,
+            "total_active_products": len(result_list),
+            "products": result_list
+        }
+
+    except Exception as e:
+        print("!!! GET PRODUCTS WITH VARIANTS LOGIC ERROR !!!")
+        print(traceback.format_exc())
+        return {
+            "success": False,
+            "message": "حدث خطأ أثناء جلب المنتجات والمخزون",
+            "error": str(e)
+        }
+
+
+async def get_top_and_bottom_inventory_report_logic(db: Session):
+    """
+    دالة تقارير متقدمة: تجلب أفضل وأقل المتغيرات أداءً في (المبيعات، التوالف، الرواجع)
+    بناءً على العلاقات المباشرة ومعالجة البيانات بشكل تجميعي فائق السرعة.
+    """
+    try:
+        # 1. جلب المنتجات النشطة مع كافة العلاقات المرتبطة بها في استعلام واحد محسن
+        products = db.query(Product).filter(Product.deleted_at == None).all()
+        
+        all_variants_flat_list = []
+        
+        # 2. تحويل البيانات إلى قائمة مسطحة (Flat List) لسهولة الفرز البرمجي السريع
+        for p in products:
+            for color in p.colors:
+                if color.deleted_at is not None:
+                    continue
+                    
+                for v in color.variants:
+                    if v.deleted_at is not None:
+                        continue
+                        
+                    # تجميع كل بيانات المتغير المطلوبة في قاموس موحد
+                    all_variants_flat_list.append({
+                        "product_id": p.id,
+                        "product_name": p.name,
+                        "product_code": p.code,
+                        "main_image": p.main_image,
+                        "variant_id": v.id,
+                        "color_name": color.color_name,
+                        "color_image": color.color_image,
+                        "size_name": v.size.name if v.size else "افتراضي",
+                        "quantity_available": int(v.quantity_available or 0),
+                        "quantity_reserved": int(v.quantity_reserved or 0),
+                        "total_sold": int(v.total_sold or 0),
+                        "damaged_quantity": int(v.damaged_quantity or 0),
+                        "returned_quantity": int(v.returned_quantity or 0)
+                    })
+        
+        # 3. عمليات الفرز الذكي (Sorting) بناءً على شروط التقارير المطلوبة
+        
+        # أ - أعلى 5 متغيرات مبيعاً (ترتيب تنازلي حسب total_sold)
+        top_5_selling = sorted(all_variants_flat_list, key=lambda x: x["total_sold"], reverse=True)[:5]
+        
+        # ب - أقل 5 متغيرات مبيعاً (ترتيب تصاعدي حسب total_sold)
+        bottom_5_selling = sorted(all_variants_flat_list, key=lambda x: x["total_sold"])[:5]
+        
+        # ج - أعلى 5 متغيرات في التوالف (ترتيب تنازلي حسب damaged_quantity)
+        top_5_damaged = sorted(all_variants_flat_list, key=lambda x: x["damaged_quantity"], reverse=True)[:5]
+        
+        # د - أعلى 5 متغيرات في الرواجع (ترتيب تنازلي حسب returned_quantity)
+        top_5_returned = sorted(all_variants_flat_list, key=lambda x: x["returned_quantity"], reverse=True)[:5]
+        
+        return {
+            "success": True,
+            "data": {
+                "top_5_selling": top_5_selling,
+                "bottom_5_selling": bottom_5_selling,
+                "top_5_damaged": top_5_damaged,
+                "top_5_returned": top_5_returned
+            }
+        }
+        
+    except Exception as e:
+        print(f"🔴 Analytics Service Error: {str(e)}")
+        return {
+            "success": False,
+            "message": f"حدث خطأ أثناء إعداد تقارير المخزن: {str(e)}"
+        }        

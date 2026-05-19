@@ -14,7 +14,7 @@ export function Reports() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-5">
           <div className="space-y-1 text-right">
             <h1 className="text-2xl font-black tracking-tight text-slate-900">التقارير التحليلية والرقابة</h1>
-            <p className="text-xs text-slate-500 font-medium">تحليل ذكاء الأعمال الخاص بمنتجات BELLAGio، مستويات الجرد، وكفاءة أداء الموظفين.</p>
+
           </div>
         </div>
 

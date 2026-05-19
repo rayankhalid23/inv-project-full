@@ -32,7 +32,7 @@ from app.services.order_service import (
     process_damage_logic,
     get_order_full_details_logic,
     get_inventory_dashboard_stats,  # تمت إضافتها هنا لضمان وجودها
-    OrderInvoiceService
+    OrderInvoiceService,get_products_with_variants_logic,get_top_and_bottom_inventory_report_logic
 )
 
 router = APIRouter(tags=["Orders"])
@@ -214,23 +214,30 @@ async def websocket_endpoint(
    
 
 @router.get("/inventory-stats/test", tags=["Testing"])
-def test_inventory_stats(db: Session = Depends(get_db)):
+def test_inventory_stats():
     """
-    نقطة نهاية للاختبار فقط: تقوم بإرجاع إحصائيات المخزن الحالية 
-    نفس البيانات التي يرسلها الـ WebSocket
+    نقطة نهاية للاختبار: تقوم بإرجاع إحصائيات المخزن الحالية المصححة
+    باستخدام جلسة معزولة ونظيفة لضمان جلب التنبيهات والعلاقات كاملة دون فقدان.
     """
     try:
-        stats = get_inventory_dashboard_stats(db)
-        return {
-            "status": "success",
-            "data": stats
-        }
+        # نفتح جلسة جديدة ومستقلة تماماً من الـ Factory لضمان قراءة الـ Joins والعلاقات بنجاح
+        with SessionLocal() as db:
+            stats = get_inventory_dashboard_stats(db)
+            
+            # طباعة اختبارية سريعة في الـ Terminal للتأكد من وصول الأرقام للباك إند
+            print(f"🔮 DB Sync Success | Products Alert Count: {stats['alerts']['counters']['out_of_stock_products_count']}")
+            print(f"🔮 DB Sync Success | Variants Alert Count: {stats['alerts']['counters']['out_of_stock_variants_count']}")
+            
+            return {
+                "status": "success",
+                "data": stats
+            }
     except Exception as e:
+        print(f"🔴 Router Alert Error: {str(e)}")
         raise HTTPException(
             status_code=500, 
             detail=f"Error calculating stats: {str(e)}"
         )
-
 @router.get("/orders/{order_id}/invoice")
 async def get_order_invoice(order_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
     # 1. جلب البيانات من الدالة القوية التي صنعناها سابقاً
@@ -264,4 +271,51 @@ async def get_order_invoice(order_id: int, db: Session = Depends(get_db),current
     )
 
 
+
+
+@router.get("/all-with-variants")
+async def get_all_products_with_variants(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    نقطة نهاية احترافية: تقوم بجلب جميع المنتجات النشطة مع كافة المتغيرات التابعة لها
+    (الألوان، المقاسات، وإحصائيات المخزون التفصيلية) في استعلام موحد ومحسن الأداء.
+    محمية ولا يمكن الوصول إليها إلا من قبل المستخدمين النشطين في النظام.
+    """
+    # 1. استدعاء دالة اللوجيك وجلب البيانات
+    result = await get_products_with_variants_logic(db=db)
+    
+    # 2. التحقق من نجاح العملية ومعالجة الاستثناءات بناءً على رد اللوجيك
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("message", "حدث خطأ داخلي أثناء معالجة بيانات المخزون")
+        )
+        
+    # 3. إرجاع النتيجة المنظمة مباشرة للفرونت إند
+    return result   
+
+@router.get("/inventory-analytics/top-bottom")
+async def get_inventory_top_bottom_reports(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    نقطة نهاية التقارير التحليلية: ترجع الـ 4 قوائم الذهبية لإدارة المخزون
+    (أفضل مبيعات، أقل مبيعات، الأكثر تالفاً، الأكثر مرتجعاً) لمتغيرات المنتجات التفصيلية.
+    محمية وصالحة للمستخدمين النشطين فقط.
+    """
+    # 1. استدعاء اللوجيك
+    result = await get_top_and_bottom_inventory_report_logic(db=db)
+    
+    # 2. التحقق من النتيجة ورفع خطأ في حال الفشل
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("message", "فشلت عملية جلب البيانات التحليلية من السيرفر")
+        )
+        
+    # 3. إرسال البيانات المنظمة مباشرة للفرونت إند لتركيبها في الـ Charts والجداول
+    return result
     

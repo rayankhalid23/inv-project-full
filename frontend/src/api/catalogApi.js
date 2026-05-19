@@ -435,5 +435,44 @@ getInventoryStats: async () => {
     }
 },
 
+/**
+ * جلب جميع المنتجات النشطة مع كامل شجرة المتغيرات والإجماليات المخزنة.
+ * يتوافق تماماً مع دالة الباك إند: get_products_with_variants_logic
+ * @returns {Promise<Object>} يحتوي على قائمة المنتجات وإجمالي العدد الإيجابي
+ */
+getAllProductsWithVariants: async () => {
+    try {
+        const response = await api.get('/orders/all-with-variants');
+        // الدالة تعيد في الباك إند: { success: true, total_active_products: X, products: [...] }
+        // نتحقق من نجاح العملية أولاً تماشياً مع تركيبة الرد
+        if (response.data && response.data.success) {
+            return response.data; // نعيد الرد كاملاً ليتم الاستفادة من المنتجات والعدد الإجمالي
+        }
+        throw new Error(response.data?.message || "فشلت عملية جلب المنتجات");
+    } catch (error) {
+        console.error("Error in getAllProductsWithVariants API:", error.response?.data || error.message);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تحميل بيانات المنتجات والمخزون.";
+    }
+},
+
+/**
+ * جلب تقارير أداء المخزون المتقدمة (أفضل وأقل 5 متغيرات مبيعاً، وتالفاً، ورواجع).
+ * يتوافق تماماً مع دالة الباك إند: get_top_and_bottom_inventory_report_logic
+ * @returns {Promise<Object>} مصفوفات مصنفة وجاهزة لعرض الرسوم البيانية والجداول الإحصائية
+ */
+getInventoryTopBottomReports: async () => {
+    try {
+        const response = await api.get('/orders/inventory-analytics/top-bottom');
+        // الدالة تعيد في الباك إند: { success: true, data: { top_5_selling: [...], ... } }
+        if (response.data && response.data.success) {
+            return response.data.data; // نعيد حقل data مباشرة لتبسيط الاستهلاك في مكونات التقارير والـ Charts
+        }
+        throw new Error(response.data?.message || "فشلت عملية جلب التقارير التحليلية");
+    } catch (error) {
+        console.error("Error in getInventoryTopBottomReports API:", error.response?.data || error.message);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تحميل التقارير التحليلية للمخزون.";
+    }
+}
+
 };
 
