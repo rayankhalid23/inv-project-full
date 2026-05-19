@@ -11,6 +11,8 @@ import ProductsPage from "./pages/Products/ProductsPage";
 import SalesPage from "./pages/SalesPage";
 import StockMovementsPage from "./pages/StockMovementsPage";
 import { Reports } from './pages/Reports/Reports';
+// أضف هذا السطر في أعلى الملف تحت الاستيرادات مباشرة
+import QuickScanPage from './pages/QuickScanButton';
 
 
 /**
@@ -74,6 +76,7 @@ function App() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/sales" element={<SalesPage />} />
             <Route path="/stock-movements" element={<StockMovementsPage />} />
+            <Route path="/quick-scan" element={<QuickScanPage />} />
             <Route path="/reports" element={<Reports />} />
             
 

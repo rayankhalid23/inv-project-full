@@ -378,7 +378,62 @@ deleteSingleVariant: async (variantId) => {
       console.error(`Error deleting single variant with ID ${variantId}:`, error);
       throw error;
     }
-  }
+  },
+  // --- قسم عمليات الجرد السريع والمسح (رواجع / تالف) ---
+/**
+     * إرسال رمز الـ QR لتسجيل عملية مرتجع للمخزن (قطعة واحدة تلقائياً)
+     * يتوافق تماماً مع standalone_return_logic في الباك إند
+     * @param {string} qrCode - الرمز الممسوح ضوئياً
+     * @param {string} note - الملاحظة أو سبب المرتجع
+     */
+processScanReturn: async (qrCode, note = "مرتجع") => {
+    try {
+        // الباك إند يتوقع qr_code و note كـ Query Parameters في الرابط
+        const response = await api.post('/orders/return-item-by-qr', null, {
+            params: { 
+                qr_code: qrCode,
+                note: note
+            }
+        });
+        return response.data; // يعيد {"status": "success", "new_qty": ...}
+    } catch (error) {
+        console.error("Error in processScanReturn API:", error.response?.data || error.message);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تسجيل المرتجع.";
+    }
+},
+
+/**
+ * إرسال رمز الـ QR لتسجيل عملية إتلاف من المخزن (قطعة واحدة تلقائياً)
+ * يتوافق تماماً مع process_damage_logic في الباك إند
+ * @param {string} qrCode - الرمز الممسوح ضوئياً
+ * @param {string} note - سبب الإتلاف
+ */
+processScanDamage: async (qrCode, note = "تالف") => {
+    try {
+        // الباك إند يتوقع qr_code و note كـ Query Parameters في الرابط
+        const response = await api.post('/orders/mark-as-damaged', null, {
+            params: { 
+                qr_code: qrCode,
+                note: note
+            }
+        });
+        return response.data; // يعيد {"status": "success", "new_qty": ...}
+    } catch (error) {
+        console.error("Error in processScanDamage API:", error.response?.data || error.message);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تسجيل التالف.";
+    }
+},
+getInventoryStats: async () => {
+    try {
+        const response = await api.get('/orders/inventory-stats/test');
+        // الدالة تعيد { status: "success", data: { ... } }
+        // سنعيد فقط البيانات المطلوبة لتسهيل استخدامها في الفرونت
+        return response.data.data; 
+    } catch (error) {
+        console.error("Error fetching stats:", error);
+        throw error;
+    }
+},
 
 };
 

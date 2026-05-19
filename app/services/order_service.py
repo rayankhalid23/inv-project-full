@@ -300,6 +300,12 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
     variant = db.query(ProductVariant).filter(ProductVariant.qr_code == qr_code).with_for_update().first()
     if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
 
+    if variant.deleted_at is not None:
+        raise HTTPException(status_code=400, detail="المنتج محذوف ولا يمكن استرجاعه")
+
+    if variant.total_sold <= 0:
+        raise HTTPException(status_code=400, detail="لا يوجد قطع مبيوعة لإعادة استرجاعها")    
+
     q_before = variant.quantity_available
    
     q_after = variant.quantity_available
@@ -324,6 +330,9 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
     variant = db.query(ProductVariant).filter(ProductVariant.qr_code == qr_code).with_for_update().first()
     if not variant: 
         raise HTTPException(status_code=404, detail="الرمز غير موجود")
+
+    if variant.deleted_at is not None:
+        raise HTTPException(status_code=400, detail="المنتج محذوف ولا يمكن تسجيله كتالف")
 
     if variant.quantity_available <= 0:
         raise HTTPException(status_code=400, detail="لا توجد كمية متاحة لإتلافها")

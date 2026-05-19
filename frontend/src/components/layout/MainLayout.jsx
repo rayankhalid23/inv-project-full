@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../context/AuthContext"; 
+import QuickScanPage from "../../pages/QuickScanButton";
 
 const sidebarItems = [
   { icon: LayoutDashboard, label: "الرئيسية", path: "/" },
@@ -18,6 +19,7 @@ const sidebarItems = [
   { icon: Settings, label: "الإعدادات", path: "/settings" },
 ];
 
+
 const MainLayout = ({ children }) => {
     const { user, logout } = useAuth();
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -29,6 +31,8 @@ const MainLayout = ({ children }) => {
     const roleId = user?.role_id; 
     
     const firstLetter = displayName.charAt(0).toUpperCase();
+    // أضف هذا السطر في بداية المكون من الأعلى لتفادي الخطأ
+const [isScanSheetOpen, setIsScanSheetOpen] = useState(false);
 
     const filteredSidebarItems = sidebarItems.filter(item => {
       if (!item.roles) return true;
@@ -56,6 +60,7 @@ const MainLayout = ({ children }) => {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex flex-col font-arabic" dir="rtl">
+      
       
       {/* 1 — الهيدر العلوي */}
       <header className="bg-white/90 backdrop-blur-md border-b border-slate-100 sticky top-0 z-50 px-6 h-18 flex items-center justify-between shadow-sm">
@@ -120,7 +125,7 @@ const MainLayout = ({ children }) => {
       </div>
 
       {/* 4 — شريط الموبايل السفلي */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-100 z-50 h-20 flex items-center justify-around px-2 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-100 z-30 h-20 flex items-center justify-around px-2 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
         <div className="flex w-1/3 justify-around items-center">
           <Link to="/" className={cn("flex flex-col items-center gap-1", location.pathname === "/" ? "text-[#800000]" : "text-slate-400")}>
             <LayoutDashboard className="w-5.5 h-5.5" />
@@ -132,8 +137,10 @@ const MainLayout = ({ children }) => {
           </Link>
         </div>
 
+        {/* 4 — شريط الموبايل السفلي */}
         <div className="flex items-center justify-center w-1/5">
-          <button onClick={() => navigate('/sales')} className="relative group">
+          {/* تم إرجاعه كـ button عادي يتحكم بالـ state لمنع اختفاء الواجهة الخلفية */}
+          <button type="button" onClick={() => setIsScanSheetOpen(true)} className="relative group">
             <div className="absolute inset-0 bg-[#800000]/15 rounded-full blur-lg group-hover:bg-[#800000]/25 transition-all duration-500"></div>
             <div className="relative bg-[#800000] text-white w-12 h-12 rounded-full shadow-md flex items-center justify-center transition-all duration-300 active:scale-90 hover:-translate-y-1">
               <Plus className="w-6 h-6 stroke-[3px]" />
@@ -181,6 +188,8 @@ const MainLayout = ({ children }) => {
           </aside>
         </div>
       )}
+      <QuickScanPage isOpen={isScanSheetOpen} onClose={() => setIsScanSheetOpen(false)} />
+      
     </div>
   );
 };

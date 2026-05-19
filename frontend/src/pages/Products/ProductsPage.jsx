@@ -18,6 +18,13 @@ const ProductsPage = () => {
   // --- [حالات التحكم في النافذة والمنتج] ---
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(null);
+  // --- [نظام الصلاحيات الذكي] ---
+  // نقرأ بيانات المستخدم من الـ localStorage (عدّل المسمى حسب ما هو مخزن عندك بالسيرفر)
+  const storedUser = localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : null;
+  const userRole = storedUser?.role || localStorage.getItem('role') || 'employee'; 
+
+  // الصلاحية تمنح فقط للمدير (admin) أو المسؤول (manager)
+  const canManage = userRole === 'admin' || userRole === 'manager' || userRole === 'مدير' || userRole === 'مسؤول';
 
   // 1. الدالة الأساسية لجلب البيانات من الباك آند
   const fetchCatalogs = useCallback(async (status = 'all') => {
@@ -82,11 +89,13 @@ const ProductsPage = () => {
   }, [searchQuery, catalogs]);
 
   const handleAddProduct = () => {
+    if (!canManage) return;
     setCurrentProduct(null); 
     setIsDialogOpen(true);
   };
 
   const handleEditProduct = (product) => {
+    if (!canManage) return;
     setCurrentProduct(product);
     setIsDialogOpen(true);
   };
@@ -111,6 +120,7 @@ const ProductsPage = () => {
           <CatalogsPage 
             catalogs={catalogs} 
             loading={loading} 
+            canManage={canManage}
             onRefresh={() => fetchCatalogs('all')} 
             onSelect={(cat) => { setSelectedCatalog(cat); setView('products'); }}
             onAddProduct={handleAddProduct}
@@ -122,6 +132,7 @@ const ProductsPage = () => {
       ) : (
         <CatalogProductsView 
           catalog={selectedCatalog} 
+          canManage={canManage}
           onBack={() => { setView('catalogs'); setSelectedCatalog(null); }} 
           onEditProduct={handleEditProduct}
           onAddProduct={handleAddProduct}
@@ -135,12 +146,14 @@ const ProductsPage = () => {
         />
       )}
 
-      <ProductFormDialog 
+{canManage && isDialogOpen && (
+        <ProductFormDialog 
           open={isDialogOpen} 
           onOpenChange={setIsDialogOpen} 
           productToEdit={currentProduct} 
           onSaveSuccess={handleSaveSuccess} 
-      />
+        />
+      )}
     </div>
   );
 };
