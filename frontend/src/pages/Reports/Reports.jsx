@@ -1,12 +1,26 @@
 import React, { useState } from 'react';
-import { BarChart2, Package, Users } from 'lucide-react';
+import { BarChart2, Package, Users, FileDown } from 'lucide-react';
 import ProductsReport from './ProductsReport';
 import EmployeesReport from './EmployeesReport';
 import TimeFilter from '../../components/TimeFilter'; // المسار صحيح وممتاز
+import { catalogApi } from '../../api/catalogApi';
 
 export function Reports() {
   const [activeTab, setActiveTab] = useState('products');
   const [period, setPeriod] = useState('7d'); // الـ State الموحدة للوقت
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  const handleExportPdf = async () => {
+    try {
+      setPdfLoading(true);
+      await catalogApi.exportComprehensiveReportPdf(period);
+    } catch (error) {
+      console.error("Comprehensive PDF Export error:", error);
+      alert("حدث خطأ أثناء تصدير ملف PDF للتقرير الشامل.");
+    } finally {
+      setPdfLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50/30 pb-12" dir="rtl">
@@ -16,6 +30,17 @@ export function Reports() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-5">
           <div className="space-y-1 text-right">
             <h1 className="text-2xl font-black tracking-tight text-slate-900">التقارير التحليلية والرقابة</h1>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleExportPdf}
+              disabled={pdfLoading}
+              className="flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-white bg-[#800000] hover:bg-[#521624] rounded-xl transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <FileDown className="h-4 w-4" />
+              <span>{pdfLoading ? 'جاري تصدير PDF...' : 'تصدير التقرير الشامل PDF'}</span>
+            </button>
           </div>
         </div>
 

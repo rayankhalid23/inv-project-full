@@ -472,6 +472,26 @@ getInventoryTopBottomReports: async (period = '7d') => {
         console.error("Error in getInventoryTopBottomReports API:", error.response?.data || error.message);
         throw error.response?.data?.detail || "حدث خطأ أثناء تحميل التقارير التحليلية للمخزون.";
     }
+},
+
+exportComprehensiveReportPdf: async (period = '7d') => {
+    try {
+        const response = await api.get('/analytics/reports/export-pdf', {
+            params: { period },
+            responseType: 'blob',
+        });
+        
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `Bellagio_Comprehensive_Report_${period}_${new Date().toISOString().slice(0,10)}.pdf`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    } catch (error) {
+        console.error("Comprehensive PDF Export failed:", error);
+        throw error;
+    }
 }
 
 };

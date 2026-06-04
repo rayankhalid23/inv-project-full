@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional
+from datetime import datetime
 from app.core.database import get_db
 from app.core.deps import RoleChecker
 from app.services.Reporting import ReportingService # استيراد الكلاس
 from app.services.time_helper import get_report_time_range
 from app.models.inventory import Product, ProductVariant
+from app.services.reports_pdf_generator import ReportsPDFGenerator
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -87,3 +90,24 @@ def get_performance_analytics(
         raise HTTPException(status_code=400, detail="تنسيق التاريخ غير صحيح. يرجى استخدام YYYY-MM-DD")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/export-pdf")
+async def export_comprehensive_report_pdf(
+    period: str = "7d",
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2]))
+):
+    try:
+        pdf_buffer = await ReportsPDFGenerator.generate_report_pdf(db, period)
+        filename = f"Bellagio_Comprehensive_Report_{period}_{datetime.now().strftime('%Y%m%d')}.pdf"
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        import traceback
+        print("ERROR GENERATING REPORTS PDF:")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"فشل تصدير التقرير كـ PDF: {str(e)}")
+
