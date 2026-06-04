@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from typing import Optional
 from app.core.database import get_db
 from app.core.deps import RoleChecker
 from app.services.Reporting import ReportingService # استيراد الكلاس
@@ -42,3 +43,47 @@ async def get_comprehensive_report(
         },
         "employee_performance": emp_data
     }
+
+@router.get("/employee-statistics")
+def get_employee_statistics(
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2]))
+):
+    """
+    إحصائيات الموظفين: العدد الإجمالي، عدد المفعلين، عدد المحذوفين، والعدد حسب الرتب (Admin, Manager, Employee).
+    """
+    try:
+        return ReportingService.get_employee_statistics(db)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/performance-analytics")
+def get_performance_analytics(
+    period: Optional[str] = Query(None, description="الفترة الزمنية: 7d, 1m, 3m, 6m"),
+    start_date: Optional[str] = Query(None, description="تاريخ البداية مخصص (تنسيق YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="تاريخ النهاية مخصص (تنسيق YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user = Depends(RoleChecker([1, 2]))
+):
+    """
+    تحليل أداء الموظفين: تحديد الموظف الأفضل والأسوأ بناءً على إجمالي العمليات المسجلة،
+    مع قائمة مرتبة للموظفين تحتوي على تفاصيل العمليات (إضافة/تعديل/حذف) لكل صنف.
+    """
+    try:
+        from app.services.time_helper import get_report_time_range
+        from datetime import datetime
+        
+        s_date, e_date = None, None
+        if period:
+            s_date, e_date = get_report_time_range(period)
+        else:
+            if start_date:
+                s_date = datetime.fromisoformat(start_date)
+            if end_date:
+                e_date = datetime.fromisoformat(end_date)
+                
+        return ReportingService.get_performance_analytics(db, s_date, e_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="تنسيق التاريخ غير صحيح. يرجى استخدام YYYY-MM-DD")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

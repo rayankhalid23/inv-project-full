@@ -78,7 +78,7 @@ const EmployeeLogin = () => {
   }, [step, navigate]);
 
   return (
-    <div className="min-h-[100dvh] flex items-center justify-center p-4 bg-[#2c333f] bg-gradient-to-br from-[#384252] via-[#2c333f] to-[#1e2530] text-white font-sans" dir="rtl">
+    <div className="min-h-[100dvh] flex items-center justify-center p-4 bg-[#0f172a] bg-gradient-to-tr from-[#0f172a] via-[#1e293b] to-[#3b82f6]/20 text-white font-sans" dir="rtl">
       
       {/* Decorative Background Elements */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-400/10 rounded-full blur-[120px] pointer-events-none" />

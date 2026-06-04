@@ -152,3 +152,30 @@ export const updateEmployeeApi = async (id, data) => {
 };
 
 
+// 3. جلب إحصائيات الموظفين العامة
+export const fetchEmployeeStatisticsApi = async () => {
+    try {
+        // المسار الصحيح بناءً على Swagger هو /analytics/reports/employee-statistics
+        const response = await axios.get(`${API_URL}/analytics/reports/employee-statistics`, getAuthHeaders());
+        return response.data;
+    } catch (error) {
+        throw error;
+    }
+};
+
+// 4. جلب تحليلات أداء الموظفين التفصيلية
+export const fetchPerformanceAnalyticsApi = async (params = {}) => {
+    try {
+        // المسار الصحيح بناءً على Swagger هو /analytics/reports/performance-analytics
+        const response = await axios.get(`${API_URL}/analytics/reports/performance-analytics`, {
+            params,
+            ...getAuthHeaders()
+        });
+        return response.data;
+    } catch (error) {
+        throw error;
+    }
+};
+
+
+

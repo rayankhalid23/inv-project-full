@@ -423,9 +423,9 @@ processScanDamage: async (qrCode, note = "تالف") => {
         throw error.response?.data?.detail || "حدث خطأ أثناء تسجيل التالف.";
     }
 },
-getInventoryStats: async () => {
+getInventoryStats: async (period = '7d') => {
     try {
-        const response = await api.get('/orders/inventory-stats/test');
+        const response = await api.get('/orders/inventory-stats/test', { params: { period } });
         // الدالة تعيد { status: "success", data: { ... } }
         // سنعيد فقط البيانات المطلوبة لتسهيل استخدامها في الفرونت
         return response.data.data; 
@@ -440,9 +440,9 @@ getInventoryStats: async () => {
  * يتوافق تماماً مع دالة الباك إند: get_products_with_variants_logic
  * @returns {Promise<Object>} يحتوي على قائمة المنتجات وإجمالي العدد الإيجابي
  */
-getAllProductsWithVariants: async () => {
+getAllProductsWithVariants: async  (period = 'all') => {
     try {
-        const response = await api.get('/orders/all-with-variants');
+        const response = await api.get('/orders/all-with-variants', { params: { period } });
         // الدالة تعيد في الباك إند: { success: true, total_active_products: X, products: [...] }
         // نتحقق من نجاح العملية أولاً تماشياً مع تركيبة الرد
         if (response.data && response.data.success) {
@@ -460,9 +460,9 @@ getAllProductsWithVariants: async () => {
  * يتوافق تماماً مع دالة الباك إند: get_top_and_bottom_inventory_report_logic
  * @returns {Promise<Object>} مصفوفات مصنفة وجاهزة لعرض الرسوم البيانية والجداول الإحصائية
  */
-getInventoryTopBottomReports: async () => {
+getInventoryTopBottomReports: async (period = '7d') => {
     try {
-        const response = await api.get('/orders/inventory-analytics/top-bottom');
+        const response = await api.get('/orders/inventory-analytics/top-bottom', { params: { period } });
         // الدالة تعيد في الباك إند: { success: true, data: { top_5_selling: [...], ... } }
         if (response.data && response.data.success) {
             return response.data.data; // نعيد حقل data مباشرة لتبسيط الاستهلاك في مكونات التقارير والـ Charts

@@ -7,7 +7,7 @@ import { cn } from '../lib/utils';
 import { useAuth } from '../context/AuthContext';
 import { catalogApi } from '../api/catalogApi';
 
-// --- مكون الأزرار السريعة إذا كنت تستخدمه أسفل الشاشة أو في القائمة ---
+// --- مكون الأزرار السريعة ---
 const QuickAction = ({ label, icon: Icon, color }) => (
   <button className="bg-white border border-slate-100 p-4 rounded-3xl flex flex-col items-center justify-center gap-2 hover:bg-slate-50 transition-all group active:scale-95 shadow-sm">
     <div className={cn("p-2.5 rounded-2xl transition-all group-hover:bg-opacity-80", color)}>
@@ -17,7 +17,7 @@ const QuickAction = ({ label, icon: Icon, color }) => (
   </button>
 );
 
-// --- مكون البطاقة الإحصائية المحسن والمرن للشاشات الصغيرة والكبيرة ---
+// --- مكون البطاقة الإحصائية المحسن ---
 const StatCard = ({ title, value, icon: Icon, colorClass, isFullWidth }) => (
   <div className={cn(
     "bg-white rounded-[1rem] border border-slate-100 shadow-sm flex items-center transition-all hover:shadow-md",
@@ -54,8 +54,16 @@ const Dashboard = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const data = await catalogApi.getInventoryStats();
-        setStats(data);
+        // [تعديل محوري]: تمرير 'all' كقيمة افتراضية لتعطيل الفلتر الزمني في الصفحة الرئيسية وجلب كل البيانات
+        const response = await catalogApi.getInventoryStats('all');
+        
+        // فك التغليف لضمان الوصول للكائن الصحيح
+        const actualStats = response?.data?.data || response?.data || response;
+        
+        // طباعة تشخيصية في متصفح الكروم للتأكد من هيكل البيانات القادمة للفرونت إند
+        console.log("📊 Dashboard Rendered Stats:", actualStats);
+        
+        setStats(actualStats);
       } catch (err) { 
         console.error("Error fetching stats:", err); 
       } finally {
@@ -87,7 +95,7 @@ const Dashboard = () => {
       {/* الشبكة الرئيسية الثابتة بـ 3 أعمدة دائماً */}
       <div className="grid grid-cols-3 gap-3 sm:gap-6">
         
-        {/* السطر الأول: إجمالي المنتجات (يأخذ الـ 3 أعمدة كاملة) */}
+        {/* السطر الأول: إجمالي المنتجات */}
         <StatCard 
           title="إجمالي المنتجات المسجلة" 
           value={stats?.inventory?.total_products || 0} 
@@ -96,7 +104,7 @@ const Dashboard = () => {
           isFullWidth
         />
 
-        {/* السطر الثاني: المخزون المتوفر، المحجوز، والمباع (مقسمة 3 أعمدة إجبارياً على أي شاشة) */}
+        {/* السطر الثاني: المخزون المتوفر، المحجوز، والمباع */}
         <StatCard 
           title="المخزون المتوفر" 
           value={stats?.inventory?.total_inventory || 0} 
@@ -116,7 +124,7 @@ const Dashboard = () => {
           colorClass="bg-indigo-50 text-indigo-900" 
         />
 
-        {/* السطر الإضافي المطور: جلب معلومات التالف والرواجع ونسبة التالف (مقسمة 3 أعمدة) */}
+        {/* السطر الإضافي المطور: معلومات التالف والرواجع ونسبة التالف */}
         <StatCard 
           title="إجمالي التالف" 
           value={stats?.inventory?.damaged || 0} 
@@ -148,7 +156,7 @@ const Dashboard = () => {
           </div>
         </div>
 
-        {/* السطر الثالث: الطلبات، قيد التجهيز، والمعلقة (مقسمة 3 أعمدة إجبارياً على أي شاشة) */}
+        {/* السطر الثالث: الطلبات، قيد التجهيز، والمعلقة */}
         <StatCard 
           title="إجمالي الطلبات" 
           value={stats?.orders?.total || 0} 

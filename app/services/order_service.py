@@ -869,10 +869,29 @@ from sqlalchemy import func, case, and_, or_
 import traceback
 from app.models.inventory import Product, ProductVariant, ProductColor, Size
 from app.models.order import Order
-from app.models.user import User 
+from app.models.user import User
+from fastapi import HTTPException
+import traceback
+import traceback
+from datetime import datetime, timedelta
+from sqlalchemy import func, case, and_, or_
+from sqlalchemy.orm import Session
+from sqlalchemy import func, case, String
+from fastapi import HTTPException
+ 
 
-def get_inventory_dashboard_stats(db: Session):
+# from app.models import Product, Order, User, ProductVariant, ProductColor, Size
+
+def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
     try:
+        # حساب تاريخ بداية الفترة للفلترة الزمنية للطلبات والتحليلات
+        now = datetime.now()
+        start_date = None
+        if period == '7d': start_date = now - timedelta(days=7)
+        elif period == '1m': start_date = now - timedelta(days=30)
+        elif period == '3m': start_date = now - timedelta(days=90)
+        elif period == '6m': start_date = now - timedelta(days=180)
+
         # =========================================================================
         # 1. إحصائيات المنتجات والمخزون العامة (مطابقة للجدول تماماً)
         # =========================================================================
@@ -886,27 +905,55 @@ def get_inventory_dashboard_stats(db: Session):
         ).filter(Product.deleted_at.is_(None)).first()
 
         # =========================================================================
-        # 2. إحصائيات الطلبات
+        # 2. إحصائيات الطلبات (تم تعديل الهيكلية لتكون متوافقة تماماً)
         # =========================================================================
-        order_stats = db.query(
-            func.count(Order.id).label("total_orders"),
-            func.sum(case((Order.status == 'pending', 1), else_=0)).label("pending_orders"),
-            func.sum(case((Order.status == 'in_preparation', 1), else_=0)).label("processing_orders")
-        ).filter(Order.deleted_at.is_(None)).first()
-        
+        order_query = db.query(
+               # حساب العدد الإجمالي للطلبات وضمان عدم رجوعه كـ None
+            func.coalesce(func.count(Order.id), 0).label("total_orders"),
+    
+                # حساب الطلبات المعلقة مع عمل cast للـ Enum وتحويل الـ None إلى 0
+            func.coalesce(
+                func.sum(
+                    case(
+                          (func.cast(Order.status, String) == 'pending', 1),
+                          else_=0
+                    )
+               ), 0
+            ).label("pending_orders"),
+    
+             # حساب الطلبات قيد التجهيز مع عمل cast للـ Enum وتحويل الـ None إلى 0
+            func.coalesce(
+                func.sum(
+                    case(
+                        (func.cast(Order.status, String) == 'in_preparation', 1),
+                        else_=0
+                    )
+                ), 0
+            ).label("processing_orders")
+        ).filter(Order.deleted_at.is_(None))
+
+        # تطبيق شرط التاريخ إذا كانت الفترة الزمنية محددة
+        if start_date:
+            order_query = order_query.filter(Order.created_at >= start_date)
+
+        order_stats = order_query.first()
+
+        # [تعديل محوري]: تم إزالة الـ return المبكر والـ except المكرر الذي كان متواجداً هنا 
+        # لمتابعة بقية الكود بسلاسة تحت نفس بنية الـ try
+
         # =========================================================================
         # 3. إحصائيات المستخدمين
         # =========================================================================
         user_stats = db.query(
             func.count(User.id).label("total_users"),
-            func.sum(case((and_(User.is_active == True, User.deleted_at.is_(None)), 1), else_=0)).label("active_users"),
+            func.sum(case(((User.is_active == True) & (User.deleted_at.is_(None)), 1), else_=0)).label("active_users"),
             func.sum(case((User.deleted_at.is_not(None), 1), else_=0)).label("deleted_users"),
             func.sum(case((User.role_id == 2, 1), else_=0)).label("managers_count"),
             func.sum(case((User.role_id == 3, 1), else_=0)).label("staff_count")
         ).first()
 
         # =========================================================================
-        # 4. استعلام تنبيهات المتغيرات (Variants Alerts) - دراسة العلاقة بدقة عبر جدول الألوان
+        # 4. استعلام تنبيهات المتغيرات (Variants Alerts)
         # =========================================================================
         variants_alerts_query = db.query(
             ProductVariant,
@@ -922,7 +969,7 @@ def get_inventory_dashboard_stats(db: Session):
          .filter(
              and_(
                  ProductVariant.deleted_at.is_(None),
-                 or_(Product.deleted_at.is_(None), Product.deleted_at.is_(None)),
+                 Product.deleted_at.is_(None),
                  or_(
                      # الشرط الأول: نفاد تام (الكمية صفر) + مبيعات المتغير أكبر من صفر
                      and_(ProductVariant.quantity_available == 0, ProductVariant.total_sold > 0),
@@ -944,8 +991,8 @@ def get_inventory_dashboard_stats(db: Session):
                 "color": row.color_name or "افتراضي",
                 "size": row.size_name or "افتراضي",
                 "image": row.color_image,
-                "available_quantity": int(v.quantity_available or 0),  # إضافة القيمة المتوفرة للمتغير
-                "total_sold": int(v.total_sold or 0),                  # إضافة القيمة المباعة للمتغير
+                "available_quantity": int(v.quantity_available or 0),
+                "total_sold": int(v.total_sold or 0),
                 "min_threshold": v.min_stock_threshold
             }
             if v.quantity_available == 0:
@@ -977,8 +1024,8 @@ def get_inventory_dashboard_stats(db: Session):
                 "name": p.name,
                 "code": p.code,
                 "image": p.main_image,
-                "available_quantity": int(p.total_available or 0),  # إضافة القيمة المتوفرة للمنتج
-                "total_sold": int(p.total_sold or 0),              # إضافة القيمة المباعة للمنتج
+                "available_quantity": int(p.total_available or 0),
+                "total_sold": int(p.total_sold or 0),
                 "min_threshold": p.min_stock_threshold
             }
             if p.total_available == 0:
@@ -987,52 +1034,58 @@ def get_inventory_dashboard_stats(db: Session):
                 low_stock_products_list.append(product_data)
 
         # =========================================================================
-        # 6. إرجاع القاموس المنظم للفرونت إند
+        # 6. إرجاع القاموس المنظم الموحد للفرونت إند
         # =========================================================================
         return {
             "inventory": {
-                "total_products": int(inventory_stats.total_products_count or 0),
-                "total_inventory": int(inventory_stats.total_inventory or 0),
-                "total_reserved": int(inventory_stats.total_reserved or 0),
-                "total_sold": int(inventory_stats.total_sold or 0),
-                "damaged": int(inventory_stats.total_damaged or 0),
-                "returns": int(inventory_stats.total_returns or 0),
-                "waste_rate": round((inventory_stats.total_damaged or 0) / (inventory_stats.total_inventory or 1) * 100, 2)
+                "total_products": int((inventory_stats.total_products_count if inventory_stats else 0) or 0),
+                "total_inventory": int((inventory_stats.total_inventory if inventory_stats else 0) or 0),
+                "total_reserved": int((inventory_stats.total_reserved if inventory_stats else 0) or 0),
+                "total_sold": int((inventory_stats.total_sold if inventory_stats else 0) or 0),
+                "damaged": int((inventory_stats.total_damaged if inventory_stats else 0) or 0),
+                "returns": int((inventory_stats.total_returns if inventory_stats else 0) or 0),
+                "waste_rate": round(((inventory_stats.total_damaged if inventory_stats else 0) or 0) / ((inventory_stats.total_inventory if inventory_stats else 1) or 1) * 100, 2)
             },
             "orders": {
-                "total": int(order_stats.total_orders or 0),
-                "pending": int(order_stats.pending_orders or 0),
-                "processing": int(order_stats.processing_orders or 0)
+                "total": int((order_stats.total_orders if order_stats else 0) or 0),
+                "pending": int((order_stats.pending_orders if order_stats else 0) or 0),
+                "processing": int((order_stats.processing_orders if order_stats else 0) or 0)
             },
             "users": {
-                "total_system_users": int(user_stats.total_users or 0),
-                "active_now": int(user_stats.active_users or 0),
-                "deleted_history": int(user_stats.deleted_users or 0),
-                "managers_level": int(user_stats.managers_count or 0),
-                "staff_level": int(user_stats.staff_count or 0)
+                "total_system_users": int((user_stats.total_users if user_stats else 0) or 0),
+                "active_now": int((user_stats.active_users if user_stats else 0) or 0),
+                "deleted_history": int((user_stats.deleted_users if user_stats else 0) or 0),
+                "managers_level": int((user_stats.managers_count if user_stats else 0) or 0),
+                "staff_level": int((user_stats.staff_count if user_stats else 0) or 0)
             },
             "alerts": {
                 "counters": {
-                    "out_of_stock_products_count": len(out_of_stock_products_list),
-                    "low_stock_products_count": len(low_stock_products_list),
-                    "out_of_stock_variants_count": len(out_of_stock_variants_list),
-                    "low_stock_variants_count": len(low_stock_variants_list)
+                    "out_of_stock_products_count": len(out_of_stock_products_list or []),
+                    "low_stock_products_count": len(low_stock_products_list or []),
+                    "out_of_stock_variants_count": len(out_of_stock_variants_list or []),
+                    "low_stock_variants_count": len(low_stock_variants_list or [])
                 },
                 "products": {
-                    "out_of_stock": out_of_stock_products_list,
-                    "low_stock": low_stock_products_list
+                    "out_of_stock": out_of_stock_products_list or [],
+                    "low_stock": low_stock_products_list or []
                 },
                 "variants": {
-                    "out_of_stock": out_of_stock_variants_list,
-                    "low_stock": low_stock_variants_list
+                    "out_of_stock": out_of_stock_variants_list or [],
+                    "low_stock": low_stock_variants_list or []
                 }
             }
         }
 
     except Exception as e:
+        # طباعة الخطأ كاملاً مع تتبع الأسطر داخل الـ Terminal الخاص بالسيرفر لسهولة التتبع والمراقبة
         print("!!! DASHBOARD LOGIC ERROR !!!")
         print(traceback.format_exc())
-        raise e
+        
+        # رفع الخطأ كـ HTTPException لتستقبله الواجهة الأمامية بشكل منظم بدلاً من انهيار السيرفر
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error in stats: {str(e)}" 
+        )
 
 # --- الإعدادات العامة (نفس التي استعملناها سابقاً) ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

@@ -6,17 +6,19 @@ import {
   Award, ShieldAlert, CornerDownLeft, ArrowDown
 } from 'lucide-react';
 import { catalogApi } from '../../api/catalogApi'; 
+import TimeFilter from '../../components/TimeFilter';
 
 const API_BASE_URL = 'http://localhost:8000';
 
-export default function ProductsReport() {
+export default function ProductsReport({ period }) {
   const [data, setData] = useState(null);
-  const [analyticsData, setAnalyticsData] = useState(null); // تخزين بيانات الـ 5 الأفضل والأقل
-  const [allProducts, setAllProducts] = useState([]); // تخزين شجرة المنتجات التفصيلية
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [allProducts, setAllProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [expandedProduct, setExpandedProduct] = useState(null); // لتأثير الأكورديون في جدول المنتجات
+  const [expandedProduct, setExpandedProduct] = useState(null);
+
 
   useEffect(() => {
     let isMounted = true;
@@ -27,10 +29,10 @@ export default function ProductsReport() {
         
         // جلب البيانات المتوازية لضمان سرعة فائقة وعدم تجميد الشاشة
         const [statsResult, analyticsResult, productsResult] = await Promise.all([
-          catalogApi.getInventoryStats(),
-          catalogApi.getInventoryTopBottomReports(),
-          catalogApi.getAllProductsWithVariants()
-        ]);
+        catalogApi.getInventoryStats(period), // تمرير الفترة
+        catalogApi.getInventoryTopBottomReports(period), // تمرير الفترة
+        catalogApi.getAllProductsWithVariants(period) // تمرير الفترة
+      ]);
 
         if (isMounted) {
           setData(statsResult?.data ? statsResult.data : statsResult);
@@ -50,7 +52,7 @@ export default function ProductsReport() {
     }
     fetchAllReportData();
     return () => { isMounted = false; };
-  }, [refreshKey]);
+  }, [refreshKey, period]);
 
   if (loading) {
     return (
@@ -102,6 +104,7 @@ export default function ProductsReport() {
       {/* ==========================================
           القسم الأول: إحصائيات المخزون العامة
           ========================================== */}
+        
       <div>
         <div className="flex items-center gap-2 mb-3 px-1">
           <Package className="h-3.5 w-3.5 text-slate-400" />
@@ -176,7 +179,7 @@ export default function ProductsReport() {
           ================================================================== */}
       <div className="relative flex py-4 items-center">
         <div className="flex-grow border-t-2 border-slate-300"></div>
-        <span className="flex-shrink mx-4 text-xs font-black text-slate-500 bg-slate-50 px-3 py-1 rounded-full border border-slate-200">📊 تحليل الأداء خماسي الأبعاد (Top 5 & Bottom 5)</span>
+        <span className="flex-shrink mx-4 text-xs font-black text-slate-500 bg-slate-50 px-3 py-1 0"> التقييمات </span>
         <div className="flex-grow border-t-2 border-slate-300"></div>
       </div>
 
@@ -192,15 +195,15 @@ export default function ProductsReport() {
           ================================================================== */}
       <div className="relative flex py-4 items-center">
         <div className="flex-grow border-t-2 border-slate-300"></div>
-        <span className="flex-shrink mx-4 text-xs font-black text-slate-500 bg-slate-50 px-3 py-1 rounded-full border border-slate-200">🔍 الجرد التفصيلي وشجرة المتغيرات الكاملة</span>
+        <span className="flex-shrink mx-4 text-xs font-black text-slate-500 bg-slate-50 px-3 py-1 "> الجرد التفصيلي </span>
         <div className="flex-grow border-t-2 border-slate-300"></div>
       </div>
 
-      <div className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
-        <div className="p-4 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between">
+      <div className="bg-white border border-slate-300 rounded-2xl shadow-sm overflow-hidden">
+        <div className="p-4 bg-slate-50/50 border-b border-slate-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-slate-700" />
-            <h3 className="text-xs sm:text-sm font-black text-slate-900">مستكشف المخزون الشامل ({allProducts.length} منتج نشط)</h3>
+            <h3 className="text-xs sm:text-sm font-black text-slate-900"> المخزون  :  ({allProducts.length} منتج نشط)</h3>
           </div>
           <span className="text-[10px] bg-slate-200/70 text-slate-600 font-bold px-2 py-0.5 rounded-full">اضغط على أي منتج لاستعراض المقاسات والألوان</span>
         </div>
@@ -359,10 +362,10 @@ export default function ProductsReport() {
  */
 function TopBottomList({ title, icon: Icon, data, type, color }) {
   const schemeMaps = {
-    green: { border: 'border-emerald-100', headerBg: 'bg-emerald-50/50', icon: 'text-emerald-600 bg-emerald-50', font: 'text-emerald-600' },
-    red: { border: 'border-red-100', headerBg: 'bg-red-50/50', icon: 'text-red-600 bg-red-50', font: 'text-red-600' },
-    purple: { border: 'border-purple-100', headerBg: 'bg-purple-50/50', icon: 'text-purple-600 bg-purple-50', font: 'text-purple-600' },
-    slate: { border: 'border-slate-200', headerBg: 'bg-slate-100/60', icon: 'text-slate-600 bg-slate-100', font: 'text-slate-700' }
+    green: { border: 'border-emerald-200', headerBg: 'bg-emerald-600', icon: 'text-emerald-600 bg-white', font: 'text-emerald-700' },
+    red: { border: 'border-red-200', headerBg: 'bg-orange-500', icon: 'text-red-700 bg-white', font: 'text-red-700' },
+    purple: { border: 'border-purple-200', headerBg: 'bg-blue-900', icon: 'text-purple-700 bg-white', font: 'text-purple-700' },
+    slate: { border: 'border-slate-300', headerBg: 'bg-red-800', icon: 'text-slate-800 bg-white', font: 'text-slate-800' }
   };
 
   const currentScheme = schemeMaps[color] || schemeMaps.slate;
@@ -370,12 +373,12 @@ function TopBottomList({ title, icon: Icon, data, type, color }) {
   return (
     <div className={`bg-white border ${currentScheme.border} rounded-2xl shadow-xs overflow-hidden flex flex-col justify-between`}>
       {/* رأس القائمة */}
-      <div className={`p-3.5 ${currentScheme.headerBg} border-b border-slate-100 flex items-center gap-2`}>
-        <div className={`p-1.5 rounded-lg ${currentScheme.icon}`}>
-          <Icon className="h-4 w-4" />
-        </div>
-        <h4 className="text-xs font-black text-slate-900">{title}</h4>
-      </div>
+      <div className={`p-3.5 ${currentScheme.headerBg} flex items-center gap-3`}>
+    <div className={`p-1.5 rounded-lg ${currentScheme.icon} shadow-sm`}>
+      <Icon className="h-4 w-4" />
+    </div>
+    <h4 className="text-xs font-black text-white tracking-wide">{title}</h4>
+</div>
 
       {/* محتويات القائمة */}
       <div className="divide-y divide-slate-100/80">
@@ -401,18 +404,24 @@ function TopBottomList({ title, icon: Icon, data, type, color }) {
               </div>
 
               {/* الرقم الإحصائي والعداد */}
-              <div className="text-left shrink-0">
-                {type === 'sold' && (
-                  <span className={`text-xs font-mono font-black ${currentScheme.font}`}>{item.total_sold} قطعة</span>
-                )}
-                {type === 'damaged' && (
-                  <span className={`text-xs font-mono font-black ${currentScheme.font}`}>{item.damaged_quantity} تالف</span>
-                )}
-                {type === 'returned' && (
-                  <span className={`text-xs font-mono font-black ${currentScheme.font}`}>{item.returned_quantity} مرتجع</span>
-                )}
-                <span className="block text-[8px] text-slate-400 font-bold mt-0.5">متوفر: {item.quantity_available}</span>
-              </div>
+              <div className="text-center shrink-0 bg-slate-50 px-2 py-1.5 rounded-lg border border-slate-100 min-w-[65px]">
+  {/* الرقم الأساسي (مباع/تالف/مرتجع) */}
+  <span className={`block text-[11px] font-black font-mono ${currentScheme.font}`}>
+    {type === 'sold' && item.total_sold}
+    {type === 'damaged' && item.damaged_quantity}
+    {type === 'returned' && item.returned_quantity}
+  </span>
+  
+  {/* التسمية التوضيحية */}
+  <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-tighter mt-0.5">
+    {type === 'sold' ? 'قطعة' : type === 'damaged' ? 'تالف' : 'مرتجع'}
+  </span>
+  
+  {/* المخزون المتاح (بشكل أصغر وأكثر هدوءاً) */}
+  <div className="border-t border-slate-200 mt-1 pt-0.5">
+    <span className="text-[7px] text-slate-400 font-bold">متوفر: {item.quantity_available}</span>
+  </div>
+</div>
             </div>
           ))
         ) : (

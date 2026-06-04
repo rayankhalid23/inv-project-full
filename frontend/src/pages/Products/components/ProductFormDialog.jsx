@@ -32,7 +32,7 @@ const productSchema = z.object({
   })).default([])
 });
 
-const BASE_URL = 'http://localhost:8000';
+const BASE_URL = 'http://192.168.1.104:8000';
 const getFullUrl = (path) => {
   if (!path) return null;
   if (path instanceof File) return URL.createObjectURL(path);
@@ -70,7 +70,7 @@ const safeGetFullUrl = (path) => {
   if (path.startsWith('http://') || path.startsWith('https://')) return path; // إذا كان رابط كامل
   
   // إذا كان مسار نسبي قادم من الباك إند (قم بتغيير المنفذ 8000 حسب مشروعك)
-  const baseUrl = 'http://localhost:8000';
+  const baseUrl = 'http://192.168.1.104:8000';
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   return `${baseUrl}${cleanPath}`.replace(/\\/g, '/'); // تحويل أي مائل خلفي مسبب للمشاكل في ويندوز
 };

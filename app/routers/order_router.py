@@ -214,15 +214,16 @@ async def websocket_endpoint(
    
 
 @router.get("/inventory-stats/test", tags=["Testing"])
-def test_inventory_stats():
+def test_inventory_stats(period: str = "all"): # جعلنا الافتراضي هنا 'all' لرؤية كل البيانات فوراً أثناء الفحص
     """
     نقطة نهاية للاختبار: تقوم بإرجاع إحصائيات المخزن الحالية المصححة
-    باستخدام جلسة معزولة ونظيفة لضمان جلب التنبيهات والعلاقات كاملة دون فقدان.
+    مع دعم الفلترة الزمنية بشكل ديناميكي عبر الـ Query Parameter.
     """
     try:
         # نفتح جلسة جديدة ومستقلة تماماً من الـ Factory لضمان قراءة الـ Joins والعلاقات بنجاح
         with SessionLocal() as db:
-            stats = get_inventory_dashboard_stats(db)
+            # [تعديل محوري]: تمرير الـ period المقاد من الـ URL للدالة الأساسية
+            stats = get_inventory_dashboard_stats(db, period=period)
             
             # طباعة اختبارية سريعة في الـ Terminal للتأكد من وصول الأرقام للباك إند
             print(f"🔮 DB Sync Success | Products Alert Count: {stats['alerts']['counters']['out_of_stock_products_count']}")
@@ -233,11 +234,14 @@ def test_inventory_stats():
                 "data": stats
             }
     except Exception as e:
-        print(f"🔴 Router Alert Error: {str(e)}")
+        import traceback
+        print("🔴 Router Alert Error:")
+        print(traceback.format_exc()) # طباعة تفاصيل الخطأ كاملة في السيرفر إذا انهار لأي سبب آخر
         raise HTTPException(
             status_code=500, 
             detail=f"Error calculating stats: {str(e)}"
         )
+        
 @router.get("/orders/{order_id}/invoice")
 async def get_order_invoice(order_id: int, db: Session = Depends(get_db),current_user: User = Depends(get_current_user)):
     # 1. جلب البيانات من الدالة القوية التي صنعناها سابقاً
@@ -318,4 +322,24 @@ async def get_inventory_top_bottom_reports(
         
     # 3. إرسال البيانات المنظمة مباشرة للفرونت إند لتركيبها في الـ Charts والجداول
     return result
+
+
+@router.get("/test-orders-only")
+def test_orders_only(db: Session = Depends(get_db)):
+    try:
+        from sqlalchemy import func, case, String
+        
+        # استعلام مبسط جداً للطلبات فقط بدون تواريخ وبدون تعقيد
+        stats = db.query(
+            func.count(Order.id).label("total"),
+            func.sum(case((func.cast(Order.status, String) == 'pending', 1), else_=0)).label("pending")
+        ).filter(Order.deleted_at.is_(None)).first()
+        
+        return {
+            "total_orders_from_code": stats.total if stats else 0,
+            "pending_orders_from_code": stats.pending if stats else 0
+        }
+    except Exception as e:
+        import traceback
+        return {"error_details": traceback.format_exc()}    
     

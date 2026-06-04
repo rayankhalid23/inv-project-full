@@ -2,23 +2,24 @@ import React, { useState } from 'react';
 import { BarChart2, Package, Users } from 'lucide-react';
 import ProductsReport from './ProductsReport';
 import EmployeesReport from './EmployeesReport';
+import TimeFilter from '../../components/TimeFilter'; // المسار صحيح وممتاز
 
 export function Reports() {
   const [activeTab, setActiveTab] = useState('products');
+  const [period, setPeriod] = useState('7d'); // الـ State الموحدة للوقت
 
   return (
     <div className="min-h-screen bg-slate-50/30 pb-12" dir="rtl">
       <div className="space-y-6">
         
-        {/* هيدر الصفحة الرئيسي الموحد للتطبيق */}
+        {/* 1. هيدر الصفحة الرئيسي الموحد للتطبيق */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-5">
           <div className="space-y-1 text-right">
             <h1 className="text-2xl font-black tracking-tight text-slate-900">التقارير التحليلية والرقابة</h1>
-
           </div>
         </div>
 
-        {/* أزرار التبويبات التنقلية المصممة يدوياً واحترافياً لتجنب مشاكل المكتبات الخارجية */}
+        {/* 2. أزرار التبويبات التنقلية (مكانها الصحيح في الأعلى) */}
         <div className="flex items-center gap-1.5 border-b border-slate-200 pb-px">
           <button
             onClick={() => setActiveTab('products')}
@@ -45,9 +46,16 @@ export function Reports() {
           </button>
         </div>
 
-        {/* عرض محتوى القسم النشط والتبديل الحي بينهما بسلاسة */}
+        {/* 3. الفلتر الزمني الموحد (يظهر مباشرة تحت التبويبات وفوق الإحصائيات) */}
+        <TimeFilter period={period} setPeriod={setPeriod} />
+
+        {/* 4. عرض محتوى القسم النشط (نظيف وممرر له الـ period) */}
         <div className="animate-fade-in duration-200">
-          {activeTab === 'products' ? <ProductsReport /> : <EmployeesReport />}
+          {activeTab === 'products' ? (
+            <ProductsReport period={period} />
+          ) : (
+            <EmployeesReport period={period} />
+          )}
         </div>
 
       </div>
