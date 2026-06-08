@@ -2,6 +2,7 @@ from typing import List, Any, Optional, Dict
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
+
 from app.core.database import SessionLocal
 
 from app.core.database import init_db
@@ -11,7 +12,7 @@ from app.services import inventory_movement_service as service
 
 from app.models.user import User
 from app.models.inventory import Product, ProductVariant,InventoryMovement
-from app.schemas.inventory_movement_schema import InventoryMovementRead
+from app.schemas.inventory_movement_schema import InventoryMovementRead, PaginatedInventoryMovementResponse
 
 from app.schemas.inventory_movement_schema import (
     InventoryMovementRead, 
@@ -24,7 +25,8 @@ from app.services.inventory_movement_service import (
     record_stock_addition,
     record_damage_entry,
     record_return_to_stock,
-    record_manual_adjustment
+    record_manual_adjustment,get_advanced_inventory_ledger,get_movement_details_service
+
 )
 
 
@@ -160,40 +162,52 @@ def read_inventory_ledger(
     )
     return movements
 
-
-@router.get("/{movement_id}", response_model=InventoryMovementRead)
-def read_movement_details(
-    movement_id: int,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+@router.get("/ledger", response_model=PaginatedInventoryMovementResponse)
+def read_inventory_ledger(
+    user_id: Optional[int] = None,
+    product_id: Optional[int] = None,
+    variant_id: Optional[int] = None,
+    movement_type: Optional[str] = None,
+    order_id: Optional[int] = None,
+    time_preset: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    skip: int = 0,
+    limit: int = 20,
+    db: Session = Depends(get_db)
 ):
-    return get_movement_details_service(db, movement_id)
+    """
+    نقطة الاتصال المعتمدة لجلب سجل الحركات المخزنية بالكامل 
+    تمرر جميع الفلاتر المتاحة مباشرة إلى الـ Service بدون أي اختصارات مبهمة.
+    """
+    return get_advanced_inventory_ledger(
+        db=db,
+        user_id=user_id,
+        product_id=product_id,
+        variant_id=variant_id,
+        movement_type=movement_type,
+        order_id=order_id,
+        time_preset=time_preset,
+        start_date=start_date,
+        end_date=end_date,
+        skip=skip,
+        limit=limit
+    )
 
-
-
-
-# 1. دالة ملخص الحركات (Analytics)
 @router.get("/summary", response_model=Dict[str, Any])
 def get_movements_summary(
     month: int = Query(None, ge=1, le=12),
     year: int = Query(None, ge=2020),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
-    """
-    عرض أرقام تجميعية: إجمالي المضاف، التالف، ونسبة المرتجعات لشهر محدد.
-    """
-    return service.get_movement_summary(db, month=month, year=year)
+    return get_movement_summary(db, month=month, year=year)
 
-
-# 2. دالة التحقق من التوافق (Reconciliation)
 @router.get("/reconcile/{variant_id}", response_model=Dict[str, Any])
 def verify_stock_integrity(
     variant_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
-    
-    return service.check_stock_integrity(db, variant_id=variant_id)
-
+    return check_stock_integrity(db, variant_id=variant_id)
 

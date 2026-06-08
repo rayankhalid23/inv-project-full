@@ -492,7 +492,54 @@ exportComprehensiveReportPdf: async (period = '7d') => {
         console.error("Comprehensive PDF Export failed:", error);
         throw error;
     }
-}
+},
 
+/**
+ * جلب سجل حركات المخزن المتقدم (Inventory Ledger) مع دعم الفلترة الشاملة والصفحات.
+ * يتوافق تماماً مع دالة الباك إند: read_inventory_ledger
+ * * @param {Object} params - فلاتر البحث الاختيارية والصفحات
+ * @param {number} [params.skip=0] - عدد السجلات المراد تخطيها
+ * @param {number} [params.limit=20] - عدد السجلات في الصفحة الواحدة
+ * @param {number} [params.user_id] - تصفية حسب الموظف الذي قام بالحركة
+ * @param {number} [params.product_id] - تصفية حسب المنتج الأب
+ * @param {number} [params.variant_id] - تصفية حسب المتغير الدقيق
+ * @param {string} [params.movement_type] - نوع الحركة (in, out, damage, adjustment)
+ * @param {number} [params.order_id] - تصفية بحسب رقم الطلب المرتبط
+ * @param {string} [params.time_preset] - اختصارات زمنية (today, week, month)
+ * @param {string} [params.start_date] - تاريخ البداية (ISO String)
+ * @param {string} [params.end_date] - تاريخ النهاية (ISO String)
+ * @returns {Promise<{total: number, items: Array}>} يعيد إجمالي عدد السجلات مع مصفوفة الحركات الحالية
+ */
+getInventoryLedger: async (params = {}) => {
+    try {
+        // تعيين قيم افتراضية للـ Pagination في حال لم يتم تمريرها من الواجهة
+        const queryParams = { skip: 0, limit: 20, ...params };
+        
+        const response = await api.get('/inventory/ledger', { params: queryParams });
+        const responseData = response.data;
+
+        // السيناريو الأول: إذا كان الباك إند يرسل مصفوفة مباشرة (الوضع الحالي الفعلي)
+        if (Array.isArray(responseData)) {
+            return {
+                items: responseData,
+                total: responseData.length // نعتمد على طول المصفوفة كعدد إجمالي مؤقت
+            };
+        }
+        
+        // السيناريو الثاني: إذا كان الباك إند يعيد كائن مغلف بالكامل يحتوي على total و items
+        if (responseData && typeof responseData.total !== 'undefined') {
+            return {
+                items: responseData.items || [],
+                total: responseData.total
+            }; 
+        }
+        
+        throw new Error("تنسيق رد البيانات من الخادم غير متوافق مع نظام الصفحات.");
+    } catch (error) {
+        console.error("Error in getInventoryLedger API:", error.response?.data || error.message);
+        // تمرير تفاصيل الخطأ القادمة من FastAPI مباشرة للواجهة لعرضها في نوتيفيكيشن
+        throw error.response?.data?.detail || "حدث خطأ غير متوقع أثناء تحميل سجل الحركات المخزنية.";
+    }
+},
 };
 

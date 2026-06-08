@@ -172,7 +172,9 @@ class InventoryMovement(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     # العلاقات لسهولة جلب البيانات لاحقاً
+    # 🌟 العلاقات المحدثة لسهولة وسرعة جلب البيانات ومنع الأخطاء:
     variant = relationship("ProductVariant", back_populates="movements")
+    user = relationship("User") # 💡 هذا هو السطر السحري الناقص الذي يحل المشكلة فوراً!
 
 
 class SystemAuditLog(Base):
