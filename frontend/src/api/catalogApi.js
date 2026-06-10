@@ -541,5 +541,39 @@ getInventoryLedger: async (params = {}) => {
         throw error.response?.data?.detail || "حدث خطأ غير متوقع أثناء تحميل سجل الحركات المخزنية.";
     }
 },
+
+clearReturns: async (variantId = null) => {
+    try {
+        const response = await api.post('/inventory/clear-returns', null, {
+            params: variantId ? { variant_id: variantId } : {}
+        });
+        return response.data;
+    } catch (error) {
+        console.error("Error in clearReturns API:", error);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تصفير الرواجع.";
+    }
+},
+
+clearDamages: async (variantId = null) => {
+    try {
+        const response = await api.post('/inventory/clear-damages', null, {
+            params: variantId ? { variant_id: variantId } : {}
+        });
+        return response.data;
+    } catch (error) {
+        console.error("Error in clearDamages API:", error);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تصفير التوالف.";
+    }
+},
+
+deleteMovement: async (movementId) => {
+    try {
+        const response = await api.delete(`/inventory/movement/${movementId}`);
+        return response.data;
+    } catch (error) {
+        console.error("Error in deleteMovement API:", error);
+        throw error.response?.data?.detail || "حدث خطأ أثناء حذف الحركة.";
+    }
+},
 };
 

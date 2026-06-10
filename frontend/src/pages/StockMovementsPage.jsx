@@ -201,12 +201,12 @@ export default function StockMovementsPage() {
 
   const getMovementMeta = (type) => {
     switch (type) {
-      case "وارد": return { icon: ArrowDownLeft, color: "text-emerald-700 bg-emerald-50 border-emerald-200" };
-      case "صادر": return { icon: ArrowUpRight, color: "text-red-700 bg-red-50 border-red-200" };
-      case "تالف": return { icon: AlertTriangle, color: "text-orange-700 bg-orange-50 border-orange-200" };
-      case "تعديل": return { icon: RefreshCw, color: "text-blue-700 bg-blue-50 border-blue-200" };
-      case "إرجاع": return { icon: Undo2, color: "text-purple-700 bg-purple-50 border-purple-200" };
-      default: return { icon: FileText, color: "text-slate-700 bg-slate-50 border-slate-200" };
+      case "وارد": return { icon: ArrowDownLeft, color: "text-emerald-600 bg-emerald-50 border-emerald-200" };
+      case "صادر": return { icon: ArrowUpRight, color: "text-red-600 bg-red-50 border-red-200" };
+      case "تالف": return { icon: AlertTriangle, color: "text-amber-600 bg-amber-50 border-amber-200", label: "توالف" };
+      case "إرجاع": return { icon: Undo2, color: "text-violet-600 bg-violet-50 border-violet-200", label: "رواجع" };
+      case "تعديل": return { icon: RefreshCw, color: "text-blue-600 bg-blue-50 border-blue-200" };
+      default: return { icon: FileText, color: "text-slate-600 bg-slate-50 border-slate-200" };
     }
   };
 
@@ -378,61 +378,34 @@ export default function StockMovementsPage() {
                     const isPositive = mov.quantityDelta > 0;
                     return (
                       <div
-                        key={mov.id}
-                        onClick={() => {
-                          setSelectedMovement(mov);
-                          setIsDetailOpen(true);
-                          setIsJsonExpanded(false);
-                        }}
-                        className="bg-white border border-slate-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm hover:shadow-md hover:border-slate-300 transition-all cursor-pointer"
-                      >
-                        {/* بيانات اليمين للمنتج والمتغير واللون */}
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className={`h-9 w-9 rounded-xl border flex items-center justify-center shrink-0 ${Meta.color}`}>
-                            <Meta.icon className="h-4 w-4" />
-                          </div>
-                          
-                          <div className="space-y-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h4 className="text-xs font-bold text-slate-900 truncate">{mov.productName}</h4>
-                              <span className="text-[9px] font-mono bg-slate-100 text-slate-500 px-1.5 py-0.2 rounded border border-slate-200">
-                                كود: {mov.productCode}
-                              </span>
-                            </div>
-                            
-                            <div className="flex items-center gap-2 flex-wrap text-[10px] text-slate-400 font-medium">
-                              <span className="bg-slate-50 px-1.5 py-0.2 rounded">المقاس: {mov.size}</span>
-                              <span className="bg-slate-50 px-1.5 py-0.2 rounded">اللون: {mov.color}</span>
-                              <span className="bg-slate-50 px-1.5 py-0.2 rounded">معرف المتغير: #{mov.variantId}</span>
-                              {mov.orderId !== "N/A" && (
-                                <span className="bg-[#6b1d2f]/5 text-[#6b1d2f] px-1.5 py-0.2 rounded font-bold">
-                                  طلب مرجعي: {mov.orderId}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
+  key={mov.id}
+  onClick={() => { setSelectedMovement(mov); setIsDetailOpen(true); document.body.style.overflow = 'hidden'; }}
+  className="bg-white border border-slate-200 rounded-2xl p-4 flex items-center justify-between shadow-sm hover:shadow-md transition-all cursor-pointer group"
+>
+  {/* الجزء الأيمن: الأيقونة + الاسم */}
+  <div className="flex items-center gap-4">
+    <div className={`h-12 w-12 rounded-xl border flex items-center justify-center shrink-0 ${Meta.color}`}>
+      <Meta.icon className="h-6 w-6" />
+    </div>
+    <div>
+      <h4 className="text-sm font-bold text-slate-900">{mov.productName}</h4>
+      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+        {mov.color} • {mov.size}
+      </p>
+    </div>
+  </div>
 
-                        {/* بيانات اليسار للموظف والتغير العددي الفوري */}
-                        <div className="flex items-center justify-between sm:justify-end gap-6 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
-                          <div className="hidden md:flex items-center gap-1 text-xs text-slate-500 font-medium">
-                            <User className="h-3 w-3 text-slate-400" />
-                            <span>{mov.employeeName}</span>
-                          </div>
-                          
-                          <span className="text-[10px] text-slate-400 font-mono font-medium">
-                            {mov.createdAt.includes(",") ? mov.createdAt.split(",")[1] : mov.createdAt}
-                          </span>
-                          
-                          <div className="text-left shrink-0 min-w-[60px]">
-                            <span className={`text-sm font-mono font-black ${isPositive ? "text-emerald-600" : "text-red-600"}`}>
-                              {isPositive ? `+${mov.quantityDelta}` : mov.quantityDelta}
-                            </span>
-                            <span className="text-[9px] text-slate-400 block font-medium">قطعة</span>
-                          </div>
-                        </div>
-
-                      </div>
+  {/* الجزء الأيسر: المسؤول والتاريخ والكمية */}
+  <div className="flex items-center gap-8">
+    <div className="text-right hidden sm:block">
+      <p className="text-xs font-bold text-slate-700">{mov.employeeName}</p>
+      <p className="text-[10px] text-slate-400 font-mono" dir="ltr">{mov.createdAt?.replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d))}</p>
+    </div>
+    <div className={`text-lg font-black font-mono px-4 py-1.5 rounded-lg border ${isPositive ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-red-700 bg-red-50 border-red-200"}`}>
+      {isPositive ? `+${mov.quantityDelta}` : mov.quantityDelta}
+    </div>
+  </div>
+</div>
                     );
                   })}
                 </div>
@@ -471,137 +444,175 @@ export default function StockMovementsPage() {
 
       </div>
 
-      {/* --- نافذة التفاصيل والمراجعة الشاملة --- */}
-      {isDetailOpen && selectedMovement && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl flex flex-col max-h-[90vh]">
-            
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 rounded-t-2xl">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-[#6b1d2f]" />
-                <span className="text-xs font-black text-slate-900">مراجعة وثيقة تدقيق المخزن</span>
-              </div>
-              <button 
-                onClick={() => setIsDetailOpen(false)}
-                className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100"
-              >
-                <X className="h-4 w-4" />
-              </button>
+  {/* --- نافذة التفاصيل والمراجعة الشاملة --- */}
+{isDetailOpen && selectedMovement && (() => {
+  // تعريف Meta محلياً داخل النطاق الصحيح لمنع أخطاء الـ Reference
+  const Meta = getMovementMeta(selectedMovement.type);
+  
+  // شرط ذكي للتحقق من التوالف والرواجع لإخفاء البيانات غير المرغوبة
+  const isSpecialMovement = ["تالف", "إرجاع"].includes(selectedMovement.type);
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+      <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl flex flex-col max-h-[90vh]">
+        
+        {/* رأسية النافذة بتنسيق احترافي */}
+        <div className="flex items-start justify-between p-5 border-b border-slate-100 relative">
+          {/* اليمين: الأيقونة + اسم المنتج */}
+          <div className="flex items-center gap-4">
+            <div className={`h-16 w-16 rounded-2xl flex items-center justify-center shrink-0 ${Meta.color}`}>
+              <Meta.icon className="h-8 w-8" />
             </div>
-
-            <div className="p-5 overflow-y-auto space-y-4 text-right">
-              <div className="text-center pb-3 border-b border-slate-100 space-y-1">
-                <span className={`inline-flex text-[10px] font-bold px-3 py-0.5 rounded-full border ${
-                  selectedMovement.quantityDelta > 0 ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-700"
-                }`}>
-                  عملية: {selectedMovement.type}
-                </span>
-                <h3 className="text-sm font-bold text-slate-900">{selectedMovement.productName}</h3>
-                <span className="text-[10px] font-mono text-slate-400 block">رقم السجل: #{selectedMovement.id} | {selectedMovement.createdAt}</span>
-              </div>
-
-              {/* بطاقة جرد المخزون قبل وبعد */}
-              <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 text-center">
-                <div className="space-y-0.5">
-                  <span className="text-[10px] text-slate-400 block font-medium">المخزون قبل</span>
-                  <span className="text-xs font-mono font-bold text-slate-600">{selectedMovement.quantityBefore}</span>
-                </div>
-                <div className="space-y-0.5 border-x border-slate-200">
-                  <span className="text-[10px] text-slate-400 block font-medium">صافي التغير</span>
-                  <span className={`text-xs font-mono font-black ${selectedMovement.quantityDelta > 0 ? "text-emerald-600" : "text-red-600"}`}>
-                    {selectedMovement.quantityDelta > 0 ? `+${selectedMovement.quantityDelta}` : selectedMovement.quantityDelta}
-                  </span>
-                </div>
-                <div className="space-y-0.5">
-                  <span className="text-[10px] text-slate-400 block font-medium">المخزون بعد</span>
-                  <span className="text-xs font-mono font-bold text-slate-900">{selectedMovement.quantityAfter}</span>
-                </div>
-              </div>
-
-              {/* بطاقة حية لعرض الباركود والمخزن الحالي المتوفر */}
-              <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 flex items-center justify-between">
-                <div className="space-y-1">
-                  <span className="text-[10px] text-slate-400 block font-medium">المخزون الفعلي الحالي بالمستودع:</span>
-                  <span className="text-sm font-bold text-slate-900 font-mono">{selectedMovement.quantityAvailable} قطعة متوفرة</span>
-                </div>
-                {selectedMovement.qrCode && (
-                  <div className="h-14 w-14 bg-white border border-slate-200 rounded-lg p-1 flex items-center justify-center shadow-sm">
-                    <img 
-                      src={selectedMovement.qrCode} 
-                      alt="QR Code" 
-                      className="h-full w-full object-contain"
-                      onError={(e) => { e.target.style.display = 'none'; }}
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* القائم بالعملية */}
-              <div className="space-y-1">
-                <span className="text-[10px] font-bold text-slate-400 block">المسؤول عن الحركة:</span>
-                <div className="border border-slate-200 rounded-lg p-2.5 flex items-center justify-between text-xs bg-white shadow-sm">
-                  <div className="space-y-0.5">
-                    <span className="font-bold text-slate-800 block">{selectedMovement.employeeName}</span>
-                    <span className="text-[10px] font-mono text-slate-400">معرف الحساب: #{selectedMovement.rawJson.user_id}</span>
-                  </div>
-                  <User className="h-4 w-4 text-slate-400" />
-                </div>
-              </div>
-
-              {/* تفاصيل الملاحظات والطلبات المرجعية وأسباب التلف الحية */}
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
-                  <span className="text-slate-400">رقم طلب المبيعات الفعلي:</span>
-                  <div className="flex items-center gap-1">
-                    <span className="font-mono font-bold text-slate-700">{selectedMovement.orderId}</span>
-                    {selectedMovement.orderId !== "N/A" && (
-                      <button 
-                        onClick={() => handleCopy(selectedMovement.rawJson.related_order_id)} 
-                        className="p-0.5 hover:bg-slate-100 rounded text-slate-400"
-                      >
-                        {copiedText === selectedMovement.rawJson.related_order_id ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* عرض حقل سبب التلف حصراً إذا وجد بالباك إند */}
-                {selectedMovement.damageReason && (
-                  <div className="space-y-1 bg-orange-50/70 border border-orange-100 p-2 rounded-lg">
-                    <span className="text-orange-700 font-bold block text-[10px]">سبب التلف المحدد:</span>
-                    <p className="text-orange-900 text-[11px] font-medium">{selectedMovement.damageReason}</p>
-                  </div>
-                )}
-
-                <div className="space-y-1">
-                  <span className="text-slate-400 block">ملاحظات توثيق الحركة:</span>
-                  <p className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg text-slate-600 text-[11px] leading-relaxed">
-                    {selectedMovement.notes}
-                  </p>
-                </div>
-              </div>
-
-              {/* كائن الرد التقني الخام للمطورين */}
-              <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
-                <button
-                  type="button"
-                  onClick={() => setIsJsonExpanded(!isJsonExpanded)}
-                  className="w-full px-3 py-2 flex items-center justify-between text-[11px] font-bold text-slate-600 bg-slate-100 hover:bg-slate-200/70 transition-colors"
-                >
-                  <span>استعراض كائن الرد التقني الخام (Database Payload)</span>
-                  {isJsonExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                </button>
-                {isJsonExpanded && (
-                  <pre className="p-3 text-[10px] font-mono text-left bg-slate-900 text-emerald-400 overflow-x-auto max-h-48" dir="ltr">
-                    {JSON.stringify(selectedMovement.rawJson, null, 2)}
-                  </pre>
-                )}
-              </div>
-
+            <div className="text-right">
+              <h3 className="text-sm font-bold text-slate-900">{selectedMovement.productName}</h3>
+              <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                {selectedMovement.color} | {selectedMovement.size}
+              </p>
+            </div>
+          </div>
+  
+          {/* اليسار: الموظف + التاريخ بالأرقام الإنجليزية + زر الإغلاق */}
+          <div className="text-left flex flex-col items-end gap-2">
+            <button 
+              onClick={() => { setIsDetailOpen(false); document.body.style.overflow = ''; }}
+              className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100 transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <div className="text-left">
+              <p className="text-xs font-bold text-slate-700">{selectedMovement.employeeName}</p>
+              <p className="text-[10px] text-slate-400 font-mono mt-0.5" dir="ltr">
+                {selectedMovement.createdAt?.replace(/[٠-٩]/g, d => "٠١٢٣٤٥٦٧٨٩".indexOf(d))}
+              </p>
             </div>
           </div>
         </div>
-      )}
+  
+        {/* جسم النافذة (التفاصيل) */}
+        <div className="p-5 overflow-y-auto space-y-4 text-right">
+          <div className="text-center pb-3 border-b border-slate-100 space-y-1">
+            <span className={`inline-flex text-[10px] font-bold px-3 py-0.5 rounded-full border ${
+              selectedMovement.quantityDelta > 0 ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-red-50 border-red-200 text-red-700"
+            }`}>
+              عملية: {selectedMovement.type}
+            </span>
+          </div>
+  
+          {/* بطاقة جرد المخزون قبل وبعد */}
+          <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 text-center" dir="ltr">
+            <div className="space-y-0.5">
+              <span className="text-[10px] text-slate-400 block font-medium">المخزون قبل</span>
+              <span className="text-xs font-mono font-bold text-slate-600">{selectedMovement.quantityBefore}</span>
+            </div>
+            <div className="space-y-0.5 border-x border-slate-200">
+              <span className="text-[10px] text-slate-400 block font-medium">صافي التغير</span>
+              <span className={`text-xs font-mono font-black ${selectedMovement.quantityDelta > 0 ? "text-emerald-600" : "text-red-600"}`}>
+                {selectedMovement.quantityDelta > 0 ? `+${selectedMovement.quantityDelta}` : selectedMovement.quantityDelta}
+              </span>
+            </div>
+            <div className="space-y-0.5">
+              <span className="text-[10px] text-slate-400 block font-medium">المخزون بعد</span>
+              <span className="text-xs font-mono font-bold text-slate-900">{selectedMovement.quantityAfter}</span>
+            </div>
+          </div>
+  
+          {/* المخزن الحالي والباركود / الصورة */}
+          <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 flex items-center justify-between">
+            <div className="space-y-1 text-right">
+              <span className="text-[10px] text-slate-400 block font-medium">المخزون الفعلي الحالي:</span>
+              <div dir="ltr" className="text-sm font-bold text-slate-900 font-mono inline-block">
+                {selectedMovement.quantityAvailable} <span className="text-xs font-sans font-normal text-slate-500">pcs</span>
+              </div>
+            </div>
+            
+            {/* ✅ تم تحديث الشرط الخارجي هنا ليتوافق مع حقول قاعدة البيانات ولا يحجب الصورة أبداً */}
+            {(selectedMovement.color_image || selectedMovement.main_image || selectedMovement.qr_code || selectedMovement.image || selectedMovement.product?.main_image || selectedMovement.variant?.qr_code || selectedMovement.color?.color_image) && (
+              <div className="h-14 w-14 bg-white border border-slate-200 rounded-lg p-1 flex items-center justify-center shadow-sm shrink-0">
+                <img 
+                  src={(() => {
+                    const rawPath = 
+                      selectedMovement.color_image || 
+                      selectedMovement.main_image || 
+                      selectedMovement.qr_code || 
+                      selectedMovement.image ||
+                      selectedMovement.product?.main_image ||
+                      selectedMovement.variant?.qr_code ||
+                      selectedMovement.color?.color_image ||
+                      selectedMovement.product_color?.color_image;
+                    
+                    if (!rawPath) return "https://placehold.co/150?text=No+Image";
+                    if (rawPath.startsWith('http')) return rawPath;
+                    
+                    const BACKEND_URL = "http://localhost:5000"; 
+                    const cleanPath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+                    
+                    // 💡 بما أن المسار الكامل أعطى 404 سابقاً، فالسيرفر يتجاهل كلمة static تلقائياً
+                    // لذلك قمت بتفعيل حذف كلمة static ليعمل الرابط مباشرة ويجلب الصورة
+                    return `${BACKEND_URL}${cleanPath.replace('/static', '')}`;
+                  })()} 
+                  alt="Product Visual" 
+                  className="h-full w-full object-contain rounded-md" 
+                  onError={(e) => { 
+                    e.target.src = "https://placehold.co/150?text=404+Error"; 
+                  }} 
+                />
+              </div>
+            )}
+          </div>
+  
+          {/* المسؤول */}
+          <div className="space-y-1">
+            <span className="text-[10px] font-bold text-slate-400 block">المسؤول عن الحركة:</span>
+            <div className="border border-slate-200 rounded-lg p-2.5 flex items-center justify-between text-xs bg-white shadow-sm">
+              <span className="font-bold text-slate-800">{selectedMovement.employeeName}</span>
+              <User className="h-4 w-4 text-slate-400" />
+            </div>
+          </div>
+  
+          {/* ملاحظات وتفاصيل إضافية */}
+          <div className="space-y-2 text-xs">
+            {!isSpecialMovement && (
+              <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                <span className="text-slate-400">رقم الطلب المرتبط:</span>
+                <span className="font-mono font-bold text-slate-700" dir="ltr">{selectedMovement.orderId}</span>
+              </div>
+            )}
+  
+            {selectedMovement.damageReason && (
+              <div className="space-y-1 bg-orange-50/70 border border-orange-100 p-2 rounded-lg">
+                <span className="text-orange-700 font-bold block text-[10px]">سبب التلف:</span>
+                <p className="text-orange-900 text-[11px] font-medium">{selectedMovement.damageReason}</p>
+              </div>
+            )}
+  
+            <div className="space-y-1">
+              <span className="text-slate-400 block">ملاحظات:</span>
+              <p className="bg-slate-50 border border-slate-100 p-2.5 rounded-lg text-slate-600 text-[11px] leading-relaxed">
+                {selectedMovement.notes}
+              </p>
+            </div>
+          </div>
+  
+          {/* عرض بيانات الـ JSON */}
+          {!isSpecialMovement && (
+            <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50">
+              <button type="button" onClick={() => setIsJsonExpanded(!isJsonExpanded)} className="w-full px-3 py-2 flex items-center justify-between text-[11px] font-bold text-slate-600 bg-slate-100">
+                <span>بيانات الحركة التقنية</span>
+                {isJsonExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </button>
+              {isJsonExpanded && (
+                <pre className="p-3 text-[10px] font-mono text-left bg-slate-900 text-emerald-400 overflow-x-auto max-h-48" dir="ltr">
+                  {JSON.stringify(selectedMovement.rawJson, null, 2)}
+                </pre>
+              )}
+            </div>
+          )}
+  
+        </div>
+      </div>
+    </div>
+  );
+})()}
 
     </div>
   );

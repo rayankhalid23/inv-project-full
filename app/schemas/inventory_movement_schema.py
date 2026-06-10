@@ -98,7 +98,6 @@ class VariantMinimal(BaseModel):
 # =====================================================================
 # 2. سكيمة قراءة سجل الحركات الشاملة (Inventory Logs / Ledger)
 # =====================================================================
-
 class InventoryMovementRead(BaseModel):
     id: int
     variant_id: int
@@ -117,20 +116,15 @@ class InventoryMovementRead(BaseModel):
     variant: Optional[VariantMinimal] = None
     product: Optional[ProductMinimal] = None  
 
+    # 🌟 الحقول المسطحة الجديدة لدعم شاشة التوالف والرواجع فوراً وبأعلى أداء
+    movement_type_display: Optional[str] = None
+    product_name: Optional[str] = None
+    variant_size: Optional[str] = None
+    variant_color: Optional[str] = None
+    responsible_user: Optional[str] = None
+    affected_quantity: Optional[int] = None
+
     model_config = ConfigDict(from_attributes=True)
-
-    # 🌟 الجسر الذكي الآمن: يستخرج كائن المنتج من عمق العلاقات ويضعه في السطح للـ Frontend
-    @model_validator(mode='before')
-    @classmethod
-    def resolve_nested_product(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            try:
-                if data.variant and data.variant.color and data.variant.color.product:
-                    setattr(data, 'product', data.variant.color.product)
-            except AttributeError:
-                pass  
-        return data
-
 
 # =====================================================================
 # 3. سكيمات طلبات العمليات اليدوية (Manual Stock Requests)

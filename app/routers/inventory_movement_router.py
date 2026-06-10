@@ -125,9 +125,8 @@ def get_inventory_logs(
 
 
 
-@router.get("/ledger", response_model=List[InventoryMovementRead])
+@router.get("/ledger")
 def read_inventory_ledger(
-    # فلاتر البحث (Query Parameters)
     user_id: Optional[int] = None,
     product_id: Optional[int] = None,
     variant_id: Optional[int] = None,
@@ -136,49 +135,14 @@ def read_inventory_ledger(
     time_preset: Optional[str] = Query(None, description="today, week, month, 3_months"),
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    # معاملات التجزئة (Pagination) - أهم جزء للتحميل التلقائي
+    search: Optional[str] = None,
     skip: int = Query(0, ge=0), 
     limit: int = Query(20, ge=1, le=100),
-    # التأكد من هوية الموظف
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
-    نقطة الوصول لجلب سجل حركات المخزون.
-    تستخدم 'skip' لتحديد من أين يبدأ الجلب، و 'limit' لتحديد عدد السجلات.
-    """
-    movements = get_advanced_inventory_ledger(
-        db=db,
-        user_id=user_id,
-        product_id=product_id,
-        variant_id=variant_id,
-        movement_type=movement_type,
-        order_id=order_id,
-        time_preset=time_preset,
-        start_date=start_date,
-        end_date=end_date,
-        skip=skip,
-        limit=limit
-    )
-    return movements
-
-@router.get("/ledger", response_model=PaginatedInventoryMovementResponse)
-def read_inventory_ledger(
-    user_id: Optional[int] = None,
-    product_id: Optional[int] = None,
-    variant_id: Optional[int] = None,
-    movement_type: Optional[str] = None,
-    order_id: Optional[int] = None,
-    time_preset: Optional[str] = None,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    skip: int = 0,
-    limit: int = 20,
-    db: Session = Depends(get_db)
-):
-    """
-    نقطة الاتصال المعتمدة لجلب سجل الحركات المخزنية بالكامل 
-    تمرر جميع الفلاتر المتاحة مباشرة إلى الـ Service بدون أي اختصارات مبهمة.
+    نقطة الاتصال الموحدة والذكية لجلب سجل الحركات والنظام بالكامل.
     """
     return get_advanced_inventory_ledger(
         db=db,
@@ -190,9 +154,37 @@ def read_inventory_ledger(
         time_preset=time_preset,
         start_date=start_date,
         end_date=end_date,
+        search=search,
         skip=skip,
         limit=limit
     )
+
+@router.post("/clear-returns")
+def clear_returns(
+    variant_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    from app.services.inventory_movement_service import clear_returns_service
+    return clear_returns_service(db=db, variant_id=variant_id, user_id=current_user.id)
+
+@router.post("/clear-damages")
+def clear_damages(
+    variant_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    from app.services.inventory_movement_service import clear_damages_service
+    return clear_damages_service(db=db, variant_id=variant_id, user_id=current_user.id)
+
+@router.delete("/movement/{movement_id}")
+def delete_movement(
+    movement_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    from app.services.inventory_movement_service import delete_movement_service
+    return delete_movement_service(db=db, movement_id=movement_id, user_id=current_user.id)
 
 @router.get("/summary", response_model=Dict[str, Any])
 def get_movements_summary(
