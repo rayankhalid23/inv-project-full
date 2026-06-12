@@ -96,7 +96,7 @@ async def scan_order_item(order_id: int,
    current_user: User = Depends(get_current_active_user)
   ):
    
-    result = await process_qr_scan_logic(db=db, order_id=order_id, user_id=current_user.id, qr_code=request.qr_code)
+    result = await process_qr_scan_logic(db=db, order_id=order_id, user_id=current_user.id, qr_code=request.qr_code, variant_id=request.variant_id)
     #background_tasks.add_task(sync_dashboard, db) # أضفنا المزامنة هنا
     return result
 

@@ -33,7 +33,8 @@ class DeliveryAssignRequest(BaseModel):
     delivery_type: str
 
 class QRScanRequest(BaseModel):
-    qr_code: str
+    qr_code: Optional[str] = None
+    variant_id: Optional[int] = None
     
 
 
@@ -87,5 +88,6 @@ class OrderFullDetailResponse(BaseModel):
     progress_percentage: float
     
     items: List[OrderItemDetailResponse]
+    actions: List[dict] = []
     
     model_config = ConfigDict(from_attributes=True)

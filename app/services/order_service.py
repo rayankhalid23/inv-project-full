@@ -800,7 +800,8 @@ async def get_order_full_details_logic(db: Session, order_id: int):
     order = db.query(Order).options(
         joinedload(Order.creator),
         joinedload(Order.items).joinedload(OrderItem.product),
-        joinedload(Order.items).joinedload(OrderItem.variant).joinedload(ProductVariant.color)
+        joinedload(Order.items).joinedload(OrderItem.variant).joinedload(ProductVariant.color),
+        joinedload(Order.actions).joinedload(OrderAction.user)
     ).filter(Order.id == order_id).first()
 
     if not order:
@@ -825,13 +826,29 @@ async def get_order_full_details_logic(db: Session, order_id: int):
     # 4. تجهيز قائمة المنتجات مع الصور والمسح الجزئي
     items_list = []
     for item in order.items:
+        color_name = item.variant.color.color_name if item.variant and item.variant.color else None
+        size_name = item.variant.size.name if item.variant and item.variant.size else None
+        
         items_list.append({
             "product_name": item.product.name,
+            "variant_id": item.variant_id,
+            "color_name": color_name,
+            "size": size_name,
             "quantity": item.quantity,
             "picked_quantity": item.picked_quantity or 0,
             "price": item.price_at_order,
             "image": get_item_image(item), # استخدام الدالة المساعدة
             "is_fully_picked": (item.picked_quantity or 0) >= item.quantity
+        })
+
+    # 4.5. تجهيز قائمة الحركات (Actions)
+    actions_list = []
+    for action in sorted(order.actions, key=lambda x: x.created_at or datetime.min, reverse=True):
+        actions_list.append({
+            "action_type": action.action_type,
+            "user_name": action.user.name if action.user else "النظام",
+            "created_at": action.created_at.isoformat() if action.created_at else None,
+            "details": action.details
         })
 
     # 5. تجميع الرد النهائي
@@ -848,6 +865,7 @@ async def get_order_full_details_logic(db: Session, order_id: int):
         },
         "personnel": personnel,
         "items": items_list,
+        "actions": actions_list,
         "summary": {
             "total_price": order.total_price,
             "total_items_count": len(order.items),

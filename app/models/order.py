@@ -36,6 +36,7 @@ class OrderAction(BaseModel):
     created_at = Column(TIMESTAMP, server_default=func.now())
 
     order = relationship("Order", back_populates="actions")
+    user = relationship("User", foreign_keys=[user_id])
 
 
 class Order(BaseModel):
