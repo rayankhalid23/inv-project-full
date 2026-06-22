@@ -40,10 +40,11 @@ const ProtectedRoute = ({ children }) => {
 function App() {
   return (
     <AuthProvider>
-      {/* حاوية رسائل التنبيه (Toast) */}
+      {/* حاوية رسائل التنبيه الذكية (Toaster) لمنع التراكم والتكديس */}
       <Toaster 
         position="top-center" 
         reverseOrder={false} 
+        limit={1} // 🔥 يمنع ظهور أكثر من إشعار في نفس الوقت، الإشعار الجديد يطرد القديم فورًا
         toastOptions={{
           style: {
             fontFamily: 'Tajawal, sans-serif',
@@ -53,6 +54,8 @@ function App() {
             color: '#334155',
             boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
           },
+          // تأثير حركة سلس ومدروس عند خروج ودخول الإشعار المتتالي
+          duration: 2500, 
         }}
       />
       

@@ -390,14 +390,19 @@ async def assign_delivery_logic(db: Session, order_id: int, delivery_data: Deliv
     return db_order
    
 
-
 async def delete_order_logic(db: Session, order_id: int, user_id: int):
     """
     إلغاء الطلب وإعادة المخزون بناءً على حالة الطلب الحالية.
-    يمنع الحذف إذا كانت الحالة 'shipped'.
+    يسمح بحذف الطلبات بمختلف الحالات (بما فيها المشحونة والجاهزة) 
+    ويقوم بإعادة ضبط الكميات في المستودع بدقة تلقائياً.
     """
-    
-    # 1. جلب الطلب مع قفل (Row-level Lock) لضمان عدم تعديله أثناء المعالجة
+    from datetime import datetime
+    from fastapi import HTTPException
+    from app.models.inventory import ProductVariant # تأكد من مطابقة مسار الـ Import لبيئتك
+    from app.models.order import OrderAction # تأكد من مطابقة مسار الـ Import لبيئتك
+    from app.services.order_service import sync_product_metrics # أو المسار الفعلي لدالة المزامنة لديك
+
+    # 1. جلب الطلب مع قفل (Row-level Lock) لضمان عدم تعديله بالتزامن من مستخدم آخر
     db_order = db.query(Order).filter(
         Order.id == order_id, 
         Order.deleted_at.is_(None)
@@ -406,81 +411,72 @@ async def delete_order_logic(db: Session, order_id: int, user_id: int):
     if not db_order:
         raise HTTPException(status_code=404, detail="الطلب غير موجود أو تم حذفه مسبقاً")
 
-    # 2. جدار الحماية: منع حذف الطلبات المشحونة
-    if db_order.status == 'shipped':
-        raise HTTPException(
-            status_code=400, 
-            detail="لا يمكن حذف الطلب بعد خروجه للتوصيل (حالة shipped). يرجى استخدام نظام المرتجعات."
-        )
-
     try:
         affected_product_ids = set()
 
-        # 3. معالجة عناصر الطلب وإعادة المخزون
+        # 2. معالجة عناصر الطلب وعكس الكميات في المستودع
         for item in db_order.items:
             variant = db.query(ProductVariant).filter(
                 ProductVariant.id == item.variant_id
             ).with_for_update().first()
 
             if variant:
-                # الاحتفاظ بمعرف المنتج الأب للمزامنة لاحقاً
+                # الاحتفاظ بمعرف المنتج الأب لمزامنة المؤشرات الكلية لاحقاً
                 if variant.color:
                     affected_product_ids.add(variant.color.product_id)
 
-                # المنطق الرياضي:
-                # أ. إذا كان الطلب مكتمل التجهيز (prepared)، فالكمية خصمت من المحجوز وأضيفت للمباع
-                if db_order.status == 'prepared':
+                # المنطق الرياضي المحدث:
+                # أ. إذا كان الطلب جاهزاً أو مشحوناً: نعيد الكمية للمتاح ونخصمها من المباع الكلي
+                if db_order.status in ('prepared', 'shipped'):
                     variant.quantity_available += item.quantity
                     variant.total_sold = max(0, (variant.total_sold or 0) - item.quantity)
                 
-                # ب. إذا كان الطلب (pending) أو (in_preparation)، فالكمية لا تزال في المحجوز
+                # ب. إذا كان الطلب معلقاً أو قيد التجهيز: نعيد الكمية للمتاح ونخصمها من المحجوز
                 else:
                     variant.quantity_available += item.quantity
                     variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - item.quantity)
 
                 db.add(variant)
 
-        # 4. تنفيذ الحذف الناعم (Soft Delete) كما هو موضح في هيكلة جدولك
-        # تحديث توقيت الحذف للطلب وعناصره
+        # 3. تنفيذ الحذف الناعم (Soft Delete) للطلب وعناصره
         now = datetime.now()
         
         db_order.deleted_at = now
-        db_order.status = 'cancelled' # تغيير الحالة لتمييزه في التقارير
+        db_order.status = 'cancelled' # تحديث الحالة لـ ملغي للتقارير الدفترية
 
         for item in db_order.items:
             item.deleted_at = now
         
-        # حذف العمليات المرتبطة بالطلب (اختياري حسب رغبتك في الاحتفاظ بالسجل)
+        # تحديث الحذف الناعم للعمليات اللوجستية المرتبطة بالطلب
         db.query(OrderAction).filter(OrderAction.order_id == order_id).update({"deleted_at": now})
+        
+        # تسجيل العملية في سجل التدقيق (Audit Log)
         create_order_action_log(
             db=db,
             order_id=order_id,
             user_id=user_id,
             action_type="order_cancelled",
-            notes="تم إلغاء الطلب وإرجاع المنتجات للمخزون"
+            notes="تم إلغاء الطلب وإعادة المنتجات للمخزون تلقائياً بناءً على حالته قبل الحذف"
         )
-        # 5. المزامنة مع المنتج الأب (Product Metrics)
+        
+        # 4. دفع التعديلات مؤقتاً ومزامنة مؤشرات المنتج الأب (Product Metrics)
         db.flush()
         for p_id in affected_product_ids:
             sync_product_metrics(db, p_id)
 
-        # 6. الحفظ النهائي
+        # 5. الحفظ النهائي للمجالس والتأكيد في قاعدة البيانات
         db.commit()
     
-        
         return {
             "status": "success", 
             "message": f"تم إلغاء الطلب رقم {order_id} وإعادة الكميات للمخزن بنجاح"
         }
-       
 
     except Exception as e:
         db.rollback()
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"خطأ أثناء عملية الحذف: {str(e)}")
-
-
 
 def _get_locked_order_and_variants(db: Session, order_id: int, new_item_ids: List[int]):
     # جلب الطلب مع القفل
@@ -585,7 +581,7 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
 
 def _reverse_stock(status, variant, qty):
     variant.quantity_available += qty
-    if status == 'prepared':
+    if status in ('prepared', 'shipped'):
         variant.total_sold = max(0, (variant.total_sold or 0) - qty)
     else:
         variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - qty)
@@ -594,7 +590,7 @@ def _adjust_stock(status, variant, old_qty, new_qty):
     diff = new_qty - old_qty
     abs_diff = abs(diff)
 
-    if status == 'prepared':
+    if status in ('prepared', 'shipped'):
         # --- القاعدة الذهبية للطلبات الجاهزة (التعامل مع المباع) ---
         if diff > 0: # زيادة في طلب مكتمل (نأخذ من المتاح ونضيف للمباع)
             if variant.quantity_available < diff:
@@ -615,6 +611,47 @@ def _adjust_stock(status, variant, old_qty, new_qty):
             variant.quantity_available += abs_diff
             variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - abs_diff)
 
+def transition_order_status(db: Session, db_order: Order, old_status: str, new_status: str):
+    """منطق تحويل المخزون عند تغير حالة الطلب"""
+    # الحالات التي يعتبر فيها المخزون محجوزاً
+    reserved_statuses = ('pending', 'in_preparation')
+    # الحالات التي يعتبر فيها المخزون مباعاً ومخصوماً نهائياً
+    sold_statuses = ('prepared', 'shipped')
+
+    if old_status in reserved_statuses and new_status in sold_statuses:
+        # من محجوز إلى مباع
+        affected_product_ids = set()
+        for item in db_order.items:
+            if item.deleted_at is not None:
+                continue
+            variant = db.query(ProductVariant).filter(ProductVariant.id == item.variant_id).with_for_update().first()
+            if variant:
+                variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - item.quantity)
+                variant.total_sold = (variant.total_sold or 0) + item.quantity
+                db.add(variant)
+                if variant.color:
+                    affected_product_ids.add(variant.color.product_id)
+        db.flush()
+        for p_id in affected_product_ids:
+            sync_product_metrics(db, p_id)
+
+    elif old_status in sold_statuses and new_status in reserved_statuses:
+        # إرجاع من مباع إلى محجوز
+        affected_product_ids = set()
+        for item in db_order.items:
+            if item.deleted_at is not None:
+                continue
+            variant = db.query(ProductVariant).filter(ProductVariant.id == item.variant_id).with_for_update().first()
+            if variant:
+                variant.total_sold = max(0, (variant.total_sold or 0) - item.quantity)
+                variant.quantity_reserved = (variant.quantity_reserved or 0) + item.quantity
+                db.add(variant)
+                if variant.color:
+                    affected_product_ids.add(variant.color.product_id)
+        db.flush()
+        for p_id in affected_product_ids:
+            sync_product_metrics(db, p_id)
+
 async def update_order_master_logic(db: Session, order_id: int, update_data: Dict, user_id: int):
     new_item_ids = [it['variant_id'] for it in update_data.get('items', [])] if 'items' in update_data else []
     db_order = _get_locked_order_and_variants(db, order_id, new_item_ids)
@@ -622,8 +659,14 @@ async def update_order_master_logic(db: Session, order_id: int, update_data: Dic
     if db_order.status == 'shipped' and 'items' in update_data:
         raise HTTPException(status_code=400, detail="ممنوع تعديل منتجات طلب تم شحنه")
 
+    # حفظ الحالة القديمة للتحقق من الانتقال
+    old_status = db_order.status
+
     try:
         _update_basic_info(db_order, update_data)
+
+        if 'status' in update_data:
+            db_order.status = update_data['status']
 
         if 'items' in update_data:
             new_total, changed = _apply_inventory_delta(db, db_order, update_data['items'])
@@ -654,6 +697,8 @@ async def update_order_master_logic(db: Session, order_id: int, update_data: Dic
 
         db_order.updated_at = datetime.now()
         
+        # تشغيل انتقال الحالة إذا تغيرت
+        transition_order_status(db, db_order, old_status, db_order.status)
 
         create_order_action_log(
             db=db,
@@ -899,7 +944,6 @@ from fastapi import HTTPException
  
 
 # from app.models import Product, Order, User, ProductVariant, ProductColor, Size
-
 def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
     try:
         # حساب تاريخ بداية الفترة للفلترة الزمنية للطلبات والتحليلات
@@ -923,31 +967,61 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
         ).filter(Product.deleted_at.is_(None)).first()
 
         # =========================================================================
-        # 2. إحصائيات الطلبات (تم تعديل الهيكلية لتكون متوافقة تماماً)
+        # 2. إحصائيات الطلبات (مطابقة تماماً لحالات الـ Enum في الصورة المرفقة)
         # =========================================================================
         order_query = db.query(
-               # حساب العدد الإجمالي للطلبات وضمان عدم رجوعه كـ None
+            # حساب العدد الإجمالي للطلبات وضمان عدم رجوعه كـ None
             func.coalesce(func.count(Order.id), 0).label("total_orders"),
     
-                # حساب الطلبات المعلقة مع عمل cast للـ Enum وتحويل الـ None إلى 0
+            # حالة: معلق (pending)
             func.coalesce(
                 func.sum(
                     case(
-                          (func.cast(Order.status, String) == 'pending', 1),
-                          else_=0
-                    )
-               ), 0
-            ).label("pending_orders"),
-    
-             # حساب الطلبات قيد التجهيز مع عمل cast للـ Enum وتحويل الـ None إلى 0
-            func.coalesce(
-                func.sum(
-                    case(
-                        (func.cast(Order.status, String) == 'in_preparation', 1),
+                        ((func.cast(Order.status, String) == 'pending', 1)),
                         else_=0
                     )
                 ), 0
-            ).label("processing_orders")
+            ).label("pending_orders"),
+    
+            # حالة: قيد التجهيز (in_preparation) - مربوط بـ processing في الواجهات القديمة
+            func.coalesce(
+                func.sum(
+                    case(
+                        ((func.cast(Order.status, String) == 'in_preparation', 1)),
+                        else_=0
+                    )
+                ), 0
+            ).label("processing_orders"),
+
+            # حالة: تم التجهيز (prepared) - مطابقة للصورة والفرونت إند المحدث
+            func.coalesce(
+                func.sum(
+                    case(
+                        ((func.cast(Order.status, String) == 'prepared', 1)),
+                        else_=0
+                    )
+                ), 0
+            ).label("ready_orders"),
+
+            # حالة: تم الشحن/التوصيل (shipped) - مطابقة للصورة والفرونت إند المحدث
+            func.coalesce(
+                func.sum(
+                    case(
+                        ((func.cast(Order.status, String) == 'shipped', 1)),
+                        else_=0
+                    )
+                ), 0
+            ).label("shipping_orders"),
+
+            # حالة: ملغي (cancelled) - تمت إضافتها احتياطاً لربطها بأي كروت مستقبلية
+            func.coalesce(
+                func.sum(
+                    case(
+                        ((func.cast(Order.status, String) == 'cancelled', 1)),
+                        else_=0
+                    )
+                ), 0
+            ).label("cancelled_orders")
         ).filter(Order.deleted_at.is_(None))
 
         # تطبيق شرط التاريخ إذا كانت الفترة الزمنية محددة
@@ -955,9 +1029,6 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
             order_query = order_query.filter(Order.created_at >= start_date)
 
         order_stats = order_query.first()
-
-        # [تعديل محوري]: تم إزالة الـ return المبكر والـ except المكرر الذي كان متواجداً هنا 
-        # لمتابعة بقية الكود بسلاسة تحت نفس بنية الـ try
 
         # =========================================================================
         # 3. إحصائيات المستخدمين
@@ -1065,9 +1136,15 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
                 "waste_rate": round(((inventory_stats.total_damaged if inventory_stats else 0) or 0) / ((inventory_stats.total_inventory if inventory_stats else 1) or 1) * 100, 2)
             },
             "orders": {
+                # الحقول القديمة (لم تُمس من أجل الواجهات القديمة والمشتركة)
                 "total": int((order_stats.total_orders if order_stats else 0) or 0),
                 "pending": int((order_stats.pending_orders if order_stats else 0) or 0),
-                "processing": int((order_stats.processing_orders if order_stats else 0) or 0)
+                "processing": int((order_stats.processing_orders if order_stats else 0) or 0),
+                
+                # الحقول المحدثة بناءً على قيم الـ Enum الفعلية المكتشفة في قاعدة البيانات
+                "ready": int((order_stats.ready_orders if order_stats else 0) or 0),
+                "shipping": int((order_stats.shipping_orders if order_stats else 0) or 0),
+                "cancelled": int((order_stats.cancelled_orders if order_stats else 0) or 0)
             },
             "users": {
                 "total_system_users": int((user_stats.total_users if user_stats else 0) or 0),
@@ -1095,16 +1172,12 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
         }
 
     except Exception as e:
-        # طباعة الخطأ كاملاً مع تتبع الأسطر داخل الـ Terminal الخاص بالسيرفر لسهولة التتبع والمراقبة
         print("!!! DASHBOARD LOGIC ERROR !!!")
         print(traceback.format_exc())
-        
-        # رفع الخطأ كـ HTTPException لتستقبله الواجهة الأمامية بشكل منظم بدلاً من انهيار السيرفر
         raise HTTPException(
             status_code=500, 
             detail=f"Error in stats: {str(e)}" 
         )
-
 # --- الإعدادات العامة (نفس التي استعملناها سابقاً) ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_PATH = os.path.join(BASE_DIR, "static", "fonts", "Amiri-Regular.ttf")

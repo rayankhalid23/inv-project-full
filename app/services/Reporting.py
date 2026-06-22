@@ -1,10 +1,11 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, case, and_, or_
-from app.models.inventory import Product, InventoryMovement, SystemAuditLog
+from app.models.inventory import Product, InventoryMovement, SystemAuditLog, ProductVariant # أضفنا الكاتالوج أو الفارينت إذا دعت الحاجة
 from app.models.order import Order, OrderItem, OrderAction
-from collections import defaultdict
 from app.models.user import User
 from app.models.role import Role
+from collections import defaultdict
+from datetime import datetime
 
 class ReportingService:
 
@@ -37,8 +38,7 @@ class ReportingService:
             if any(k in action_type for k in ["delete", "remove", "cancel", "archive", "item_removed"]): return "deletes"
             return "adds"
 
-        # 2. جلب البيانات من الجداول الثلاثة (تجميع)
-        # جلب AuditLogs
+        # 2. جلب البيانات من الجداول وتجميعها
         audit_q = db.query(SystemAuditLog.user_id, SystemAuditLog.action_target, SystemAuditLog.action_type, func.count(SystemAuditLog.id).label("count"))
         if start_date: audit_q = audit_q.filter(SystemAuditLog.created_at >= start_date)
         if end_date: audit_q = audit_q.filter(SystemAuditLog.created_at <= end_date)
@@ -49,28 +49,27 @@ class ReportingService:
                 cat_map = {"user": "employees", "catalog": "catalogs", "product": "products", "order": "sales", "return": "returns", "damage": "damages"}
                 cat = cat_map.get(target)
                 if cat:
-                    # تطبيق قيد الموظفين (id=3): لا يتم احتساب عمليات الموظفين/الكتالوج/المنتجات
+                    # تطبيق قيد الموظفين (id=3): لا يتم احتساب عمليات الموظفين/الكتالوج/المنتجات لهم
                     if user_stats[row.user_id]["role_id"] == 3 and cat in ["employees", "catalogs", "products"]:
                         continue
                     user_stats[row.user_id]["categories"][cat][get_action_category(row.action_type)] += row.count
 
-        # 3. معالجة التوالف والرواجع (حصر على Adds فقط)
+        # 3. معالجة التوالف والرواجع وحساب الإجمالي لكل موظف
         for u_id, u_data in user_stats.items():
             for cat in ["damages", "returns"]:
                  total_cat_ops = sum(u_data["categories"][cat].values())
                  u_data["categories"][cat] = {"total": total_cat_ops}
             
-            # حساب الإجمالي لكل موظف
             u_data["total_operations"] = sum(c["total"] if "total" in c else sum(c.values()) for c in u_data["categories"].values())
 
-        # 4. تقسيم القوائم (Admin=1, Manager=2, Staff=3)
+        # 4. تقسيم القوائم بناءً على الأدوار الوظيفية
         admins_list, managers_list, staff_list = [], [], []
         for u_data in user_stats.values():
             if u_data["role_id"] == 1: admins_list.append(u_data)
             elif u_data["role_id"] == 2: managers_list.append(u_data)
             elif u_data["role_id"] == 3: staff_list.append(u_data)
 
-        # ترتيب القوائم من الأفضل للأسوأ
+        # ترتيب القوائم من الأعلى للأقل أداءً
         for l in [admins_list, managers_list, staff_list]:
             l.sort(key=lambda x: x["total_operations"], reverse=True)
 
@@ -87,32 +86,32 @@ class ReportingService:
             return {"top": top, "bottom": bottom, "list": lst}       
 
         return {
-               "admins": format_rank(admins_list),
-               "managers": format_rank(managers_list),
-               "staff": format_rank(staff_list)
-            }
-     
-    
-
-       
-            
+            "admins": format_rank(admins_list),
+            "managers": format_rank(managers_list),
+            "staff": format_rank(staff_list)
+        }
 
     @staticmethod
     def get_inventory_performance_report(db: Session, start_date, end_date):
+        """تقرير أداء حركة المخزن والمنتجات الأكثر وأقل مبيعاً بناء على الحالات المعتمدة"""
+        
+        # الأكثر مبيعاً
         top_selling_raw = db.query(
             Product.name, func.sum(OrderItem.quantity).label("total")
         ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)\
          .join(Order, Order.id == OrderItem.order_id)\
-         .filter(Order.status == "delivered", Order.created_at >= start_date, Order.created_at <= end_date)\
+         .filter(Order.status.in_(["prepared", "shipped"]), Order.created_at >= start_date, Order.created_at <= end_date)\
          .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
+        # الأقل مبيعاً
         least_selling_raw = db.query(
             Product.name, func.sum(OrderItem.quantity).label("total")
         ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)\
          .join(Order, Order.id == OrderItem.order_id)\
-         .filter(Order.status == "delivered", Order.created_at >= start_date, Order.created_at <= end_date)\
+         .filter(Order.status.in_(["prepared", "shipped"]), Order.created_at >= start_date, Order.created_at <= end_date)\
          .group_by(Product.id, Product.name).order_by("total").limit(5).all()
 
+        # الأكثر مرتجعاً
         top_returns_raw = db.query(
             Product.name, func.sum(InventoryMovement.quantity_change).label("total")
         ).select_from(Product).join(InventoryMovement, Product.id == InventoryMovement.product_id)\
@@ -121,6 +120,7 @@ class ReportingService:
                   InventoryMovement.created_at <= end_date)\
          .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
+        # الأكثر تالفاً
         top_damaged_raw = db.query(
             Product.name, func.sum(func.abs(InventoryMovement.quantity_change)).label("total")
         ).select_from(Product).join(InventoryMovement, Product.id == InventoryMovement.product_id)\
@@ -129,6 +129,7 @@ class ReportingService:
                   InventoryMovement.created_at <= end_date)\
          .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
+        # حساب خسائر التوالف المالية
         loss_value = db.query(
             func.sum(func.abs(InventoryMovement.quantity_change) * Product.cost_price)
         ).select_from(InventoryMovement).join(Product, Product.id == InventoryMovement.product_id)\
@@ -240,6 +241,9 @@ class ReportingService:
         products_created_count = 0
         catalogs_created_count = 0
         
+        # جلب كود موديل الكاتالوج محلياً لتفادي تداخل الـ Imports الدائرية إذا حدثت
+        from app.models.inventory import Catalog 
+
         if not is_employee_only:
             products_created_count = db.query(func.count(Product.id)).filter(Product.created_by == user_id).scalar() or 0
             catalogs_created_count = db.query(func.count(Catalog.id)).filter(Catalog.created_by == user_id).scalar() or 0

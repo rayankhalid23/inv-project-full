@@ -6,7 +6,7 @@ export const STATUS_MAP = {
     'pending':        'معلق',
     'in_preparation': 'قيد التجهيز',
     'prepared':       'تم التجهيز',
-    'shipped':        'تم التجهيز',   // shipped = جاهز للشحن
+    'shipped':         'جاري الشحن', // أو اتركها 'تم اسناده للتوصيل' حسب رغبتك في التصميم، المهم تثبيتها
     'delivered':      'تم التوصيل',
     'cancelled':      'ملغي',
     'returned':       'مرتجع بالكامل',
@@ -14,6 +14,7 @@ export const STATUS_MAP = {
     'معلق':           'معلق',
     'قيد التجهيز':   'قيد التجهيز',
     'تم التجهيز':    'تم التجهيز',
+    'تم اسناده للتوصيل': 'تم اسناده للتوصيل',
     'تم التوصيل':    'تم التوصيل',
     'ملغي':           'ملغي',
     'مرتجع بالكامل': 'مرتجع بالكامل',
@@ -28,6 +29,7 @@ export const STATUS_MAP_REVERSE = {
     'معلق':           'pending',
     'قيد التجهيز':   'in_preparation',
     'تم التجهيز':    'prepared',
+    'تم اسناده للتوصيل': 'shipped',
     'تم التوصيل':    'delivered',
     'ملغي':           'cancelled',
     'مرتجع بالكامل': 'returned',
@@ -276,10 +278,11 @@ export const orderApi = {
     getInventoryStats: async (period = 'all') => {
         try {
             const response = await api.get('/orders/inventory-stats/test', { params: { period } });
-            return response.data?.data || null;
+            // إذا كان الباك اند يعيد الكائن مغلفاً بـ data نأخذه، وإلا نأخذ response.data مباشرة
+            return response.data?.data || response.data || null;
         } catch (error) {
             console.error('Error fetching inventory stats:', error.response?.data || error.message);
-            return null; // لا نوقف الصفحة بسبب فشل الإحصائيات
+            return null;
         }
     },
 
