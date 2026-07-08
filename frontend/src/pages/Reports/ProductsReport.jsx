@@ -8,7 +8,7 @@ import {
 import { catalogApi } from '../../api/catalogApi'; 
 import TimeFilter from '../../components/TimeFilter';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = window.location.origin;
 
 export default function ProductsReport({ period }) {
   const [data, setData] = useState(null);

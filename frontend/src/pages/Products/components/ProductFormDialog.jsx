@@ -1054,7 +1054,7 @@ const VariantCard = ({ control, register, setValue, watch, colorIndex, colorItem
   const safeGetFullUrl = typeof getFullUrl === "function" ? getFullUrl : (path) => {
     if (!path) return "";
     if (path instanceof File) return URL.createObjectURL(path);
-    return `http://localhost:8000${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/')}`;
+    return `${window.location.origin}${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/')}`;
   };
   // State للتحكم في إخفاء وإظهار المقاسات لكل لون بشكل مستقل
   const [isCollapsed, setIsCollapsed] = useState(false);

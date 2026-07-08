@@ -1667,7 +1667,7 @@ const updateVariantQty = (variantId, qty) => {
 // ========= مكوّن اختيار المنتج =========
 function ProductSelector({ product, onAddVariant }) {
   const [isOpen, setIsOpen] = useState(false);
-  const getImageUrl = (path) => path ? (path.startsWith('http') ? path : `http://localhost:8000/${path.replace(/^[\\\\/]+/, '')}`) : null;
+  const getImageUrl = (path) => path ? (path.startsWith('http') ? path : `${window.location.origin}/${path.replace(/^[\\\\/]+/, '')}`) : null;
 
   return (
     <div className="border border-slate-200 rounded-lg overflow-hidden">

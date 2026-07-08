@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // 1. إعداد القاعدة الأساسية للطلب لضمان عدم تكرار العناوين
-const API_BASE_URL = 'http://localhost:8000'; // تأكد من أن هذا هو رابط السيرفر لديك
+const API_BASE_URL = window.location.origin; // تأكد من أن هذا هو رابط السيرفر لديك
 
 const api = axios.create({
     baseURL: API_BASE_URL,

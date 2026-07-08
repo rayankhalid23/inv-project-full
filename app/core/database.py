@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import SQLAlchemyError
 import sys
@@ -7,13 +7,23 @@ import sys
 SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:root123@localhost/inventory_db"
 
 try:
-    # إنشاء محرك قاعدة البيانات مع خاصية pool_pre_ping للتأكد من سلامة الاتصال
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL,
-        pool_pre_ping=True
+        # --- إعدادات Connection Pool لمنع التعليق عند كثرة الطلبات ---
+        pool_size=10,           # عدد الاتصالات الدائمة في الـ Pool
+        max_overflow=20,        # عدد اتصالات إضافية مؤقتة عند الضغط الشديد
+        pool_timeout=10,        # ثواني الانتظار قبل رفع خطأ بدلاً من التجميد
+        pool_recycle=1800,      # إعادة تأهيل الاتصالات كل 30 دقيقة لمنع انقطاع MySQL
+        pool_pre_ping=True,     # التحقق من حالة الاتصال قبل الاستخدام
+        # --- إعدادات الأداء ---
+        echo=False,             # إيقاف طباعة SQL في الإنتاج لتوفير الموارد
+        connect_args={
+            "connect_timeout": 10,      # timeout لعملية الاتصال نفسها
+            "read_timeout": 30,         # timeout لقراءة البيانات
+            "write_timeout": 30,        # timeout لكتابة البيانات
+        }
     )
 except Exception as e:
-    # خطأ حرج: في حال فشل الاتصال الأولي بقاعدة البيانات
     print(f"CRITICAL ERROR: Failed to connect to database: {e}")
     sys.exit(1)
 
@@ -28,7 +38,6 @@ def init_db():
     تهيئة قاعدة البيانات وإنشاء الجداول بناءً على الموديلات المعرفة في النظام.
     """
     try:
-        # استيراد الموديلات هنا لتجنب التكرار الحلقي (Circular Import)
         Base.metadata.create_all(bind=engine)
     except SQLAlchemyError as e:
         print(f"DATABASE ERROR: Table creation failed: {e}")
@@ -42,8 +51,7 @@ def get_db():
     try:
         yield db
     except SQLAlchemyError as e:
-        # تسجيل أي خطأ يحدث أثناء عمليات قاعدة البيانات
         print(f"DATABASE SESSION ERROR: {e}")
         raise
     finally:
-        db.close()
+        db.close()

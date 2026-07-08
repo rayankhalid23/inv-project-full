@@ -41,13 +41,11 @@ router = APIRouter(tags=["Orders"])
 
 
 async def broadcast_inventory_update(db_session_factory, manager):
-    """دالة موحدة لجلب الإحصائيات وبثها عبر الـ WebSocket"""
+    """بث إشعار خفيف فقط بدلاً من تشغيل 5 استعلامات ثقيلة في كل عملية"""
     try:
-        with db_session_factory() as db:
-            stats = get_inventory_dashboard_stats(db)
-            await manager.broadcast(stats)
+        await manager.broadcast({"event": "inventory_updated", "ts": __import__('time').time()})
     except Exception as e:
-        print(f"🔴 Synchronization Error: {e}")
+        print(f"WS Notify Error: {e}")
 
 
 @router.post("/create", response_model=OrderResponse)

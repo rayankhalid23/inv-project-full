@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // إعداد الرابط الأساسي للباك إند (تأكد من مطابقة المنفذ لما في FastAPI)
-const API_URL = 'http://localhost:8000'; 
+const API_URL = window.location.origin; 
 
 /**
  * دالة جلب التوكن وإعداد الهيدرز

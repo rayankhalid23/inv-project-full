@@ -37,8 +37,8 @@ app = FastAPI(title="Bellagio Inventory System", version="1.1.0", lifespan=lifes
 # 5. إعدادات الـ CORS (مرة واحدة فقط وبشكل صحيح)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], # روابط الفرونت اند
-    allow_credentials=True,
+    allow_origins=["*"],  # السماح لجميع الأجهزة بالوصول (هواتف، أجهزة لوحية، إلخ)
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -70,5 +70,5 @@ def status_check():
 
 if __name__ == "__main__":
     import uvicorn
-    # نصيحة: استخدم 127.0.0.1 للتطوير المحلي أسرع في الويندوز
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # host=0.0.0.0 يجعل السيرفر يستمع على جميع واجهات الشبكة (Wi-Fi, LAN)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

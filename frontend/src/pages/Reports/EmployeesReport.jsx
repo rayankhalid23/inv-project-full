@@ -8,7 +8,7 @@ import {
 import { KpiCard, ReportCard, SectionHeader } from './ReportShared';
 import { fetchEmployeeStatisticsApi, fetchPerformanceAnalyticsApi } from '../../api/userApi';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = window.location.origin;
 
 export default function EmployeesReport({ period }) {
   const [stats, setStats] = useState(null);
