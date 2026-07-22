@@ -943,30 +943,40 @@ from sqlalchemy import func, case, String
 from fastapi import HTTPException
  
 
-# from app.models import Product, Order, User, ProductVariant, ProductColor, Size
 def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
     try:
-        # حساب تاريخ بداية الفترة         variants_alerts_query = db.query(
-            ProductVariant,
-            Product.name.label("product_name"),
-            Product.code.label("product_code"),
-            ProductColor.color_name.label("color_name"),
-            ProductColor.color_image.label("color_image"),
-            Size.name.label("size_name")
-        ).select_from(ProductVariant)\
-         .join(ProductColor, ProductVariant.product_color_id == ProductColor.id, isouter=True)\
-         .join(Product, ProductColor.product_id == Product.id, isouter=True)\
-         .join(Size, ProductVariant.size_id == Size.id, isouter=True)\
-         .filter(
-             and_(
-                 ProductVariant.deleted_at.is_(None),
-                 Product.deleted_at.is_(None),
-                 or_(
-                     and_(ProductVariant.quantity_available == 0, ProductVariant.total_sold > 0),
-                     and_(ProductVariant.quantity_available > 0, ProductVariant.quantity_available <= ProductVariant.min_stock_threshold)
-                 )
-             )
-         ).limit(50).all()  # LIMIT منع جلب آلاف الصفوف دفعة واحدة==========
+        # حساب تاريخ بداية الفترة
+        now = datetime.now()
+        start_date = None
+        if period and period != "all":
+            if period == "today":
+                start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif period in ["7d", "week"]:
+                start_date = now - timedelta(days=7)
+            elif period in ["1m", "month", "30d"]:
+                start_date = now - timedelta(days=30)
+            elif period == "3m":
+                start_date = now - timedelta(days=90)
+            elif period == "6m":
+                start_date = now - timedelta(days=180)
+            elif period in ["1y", "year"]:
+                start_date = now - timedelta(days=365)
+            else:
+                from app.services.time_helper import get_report_time_range
+                start_date, _ = get_report_time_range(period)
+
+        # =========================================================================
+        # 1. إحصائيات المخزون العامة
+        # =========================================================================
+        inventory_stats = db.query(
+            func.count(Product.id).label("total_products_count"),
+            func.coalesce(func.sum(Product.total_available), 0).label("total_inventory"),
+            func.coalesce(func.sum(Product.total_reserved), 0).label("total_reserved"),
+            func.coalesce(func.sum(Product.total_sold), 0).label("total_sold"),
+            func.coalesce(func.sum(Product.total_damaged), 0).label("total_damaged"),
+            func.coalesce(func.sum(Product.total_returns), 0).label("total_returns")
+        ).filter(Product.deleted_at.is_(None)).first()
+
         # 2. إحصائيات الطلبات (مطابقة تماماً لحالات الـ Enum في الصورة المرفقة)
         # =========================================================================
         order_query = db.query(
