@@ -3,7 +3,7 @@ import { ArrowRight, Plus, Search, FileDown, Loader2, AlertCircle } from 'lucide
 import ProductCard from './ProductCard';
 import { catalogApi } from "../../../api/catalogApi";
 
-const CatalogProductsView = ({ catalog, onBack , onEditProduct, onAddProduct, onDownloadQR, refreshTrigger, ...props }) => {
+const CatalogProductsView = ({ catalog, canManage, onBack, onEditProduct, onAddProduct, onDownloadQR, refreshTrigger, ...props }) => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -48,6 +48,15 @@ const CatalogProductsView = ({ catalog, onBack , onEditProduct, onAddProduct, on
             <p className="text-slate-400 text-[10px] font-bold">إدارة المنتجات في هذا القسم</p>
           </div>
         </div>
+        {/* زر إضافة منتج — مخصص للمسؤول والمدير فقط */}
+        {canManage && onAddProduct && (
+          <button
+            onClick={onAddProduct}
+            className="flex items-center gap-2 px-4 py-2.5 bg-[#800000] text-white rounded-xl font-bold text-xs shadow-md hover:bg-[#600000] transition-all active:scale-95"
+          >
+            <Plus className="w-4 h-4" /> إضافة منتج
+          </button>
+        )}
       </div>
 
       {/* قائمة المنتجات */}
@@ -60,10 +69,10 @@ const CatalogProductsView = ({ catalog, onBack , onEditProduct, onAddProduct, on
             .map(p => (
               <ProductCard 
                 key={p.id} 
-                product={p} 
-                onEdit={onEditProduct}
+                product={p}
+                canManage={canManage}
+                onEdit={canManage ? onEditProduct : undefined}
                 onDownloadQR={onDownloadQR} 
-                
               />
             ))
           }

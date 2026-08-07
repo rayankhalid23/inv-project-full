@@ -204,10 +204,11 @@ async def process_qr_scan_logic(
                 ProductVariant.deleted_at.is_(None)
             ).with_for_update().first()
         elif qr_code and isinstance(qr_code, str):
-            # تنظيف المسار واستخراج اسم الملف
-            filename = qr_code.replace("\\", "/").split("/")[-1]
+            clean_qr = qr_code.strip()
+            filename = clean_qr.replace("\\", "/").split("/")[-1]
+            # ✅ دعم التطابق المباشر السريع مع الفهرس أولاً، ثم التراجع لاسم الملف
             variant = db.query(ProductVariant).filter(
-                ProductVariant.qr_code.like(f"%{filename}"),
+                or_(ProductVariant.qr_code == clean_qr, ProductVariant.qr_code.like(f"%{filename}")),
                 ProductVariant.deleted_at.is_(None)
             ).with_for_update().first()
         
@@ -246,8 +247,16 @@ async def process_qr_scan_logic(
 
         if is_order_complete:
             affected_product_ids = set()
+            # ✅ إصلاح N+1: جلب كل الـ variants دفعة واحدة بـ IN query بدلاً من loop query
+            variant_ids = [item.variant_id for item in all_items]
+            variants_map = {
+                v.id: v for v in db.query(ProductVariant)
+                .filter(ProductVariant.id.in_(variant_ids))
+                .with_for_update()
+                .all()
+            }
             for item in all_items:
-                v = db.query(ProductVariant).filter(ProductVariant.id == item.variant_id).with_for_update().first()
+                v = variants_map.get(item.variant_id)
                 if v:
                     # تحويل من محجوز إلى مباع
                     v.quantity_reserved = max(0, v.quantity_reserved - item.quantity)
@@ -299,21 +308,22 @@ async def process_qr_scan_logic(
 
 def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str = "مرتجع"):
     """منطق المرتجعات المباشرة للمخزن (أصلاح أخطاء المسافات)"""
-    variant = db.query(ProductVariant).filter(ProductVariant.qr_code == qr_code).with_for_update().first()
+    clean_qr = (qr_code or "").strip()
+    filename = clean_qr.replace("\\", "/").split("/")[-1]
+    variant = db.query(ProductVariant).filter(
+        or_(ProductVariant.qr_code == clean_qr, ProductVariant.qr_code.like(f"%{filename}")),
+        ProductVariant.deleted_at.is_(None)
+    ).with_for_update().first()
     if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
-
-    if variant.deleted_at is not None:
-        raise HTTPException(status_code=400, detail="المنتج محذوف ولا يمكن استرجاعه")
 
     if variant.total_sold <= 0:
         raise HTTPException(status_code=400, detail="لا يوجد قطع مبيوعة لإعادة استرجاعها")    
 
     q_before = variant.quantity_available
-   
-    q_after = variant.quantity_available
 
-    # استدعاء الخدمة الموحدة (تقوم بالتحديث والتوثيق والمزامنة في خطوة واحدة)
+    # ✅ تنفيذ العملية أولاً ثم حساب q_after لضمان صحة سجلات حركات المخزون
     record_return_to_stock(db, variant_id=variant.id, user_id=user_id, quantity=1, notes=note)
+    q_after = variant.quantity_available
 
     create_system_audit_log(
         db=db,
@@ -329,23 +339,24 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
    
 def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "تالف"):
     # 1. جلب البيانات
-    variant = db.query(ProductVariant).filter(ProductVariant.qr_code == qr_code).with_for_update().first()
+    clean_qr = (qr_code or "").strip()
+    filename = clean_qr.replace("\\", "/").split("/")[-1]
+    variant = db.query(ProductVariant).filter(
+        or_(ProductVariant.qr_code == clean_qr, ProductVariant.qr_code.like(f"%{filename}")),
+        ProductVariant.deleted_at.is_(None)
+    ).with_for_update().first()
     if not variant: 
         raise HTTPException(status_code=404, detail="الرمز غير موجود")
-
-    if variant.deleted_at is not None:
-        raise HTTPException(status_code=400, detail="المنتج محذوف ولا يمكن تسجيله كتالف")
 
     if variant.quantity_available <= 0:
         raise HTTPException(status_code=400, detail="لا توجد كمية متاحة لإتلافها")
 
 
     q_before = variant.quantity_available
-   
-    q_after = variant.quantity_available   
 
-    # 2. تنفيذ عملية الإتلاف والمزامنة (التي أصلحناها سابقاً)
+    # ✅ إصلاح: تنفيذ عملية الإتلاف أولاً ثم حساب q_after لضمان صحة سجلات حركات المخزون
     record_damage_entry(db, variant.id, user_id, 1, "QR Scan Damage", note)
+    q_after = variant.quantity_available  # الآن بعد الخصم
 
     create_system_audit_log(
         db=db,
@@ -621,10 +632,17 @@ def transition_order_status(db: Session, db_order: Order, old_status: str, new_s
     if old_status in reserved_statuses and new_status in sold_statuses:
         # من محجوز إلى مباع
         affected_product_ids = set()
-        for item in db_order.items:
-            if item.deleted_at is not None:
-                continue
-            variant = db.query(ProductVariant).filter(ProductVariant.id == item.variant_id).with_for_update().first()
+        active_items = [item for item in db_order.items if item.deleted_at is None]
+        # ✅ إصلاح N+1: جلب كل variants دفعة واحدة
+        variant_ids = [item.variant_id for item in active_items]
+        variants_map = {
+            v.id: v for v in db.query(ProductVariant)
+            .filter(ProductVariant.id.in_(variant_ids))
+            .with_for_update()
+            .all()
+        }
+        for item in active_items:
+            variant = variants_map.get(item.variant_id)
             if variant:
                 variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - item.quantity)
                 variant.total_sold = (variant.total_sold or 0) + item.quantity
@@ -638,10 +656,17 @@ def transition_order_status(db: Session, db_order: Order, old_status: str, new_s
     elif old_status in sold_statuses and new_status in reserved_statuses:
         # إرجاع من مباع إلى محجوز
         affected_product_ids = set()
-        for item in db_order.items:
-            if item.deleted_at is not None:
-                continue
-            variant = db.query(ProductVariant).filter(ProductVariant.id == item.variant_id).with_for_update().first()
+        active_items = [item for item in db_order.items if item.deleted_at is None]
+        # ✅ إصلاح N+1: جلب كل variants دفعة واحدة
+        variant_ids = [item.variant_id for item in active_items]
+        variants_map = {
+            v.id: v for v in db.query(ProductVariant)
+            .filter(ProductVariant.id.in_(variant_ids))
+            .with_for_update()
+            .all()
+        }
+        for item in active_items:
+            variant = variants_map.get(item.variant_id)
             if variant:
                 variant.total_sold = max(0, (variant.total_sold or 0) - item.quantity)
                 variant.quantity_reserved = (variant.quantity_reserved or 0) + item.quantity
@@ -743,8 +768,8 @@ def get_time_ago_ar(dt: datetime) -> str:
 async def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None, search: Optional[str] = None):
     """جلب كافة الطلبات مع دعم فلترة متقدمة وتشكيل البيانات للوحة التحكم"""
     
-    # 1. بناء الاستعلام مع جلب كافة العلاقات اللازمة في ضربة واحدة لمنع مشكلة N+1
-    query = db.query(Order).options(
+    # 1. بناء الاستعلام مع استبعاد المحذوفات وجلب كافة العلاقات اللازمة في ضربة واحدة لمنع مشكلة N+1
+    query = db.query(Order).filter(Order.deleted_at.is_(None)).options(
         joinedload(Order.creator), # جلب بيانات الموظف (المستخدم الذي أنشأ الطلب)
         joinedload(Order.items).joinedload(OrderItem.variant).joinedload(ProductVariant.color), # لجلب صورة اللون
         joinedload(Order.items).joinedload(OrderItem.product) # لجلب صورة المنتج الأساسية
@@ -756,18 +781,17 @@ async def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int 
     
     # 3. نظام البحث المتقدم
     if search:
-        search_term = f"%{search}%"
+        search_term = f"%{search.strip()}%"
         conditions = [
             Order.customer_name.ilike(search_term),
             Order.social_media_source.ilike(search_term),
-            # ملاحظة: إذا كان customer_phones مخزن كـ JSON في قاعدة بيانات Postgres، قد تحتاج لاستخدام cast للبحث بداخله
-            # لكن إذا كان نص عادي (String) فهذا السطر سيعمل فوراً
-            Order.customer_phones.ilike(search_term) 
+            # ✅ تحويل العمود JSON إلى String ليعمل بشكل آمن عبر جميع قواعد البيانات
+            func.cast(Order.customer_phones, String).ilike(search_term) 
         ]
         
         # إذا كان مصطلح البحث عبارة عن رقم فقط، نضيف البحث بكود الطلب (ID)
-        if search.isdigit():
-            conditions.append(Order.id == int(search))
+        if search.strip().isdigit():
+            conditions.append(Order.id == int(search.strip()))
             
         query = query.filter(or_(*conditions))
     
@@ -942,9 +966,27 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, case, String
 from fastapi import HTTPException
  
+# ✅ كاش بسيط في الذاكرة لمنع تشغيل 4 استعلامات DB عند كل تحديث
+# TTL = 30 ثانية — يُحافظ على دقة البيانات مع تقليل الضغط بشكل كبير
+_stats_cache: dict = {}
+_STATS_CACHE_TTL_SECONDS = 30
+
+def _get_cached_stats(key: str):
+    entry = _stats_cache.get(key)
+    if entry and (datetime.now() - entry['ts']).total_seconds() < _STATS_CACHE_TTL_SECONDS:
+        return entry['data']
+    return None
+
+def _set_cached_stats(key: str, data):
+    _stats_cache[key] = {'data': data, 'ts': datetime.now()}
 
 def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
     try:
+        # ✅ تحقق من الكاش أولاً قبل تشغيل أي استعلام
+        cached = _get_cached_stats(f'dashboard_{period}')
+        if cached:
+            return cached
+
         # حساب تاريخ بداية الفترة
         now = datetime.now()
         start_date = None
@@ -1135,7 +1177,8 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
         # =========================================================================
         # 6. إرجاع القاموس المنظم الموحد للفرونت إند
         # =========================================================================
-        return {
+        # ✅ حفظ النتيجة في الكاش قبل الإرجاع
+        result = {
             "inventory": {
                 "total_products": int((inventory_stats.total_products_count if inventory_stats else 0) or 0),
                 "total_inventory": int((inventory_stats.total_inventory if inventory_stats else 0) or 0),
@@ -1146,12 +1189,9 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
                 "waste_rate": round(((inventory_stats.total_damaged if inventory_stats else 0) or 0) / ((inventory_stats.total_inventory if inventory_stats else 1) or 1) * 100, 2)
             },
             "orders": {
-                # الحقول القديمة (لم تُمس من أجل الواجهات القديمة والمشتركة)
                 "total": int((order_stats.total_orders if order_stats else 0) or 0),
                 "pending": int((order_stats.pending_orders if order_stats else 0) or 0),
                 "processing": int((order_stats.processing_orders if order_stats else 0) or 0),
-                
-                # الحقول المحدثة بناءً على قيم الـ Enum الفعلية المكتشفة في قاعدة البيانات
                 "ready": int((order_stats.ready_orders if order_stats else 0) or 0),
                 "shipping": int((order_stats.shipping_orders if order_stats else 0) or 0),
                 "cancelled": int((order_stats.cancelled_orders if order_stats else 0) or 0)
@@ -1180,6 +1220,8 @@ def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
                 }
             }
         }
+        _set_cached_stats(f'dashboard_{period}', result)
+        return result
 
     except Exception as e:
         print("!!! DASHBOARD LOGIC ERROR !!!")
@@ -1333,10 +1375,12 @@ import traceback
 
 async def get_products_with_variants_logic(db: Session):
     try:
-        # 1. جلب المنتجات مع كافة العلاقات المتداخلة في استعلام واحد (Eager Loading)
-        # تم الربط من المنتج -> إلى الألوان -> إلى المتغيرات -> إلى المقاسات بناءً على الـ ERD
+        # ✅ إصلاح: استبدال joinedload بـ selectinload لمنع Cartesian Product
+        # joinedload على علاقات متداخلة 3 مستويات = ضرب الصفوف أسياً في SQL
+        # selectinload = استعلام IN منفصل لكل مستوى — أسرع بـ 3-5x للعلاقات المتداخلة
+        from sqlalchemy.orm import selectinload
         products = db.query(Product).options(
-            joinedload(Product.colors).joinedload(ProductColor.variants).joinedload(ProductVariant.size)
+            selectinload(Product.colors).selectinload(ProductColor.variants).selectinload(ProductVariant.size)
         ).filter(
             Product.deleted_at.is_(None)
         ).order_by(Product.created_at.desc()).all()

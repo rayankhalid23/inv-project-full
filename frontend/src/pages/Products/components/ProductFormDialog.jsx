@@ -557,7 +557,7 @@ showToast("تم نسخ الكود", "success");
              </div>
            
              <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
-               <div className="bg-[#800000] p-6 rounded-[2.5rem] text-white flex justify-between items-center shadow-lg shadow-[#800000]/20">
+               <div className={`bg-[#800000] p-6 rounded-[2.5rem] text-white flex justify-between items-center shadow-lg shadow-[#800000]/20 ${canManage ? '' : 'col-span-2'}`}>
                  <div>
                    <span className="text-[10px] font-bold opacity-80 block mb-1">سعر البيع النهائي</span>
                    <span className="text-2xl font-black">{viewData.selling_price} <small className="text-xs">د.ل</small></span>
@@ -565,6 +565,8 @@ showToast("تم نسخ الكود", "success");
                  <DollarSign size={32} className="opacity-20" />
                </div>
                
+               {/* تكلفة الشراء — مخفية عن الموظفين */}
+               {canManage && (
                <div className="bg-slate-900 p-6 rounded-[2.5rem] text-white flex justify-between items-center shadow-lg shadow-slate-900/20">
                  <div>
                    <span className="text-[10px] font-bold opacity-80 block mb-1">تكلفة الشراء (الوحدة)</span>
@@ -572,6 +574,7 @@ showToast("تم نسخ الكود", "success");
                  </div>
                  <TrendingUp size={32} className="opacity-20" />
                </div>
+               )}
              </div>
            
              <div className="mt-4 flex items-center gap-3 bg-amber-50 p-4 rounded-2xl border border-amber-100">
@@ -803,11 +806,13 @@ showToast("تم نسخ الكود", "success");
       )}
     </div>
 
-    {/* تكلفة الشراء */}
+    {/* تكلفة الشراء — مخفية عن الموظفين (role_id=3) */}
+    {canManage && (
     <div className="space-y-1">
       <label className="text-[10px] font-bold text-slate-600 text-center block">تكلفة الشراء</label>
       <input type="number" step="0.01" placeholder="0 د.ل" {...register("cost_price")} className="w-full p-5 rounded-2xl border border-slate-100 bg-slate-50 text-center text-xs font-bold outline-none focus:border-[#800000]" />
     </div>
+    )}
 
     {/* الحد الأدنى للتنبيه */}
     <div className="space-y-1">
@@ -1222,7 +1227,7 @@ onChange={(e) => {
                   // تم تغيير [sizeIndex] إلى [si] لأن الـ index المعرّف في الـ map لديك هو si
 const currentSizeObj = currentColor?.sizes?.[si];
 
-console.log("💥 تم التقاط الضغطة! كائن المقاس المستخرج برمجياً هو:", currentSizeObj);
+
 
 setSizeToDelete({
   id: currentSizeObj?.id || currentSizeObj?.variant_id || currentSizeObj?.size_id || s.id, 

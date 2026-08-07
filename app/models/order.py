@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DECIMAL, Enum, ForeignKey, JSON, TIMESTAMP, func
+from sqlalchemy import Column, Integer, String, Text, DECIMAL, Enum, ForeignKey, JSON, TIMESTAMP, func, Index
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
 from app.core.database import Base
@@ -41,7 +41,14 @@ class OrderAction(BaseModel):
 
 class Order(BaseModel):
     __tablename__ = "orders"
-    
+    # ✅ Indexes: تسريع أكثر الاستعلامات شيوعاً (filter by status, sort by date, soft-delete)
+    __table_args__ = (
+        Index('ix_orders_status', 'status'),
+        Index('ix_orders_created_at', 'created_at'),
+        Index('ix_orders_deleted_at', 'deleted_at'),
+        Index('ix_orders_created_by', 'created_by'),
+        {'extend_existing': True},
+    )
     id = Column(Integer, primary_key=True)
     customer_name = Column(String(255), nullable=False)
     customer_phones = Column(JSON, nullable=False) # تأكد من استيراد JSON من sqlalchemy

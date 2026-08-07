@@ -149,6 +149,12 @@ class ManualReturnRequest(BaseModel):
     notes: Optional[str] = "مرتجع يدوي"
 
 
+class DirectSaleRequest(BaseModel):
+    variant_id: int
+    quantity: int = Field(gt=0, description="الكمية المراد بيعها مباشرة")
+    notes: Optional[str] = "بيع مباشر عبر الماسح"
+
+
 # =====================================================================
 # 4. سكيمات الرد الإستجابة والتقارير (Responses & Analytics)
 # =====================================================================

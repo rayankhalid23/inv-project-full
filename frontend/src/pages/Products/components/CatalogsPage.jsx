@@ -476,10 +476,11 @@ useEffect(() => {
             {searchedProducts.map((product) => (
               <ProductCard 
                 key={product.id} 
-                product={product} 
-                onEdit={onEditProduct}
+                product={product}
+                canManage={canManage}
+                onEdit={canManage ? onEditProduct : undefined}
                 onDownloadQR={onDownloadQR}
-                onDelete={() => onRefresh(statusFilter)}
+                onDelete={canManage ? () => onRefresh(statusFilter) : undefined}
                 onEditSuccess={() => onRefresh(statusFilter)}
               />
             ))}

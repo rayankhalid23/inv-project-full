@@ -19,12 +19,14 @@ from app.schemas.inventory_movement_schema import (
     StockAddRequest, 
     DamageRecordRequest, 
     ManualReturnRequest,
+    DirectSaleRequest,
     MovementResponse
 )
 from app.services.inventory_movement_service import (
     record_stock_addition,
     record_damage_entry,
     record_return_to_stock,
+    record_direct_sale,
     record_manual_adjustment,get_advanced_inventory_ledger,get_movement_details_service
 
 )
@@ -109,6 +111,69 @@ def return_product_to_inventory(
         "movement_id": 0
     }
 
+@router.post("/direct-sale", response_model=MovementResponse)
+def direct_sale_product(
+    *,
+    db: Session = Depends(get_db),
+    sale_in: DirectSaleRequest,
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """
+    بيع مباشر للمنتج: خصم من المخزون المتاح وإضافة لإجمالي المبيعات.
+    """
+    variant = record_direct_sale(
+        db=db,
+        variant_id=sale_in.variant_id,
+        user_id=current_user.id,
+        quantity=sale_in.quantity,
+        notes=sale_in.notes
+    )
+    db.commit()
+    return {
+        "status": "success",
+        "message": "تم تسجيل البيع المباشر وخصم الكمية من المخزون",
+        "new_quantity": variant.quantity_available,
+        "movement_id": 0
+    }
+
+@router.post("/direct-sale-by-qr", response_model=MovementResponse)
+def direct_sale_by_qr(
+    qr_code: str = Query(..., description="رمز QR للمنتج"),
+    note: str = Query("بيع مباشر عبر الماسح", description="ملاحظة البيع"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+) -> Any:
+    """
+    بيع مباشر عبر رمز QR: يبحث عن الـ variant ثم يخصم قطعة واحدة من المخزون.
+    """
+    from app.models.inventory import ProductVariant
+    # ✅ إصلاح BUG-12: فلترة deleted_at لمنع بيع منتجات محذوفة من النظام
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.qr_code == qr_code,
+        ProductVariant.deleted_at.is_(None)
+    ).first()
+    if not variant:
+        raise HTTPException(status_code=404, detail="لم يتم العثور على منتج نشط برمز QR هذا")
+
+    updated_variant = record_direct_sale(
+        db=db,
+        variant_id=variant.id,
+        user_id=current_user.id,
+        quantity=1,
+        notes=note
+    )
+    db.commit()
+    # جلب ID الحركة الحقيقية
+    last_mv = db.query(InventoryMovement).filter(
+        InventoryMovement.variant_id == variant.id
+    ).order_by(InventoryMovement.id.desc()).first()
+    return {
+        "status": "success",
+        "message": f"تم بيع قطعة من {variant.qr_code} وخصمها من المخزون",
+        "new_quantity": updated_variant.quantity_available,
+        "movement_id": last_mv.id if last_mv else 0
+    }
+
 @router.get("/logs", response_model=List[InventoryMovementRead])
 def get_inventory_logs(
     db: Session = Depends(get_db),
@@ -117,9 +182,11 @@ def get_inventory_logs(
     current_user: User = Depends(get_current_active_user)
 ) -> Any:
     """
-    جلب سجل حركات المخزن بالكامل (للرقابة).
+    جلب سجل حركات المخزن بالكامل (للمدير فقط).
     """
-    # يفضل أن يكون للأدمن فقط، يمكنك إضافة تحقق هنا
+    # ✅ إصلاح BUG-13: حماية النقطة لتكون للمدير (رول 1 أو 2) فقط
+    if not hasattr(current_user, 'role_id') or current_user.role_id not in [1, 2]:
+        raise HTTPException(status_code=403, detail="هذه العملية متاحة للمديرين فقط")
     logs = db.query(InventoryMovement).order_by(InventoryMovement.created_at.desc()).offset(skip).limit(limit).all()
     return logs
 

@@ -25,7 +25,8 @@ async def get_comprehensive_report(
     inventory_val = db.query(
         func.sum(ProductVariant.quantity_available * Product.cost_price).label("cost"),
         func.sum(ProductVariant.quantity_available * Product.selling_price).label("sale")
-    ).join(Product, Product.id == ProductVariant.product_id).first()
+    ).join(ProductVariant.color).join(ProductColor.product)\
+     .filter(ProductVariant.deleted_at.is_(None), Product.deleted_at.is_(None)).first()
 
     perf_data = ReportingService.get_inventory_performance_report(db, start_date, end_date)
     emp_data = ReportingService.get_employee_audit_report(db, start_date, end_date)

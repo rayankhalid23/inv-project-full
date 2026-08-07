@@ -95,12 +95,21 @@ class ReportingService:
     def get_inventory_performance_report(db: Session, start_date, end_date):
         """تقرير أداء حركة المخزن والمنتجات الأكثر وأقل مبيعاً بناء على الحالات المعتمدة"""
         
+        sold_statuses = ["prepared", "shipped", "delivered", "تم التجهيز", "جاري الشحن", "تم اسناده للتوصيل", "تم التوصيل"]
+
         # الأكثر مبيعاً
         top_selling_raw = db.query(
             Product.name, func.sum(OrderItem.quantity).label("total")
         ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)\
          .join(Order, Order.id == OrderItem.order_id)\
-         .filter(Order.status.in_(["prepared", "shipped"]), Order.created_at >= start_date, Order.created_at <= end_date)\
+         .filter(
+             Order.status.in_(sold_statuses),
+             Order.deleted_at.is_(None),
+             OrderItem.deleted_at.is_(None),
+             Product.deleted_at.is_(None),
+             Order.created_at >= start_date,
+             Order.created_at <= end_date
+         )\
          .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
         # الأقل مبيعاً
@@ -108,34 +117,50 @@ class ReportingService:
             Product.name, func.sum(OrderItem.quantity).label("total")
         ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)\
          .join(Order, Order.id == OrderItem.order_id)\
-         .filter(Order.status.in_(["prepared", "shipped"]), Order.created_at >= start_date, Order.created_at <= end_date)\
+         .filter(
+             Order.status.in_(sold_statuses),
+             Order.deleted_at.is_(None),
+             OrderItem.deleted_at.is_(None),
+             Product.deleted_at.is_(None),
+             Order.created_at >= start_date,
+             Order.created_at <= end_date
+         )\
          .group_by(Product.id, Product.name).order_by("total").limit(5).all()
 
         # الأكثر مرتجعاً
         top_returns_raw = db.query(
             Product.name, func.sum(InventoryMovement.quantity_change).label("total")
-        ).select_from(Product).join(InventoryMovement, Product.id == InventoryMovement.product_id)\
-         .filter(InventoryMovement.movement_type == 'return', 
-                  InventoryMovement.created_at >= start_date, 
-                  InventoryMovement.created_at <= end_date)\
+        ).select_from(InventoryMovement)\
+         .outerjoin(Product, Product.id == InventoryMovement.product_id)\
+         .filter(
+             InventoryMovement.movement_type == 'return', 
+             InventoryMovement.created_at >= start_date, 
+             InventoryMovement.created_at <= end_date
+         )\
          .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
         # الأكثر تالفاً
         top_damaged_raw = db.query(
             Product.name, func.sum(func.abs(InventoryMovement.quantity_change)).label("total")
-        ).select_from(Product).join(InventoryMovement, Product.id == InventoryMovement.product_id)\
-         .filter(InventoryMovement.movement_type == 'damage', 
-                  InventoryMovement.created_at >= start_date, 
-                  InventoryMovement.created_at <= end_date)\
+        ).select_from(InventoryMovement)\
+         .outerjoin(Product, Product.id == InventoryMovement.product_id)\
+         .filter(
+             InventoryMovement.movement_type == 'damage', 
+             InventoryMovement.created_at >= start_date, 
+             InventoryMovement.created_at <= end_date
+         )\
          .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
         # حساب خسائر التوالف المالية
         loss_value = db.query(
             func.sum(func.abs(InventoryMovement.quantity_change) * Product.cost_price)
-        ).select_from(InventoryMovement).join(Product, Product.id == InventoryMovement.product_id)\
-         .filter(InventoryMovement.movement_type == 'damage', 
-                  InventoryMovement.created_at >= start_date, 
-                  InventoryMovement.created_at <= end_date)\
+        ).select_from(InventoryMovement)\
+         .outerjoin(Product, Product.id == InventoryMovement.product_id)\
+         .filter(
+             InventoryMovement.movement_type == 'damage', 
+             InventoryMovement.created_at >= start_date, 
+             InventoryMovement.created_at <= end_date
+         )\
          .scalar() or 0
 
         return {

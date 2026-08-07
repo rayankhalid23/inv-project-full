@@ -15,11 +15,12 @@ const BACKEND = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API
   ? import.meta.env.VITE_API_URL.replace('/api', '')
   : window.location.origin;
 
+// ✅ إصلاح: كانت الدالة تحذف /static من المسار مما يُسبب 404 لكل الصور
 function imgUrl(path) {
   if (!path) return null;
   if (path.startsWith('http')) return path;
   const clean = path.startsWith('/') ? path : `/${path}`;
-  return `${BACKEND}${clean.replace('/static', '')}`;
+  return `${BACKEND}${clean}`;
 }
 
 export default function StockMovementsPage() {
@@ -70,6 +71,8 @@ export default function StockMovementsPage() {
     setPeriodFilter('الكل');
     setCurrentPage(1);
     setErrorMsg(null);
+    // ✅ إصلاح BUG-19: إعادة groupBy للقيمة الافتراضية عند مسح الفلاتر
+    setGroupBy('التاريخ');
   };
 
   const typeToBackend   = { 'وارد': 'in', 'صادر': 'out', 'تالف': 'damage', 'تعديل': 'adjustment', 'إرجاع': 'return' };
@@ -95,8 +98,16 @@ export default function StockMovementsPage() {
       if (urlVariantId) params.variant_id       = parseInt(urlVariantId);
       if (urlUserId)    params.user_id          = parseInt(urlUserId);
       if (urlOrderId)   params.related_order_id = parseInt(urlOrderId);
-      if (!urlProductId && !urlVariantId && !urlUserId && !urlOrderId && searchQuery) {
-        if (/^\d+$/.test(searchQuery)) params.related_order_id = parseInt(searchQuery);
+      // ✅ إصلاح BUG-18: تمرير البحث النصي كـ search param وليس فقط للأرقام
+      if (!urlProductId && !urlVariantId && !urlUserId && !urlOrderId && searchQuery.trim()) {
+        const q = searchQuery.trim();
+        if (/^\d+$/.test(q)) {
+          // بحث برقم الطلب
+          params.related_order_id = parseInt(q);
+        } else {
+          // ✅ بحث نصي حقيقي كان يُتجاهل سابقاً
+          params.search = q;
+        }
       }
 
       const res   = await catalogApi.getInventoryLedger(params);

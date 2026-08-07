@@ -60,9 +60,6 @@ const Dashboard = () => {
         // فك التغليف لضمان الوصول للكائن الصحيح
         const actualStats = response?.data?.data || response?.data || response;
         
-        // طباعة تشخيصية في متصفح الكروم للتأكد من هيكل البيانات القادمة للفرونت إند
-        console.log("📊 Dashboard Rendered Stats:", actualStats);
-        
         setStats(actualStats);
       } catch (err) { 
         console.error("Error fetching stats:", err); 

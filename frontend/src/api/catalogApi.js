@@ -327,6 +327,7 @@ getFilteredVariants: async (filters = {}) => {
         const response = await api.get('/variants/filter', {
             params: {
                 search: filters.search?.trim() || undefined,
+                qr_code: filters.qr_code?.trim() || undefined,
                 catalog_id: catalogIdParam,
                 size_id: filters.sizeId || undefined,
                 low_stock_only: filters.lowStockOnly || false,
@@ -410,19 +411,40 @@ processScanReturn: async (qrCode, note = "مرتجع") => {
  */
 processScanDamage: async (qrCode, note = "تالف") => {
     try {
-        // الباك إند يتوقع qr_code و note كـ Query Parameters في الرابط
         const response = await api.post('/orders/mark-as-damaged', null, {
             params: { 
                 qr_code: qrCode,
                 note: note
             }
         });
-        return response.data; // يعيد {"status": "success", "new_qty": ...}
+        return response.data;
     } catch (error) {
         console.error("Error in processScanDamage API:", error.response?.data || error.message);
         throw error.response?.data?.detail || "حدث خطأ أثناء تسجيل التالف.";
     }
 },
+
+/**
+ * بيع مباشر عبر رمز QR: خصم من المخزون وإضافة لإجمالي المبيعات
+ * يتوافق مع endpoint: POST /inventory/direct-sale-by-qr
+ * @param {string} qrCode - الرمز الممسوح ضوئياً
+ * @param {string} note - ملاحظة البيع
+ */
+processScanSale: async (qrCode, note = "بيع مباشر") => {
+    try {
+        const response = await api.post('/inventory/direct-sale-by-qr', null, {
+            params: {
+                qr_code: qrCode,
+                note: note
+            }
+        });
+        return response.data;
+    } catch (error) {
+        console.error("Error in processScanSale API:", error.response?.data || error.message);
+        throw error.response?.data?.detail || "حدث خطأ أثناء تسجيل البيع المباشر.";
+    }
+},
+
 getInventoryStats: async (period = '7d') => {
     try {
         const response = await api.get('/orders/inventory-stats/test', { params: { period } });

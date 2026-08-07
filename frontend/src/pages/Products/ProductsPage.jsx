@@ -18,13 +18,12 @@ const ProductsPage = () => {
   // --- [حالات التحكم في النافذة والمنتج] ---
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [currentProduct, setCurrentProduct] = useState(null);
-  // --- [نظام الصلاحيات الذكي] ---
-  // نقرأ بيانات المستخدم من الـ localStorage (عدّل المسمى حسب ما هو مخزن عندك بالسيرفر)
+  // --- [نظام الصلاحيات الذكي] role_id: 1=مسؤول, 2=مدير, 3=موظف ---
   const storedUser = localStorage.getItem('user') ? JSON.parse(localStorage.getItem('user')) : null;
-  const userRole = storedUser?.role || localStorage.getItem('role') || 'employee'; 
+  const roleId = Number(storedUser?.role_id ?? localStorage.getItem('role_id') ?? 3);
 
-  // الصلاحية تمنح فقط للمدير (admin) أو المسؤول (manager)
-  const canManage = userRole === 'admin' || userRole === 'manager' || userRole === 'مدير' || userRole === 'مسؤول';
+  // الصلاحية فقط للمسؤول (1) والمدير (2) — الموظف (3) يشوف المنتجات فقط
+  const canManage = roleId === 1 || roleId === 2;
 
   // 1. الدالة الأساسية لجلب البيانات من الباك آند
   const fetchCatalogs = useCallback(async (status = 'all') => {
@@ -134,8 +133,8 @@ const ProductsPage = () => {
           catalog={selectedCatalog} 
           canManage={canManage}
           onBack={() => { setView('catalogs'); setSelectedCatalog(null); }} 
-          onEditProduct={handleEditProduct}
-          onAddProduct={handleAddProduct}
+          onEditProduct={canManage ? handleEditProduct : undefined}
+          onAddProduct={canManage ? handleAddProduct : undefined}
           onDownloadQR={async (p) => {
             try {
               await catalogApi.downloadProductQRs(p.id);

@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   User, LogOut, Save, RefreshCw, 
-  Phone, Lock, ShieldCheck, XCircle 
+  Phone, Lock, ShieldCheck, XCircle, Download, Smartphone, Shield, Zap
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useOffline } from '../context/OfflineContext';
 import { useNavigate } from 'react-router-dom';
 import { updateProfile } from '../api/userApi';
 import { toast } from 'react-hot-toast';
+
 
 const Settings = () => {
   const { logout, user, updateUserData } = useAuth();
@@ -254,8 +256,34 @@ const Settings = () => {
 
         </div>
       </div>
+
+      {/* بطاقة تثبيت وتنزيل التطبيق */}
+      <div className="bg-[#0a1128] rounded-3xl border border-white/10 p-6 lg:p-8 text-white shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-64 h-64 bg-[#800000]/20 rounded-full blur-3xl pointer-events-none" />
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6 relative z-10">
+          <div className="flex items-center gap-4">
+            <div className="p-3.5 rounded-2xl bg-[#800000] border border-white/20 shadow-lg shrink-0">
+              <Shield className="w-8 h-8 text-white" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-xl font-black tracking-wide text-white">تطبيق BELLAGIO على جهازك</h3>
+              <p className="text-xs text-slate-300 font-medium leading-relaxed max-w-lg">
+                قم بتنزيل التطبيق كـ تطبيق آيفون أو أندرويد أو كمبيوتر للعمل بدون إنترنت وحفظ البيانات محلياً مع المزامنة التلقائية فور توفر النت!
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={promptInstallApp}
+            className="w-full md:w-auto flex items-center justify-center gap-2.5 bg-gradient-to-r from-[#800000] to-[#b30000] hover:from-[#990000] hover:to-[#cc0000] text-white px-6 py-3.5 rounded-2xl font-bold shadow-lg shadow-[#800000]/40 transition-all active:scale-95 shrink-0"
+          >
+            <Download className="w-5 h-5" />
+            <span>تنزيل وتثبيت التطبيق 📲</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
 
-export default Settings;
+export default Settings;

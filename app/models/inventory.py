@@ -13,7 +13,7 @@ from bidi.algorithm import get_display
 from app.models.base import Base
 
 
-from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, func, Numeric, Text, Boolean, DateTime, JSON
+from sqlalchemy import Column, Integer, String, ForeignKey, TIMESTAMP, func, Numeric, Text, Boolean, DateTime, JSON, Index
 from sqlalchemy.orm import relationship
 from app.models.base import Base
 
@@ -116,7 +116,13 @@ class Size(Base):
 
 class ProductVariant(Base):
     __tablename__ = "product_variants"
-    
+    # ✅ Indexes: تسريع بحث QR Scan (الأكثر تكراراً) وفحص الحذف الناعم
+    __table_args__ = (
+        Index('ix_variants_qr_code', 'qr_code'),
+        Index('ix_variants_deleted_at', 'deleted_at'),
+        Index('ix_variants_color_id', 'product_color_id'),
+        {'extend_existing': True},
+    )
     id = Column(Integer, primary_key=True, index=True)
     product_color_id = Column(Integer, ForeignKey("product_colors.id", ondelete="CASCADE"), nullable=False)
     size_id = Column(Integer, ForeignKey("sizes.id"), nullable=True) # nullable=True إذا كان هناك منتجات بلا مقاس

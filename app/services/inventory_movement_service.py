@@ -15,6 +15,11 @@ from app.crud.inventory_sync import sync_product_metrics
 
 def record_stock_addition(db: Session, variant_id: int, user_id: int, quantity: int, notes: str = None):
     """ إضافة بضاعة جديدة للمخزن (توريد) """
+    # ✅ إصلاح BUG-06: رفض كمية صفر أو سالبة لمنع تلوث سجل المخزون
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="يجب أن تكون الكمية المضافة أكبر من صفر")
+    if quantity > 100000:
+        raise HTTPException(status_code=400, detail="الكمية كبيرة جداً — تحقق من المدخل")
     variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id).with_for_update().first()
     if not variant:
         raise HTTPException(status_code=404, detail="المتغير غير موجود")
@@ -106,8 +111,44 @@ def record_return_to_stock(db: Session, variant_id: int, user_id: int, quantity:
     return variant
 
 
+def record_direct_sale(db: Session, variant_id: int, user_id: int, quantity: int, notes: str = None):
+    """ بيع مباشر: ينقص من المتاح ويزيد في إجمالي المبيعات """
+    variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id).with_for_update().first()
+    if not variant:
+        raise HTTPException(status_code=404, detail="المتغير غير موجود")
+
+    quantity_before = variant.quantity_available or 0
+
+    if quantity_before < quantity:
+        raise HTTPException(status_code=400, detail="الكمية المتاحة في المخزن أقل من المراد بيعه")
+
+    variant.quantity_available = quantity_before - quantity
+    variant.total_sold = (variant.total_sold or 0) + quantity
+
+    db.add(variant)
+    db.flush()
+
+    create_inventory_log(
+        db=db,
+        variant_id=variant_id,
+        product_id=variant.product_id,
+        user_id=user_id,
+        movement_type='sale',
+        quantity_change=-quantity,
+        quantity_before=quantity_before,
+        quantity_after=variant.quantity_available,
+        notes=notes or 'بيع مباشر عبر الماسح'
+    )
+
+    sync_product_metrics(db, variant.product_id)
+    return variant
+
+
 def record_manual_adjustment(db: Session, variant_id: int, user_id: int, new_total: int, notes: str):
     """ تعديل يدوي (جرد للكمية المتاحة) """
+    # ✅ إصلاح BUG-05: رفض قيمة سالبة لمنع مخزون سالب يكسر جميع التنبيهات
+    if new_total < 0:
+        raise HTTPException(status_code=400, detail="لا يمكن أن يكون المخزون بقيمة سالبة")
     variant = db.query(ProductVariant).filter(ProductVariant.id == variant_id).with_for_update().first()
     if not variant:
         raise HTTPException(status_code=404, detail="المتغير غير موجود")
@@ -466,14 +507,14 @@ def get_advanced_inventory_ledger(
 
     # Apply product/variant/order filters
     if product_id:
-        query_inv = query_inv.filter(InventoryMovement.product_id == product_id)
+        query_inv = query_inv.filter(or_(InventoryMovement.product_id == product_id, Product.id == product_id))
         query_audit = query_audit.filter(and_(SystemAuditLog.action_target == 'product', SystemAuditLog.target_id == product_id))
-        query_order = query_order.join(OrderItem, OrderAction.order_id == OrderItem.order_id).filter(OrderItem.product_id == product_id)
+        query_order = query_order.join(OrderItem, OrderAction.order_id == OrderItem.order_id).filter(OrderItem.product_id == product_id).distinct()
         
     if variant_id:
         query_inv = query_inv.filter(InventoryMovement.variant_id == variant_id)
         query_audit = query_audit.filter(and_(SystemAuditLog.action_target == 'variant', SystemAuditLog.target_id == variant_id))
-        query_order = query_order.join(OrderItem, OrderAction.order_id == OrderItem.order_id).filter(OrderItem.variant_id == variant_id)
+        query_order = query_order.join(OrderItem, OrderAction.order_id == OrderItem.order_id).filter(OrderItem.variant_id == variant_id).distinct()
         
     if order_id:
         query_inv = query_inv.filter(InventoryMovement.related_order_id == order_id)

@@ -3,7 +3,7 @@ import { MoreVertical, Package, Copy, Check, Download, Edit2, Trash2, Tag, Eye, 
 import ProductFormDialog from "./ProductFormDialog";
 import { catalogApi } from "../../../api/catalogApi"; 
 
-const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess }) => {
+const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, canManage: passedCanManage }) => {
   const [copied, setCopied] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false); 
@@ -12,7 +12,10 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess })
   const [successMessage, setSuccessMessage] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false); // حالة رسالة التأكيد المخصصة
   
-  const isManager = Number(JSON.parse(localStorage.getItem('user'))?.role_id ?? localStorage.getItem('role_id')) !== 3;
+  // حزام الأمان: إذا مرر canManage من الأب نستخدمه، وإلا نقرأ role_id من localStorage
+  const isManager = passedCanManage !== undefined
+    ? passedCanManage
+    : Number(JSON.parse(localStorage.getItem('user') || '{}')?.role_id ?? localStorage.getItem('role_id') ?? 3) !== 3;
   const BASE_URL = 'http://127.0.0.1:8000';
 
   // دالة مساعدة سريعة لتركيب الرابط وكسر كاش المتصفح فوراً عند الحفظ

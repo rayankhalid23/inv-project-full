@@ -448,6 +448,7 @@ async def filter_product_variants(
     catalog_id: Optional[int] = Query(None, description="معرف الكتالوج/القسم الافتراضي None يعطي الكل"),
     size_id: Optional[int] = Query(None, description="فلترة بحسب معرف المقاس المحدود"),
     low_stock_only: bool = Query(False, description="عرض المخزون الناقص فقط (الكمية <= حد الأمان)"),
+    qr_code: Optional[str] = Query(None, description="فلتر رمز الـ QR خاص بالمنتج"),
     page: int = Query(1, ge=1, description="رقم الصفحة"),
     page_size: int = Query(20, ge=1, le=100, description="عدد العناصر في الصفحة الواحده"),
     db: Session = Depends(get_db),
@@ -455,7 +456,7 @@ async def filter_product_variants(
 ):
     """
     نظام فلترة ذكي وشامل ومطور:
-    1. يدعم الفلترة بالكتالوج (والافتراضي جلب الكل).
+    1. يدعم الفلترة بالكتالوج ومسح الـ QR.
     2. يعيد قائمة بكافة معرفات المنتجات الفريدة المطابقة لخيارات البحث الحالية.
     """
     
@@ -483,13 +484,25 @@ async def filter_product_variants(
     if catalog_id is not None:
         query = query.filter(Product.catalog_id == catalog_id)
 
-    # 3. تطبيق فلتر البحث الذكي (اسم المنتج أو كود المنتج)
+    # 3. تطبيق فلتر البحث الذكي (اسم المنتج أو كود المنتج أو رمز الـ QR)
     if search:
-        search_filter = f"%{search}%"
+        search_filter = f"%{search.strip()}%"
         query = query.filter(
             or_(
                 Product.name.ilike(search_filter),
-                Product.code.ilike(search_filter)
+                Product.code.ilike(search_filter),
+                ProductVariant.qr_code.ilike(search_filter)
+            )
+        )
+
+    # 3.5 تطبيق فلتر الـ QR المباشر
+    if qr_code:
+        clean_qr = qr_code.strip()
+        filename = clean_qr.replace("\\", "/").split("/")[-1]
+        query = query.filter(
+            or_(
+                ProductVariant.qr_code == clean_qr,
+                ProductVariant.qr_code.like(f"%{filename}")
             )
         )
 
