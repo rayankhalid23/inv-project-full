@@ -1,6 +1,6 @@
 from typing import List, Any, Optional, Dict
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 
 from app.core.database import SessionLocal
@@ -27,7 +27,9 @@ from app.services.inventory_movement_service import (
     record_damage_entry,
     record_return_to_stock,
     record_direct_sale,
-    record_manual_adjustment,get_advanced_inventory_ledger,get_movement_details_service
+    record_manual_adjustment,get_advanced_inventory_ledger,get_movement_details_service,
+    get_movement_summary,check_stock_integrity,record_direct_sale_with_order,
+    resolve_variant_by_scan
 
 )
 
@@ -136,49 +138,91 @@ def direct_sale_product(
         "movement_id": 0
     }
 
+@router.get("/scan/resolve", response_model=Dict[str, Any])
+def resolve_scanned_code(
+    code: str = Query(..., description="القيمة الممسوحة من الكاميرا أو الماسح"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    يحوّل أي قيمة ممسوحة إلى بيانات المنتج قبل تأكيد العملية.
+    تستخدمه الواجهة ليكون البحث والتنفيذ بنفس المنطق تماماً،
+    فلا يحدث أن تعرض الشاشة منتجاً ثم يفشل التنفيذ بعده.
+    """
+    variant = resolve_variant_by_scan(db, code)
+    if not variant:
+        raise HTTPException(status_code=404, detail=f"لم يتم العثور على منتج للكود: {code}")
+
+    color = db.query(ProductVariant).filter(ProductVariant.id == variant.id).first().color
+    product = db.query(Product).filter(Product.id == variant.product_id).first()
+
+    return {
+        "variant_id": variant.id,
+        "qr_code": variant.qr_code,
+        "product_name": product.name if product else "منتج غير مسمى",
+        "product_code": product.code if product else None,
+        "selling_price": float(product.selling_price or 0) if product else 0,
+        "color_name": getattr(color, "color_name", None),
+        "size_name": getattr(getattr(variant, "size", None), "name", None),
+        "quantity_available": variant.quantity_available or 0,
+        "total_sold": variant.total_sold or 0,
+    }
+
+
 @router.post("/direct-sale-by-qr", response_model=MovementResponse)
 def direct_sale_by_qr(
     qr_code: str = Query(..., description="رمز QR للمنتج"),
     note: str = Query("بيع مباشر عبر الماسح", description="ملاحظة البيع"),
+    customer_phone: Optional[str] = Query(None, description="رقم هاتف الزبون (اختياري)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ) -> Any:
     """
-    بيع مباشر عبر رمز QR: يبحث عن الـ variant ثم يخصم قطعة واحدة من المخزون.
+    بيع مباشر عبر رمز QR: يخصم قطعة من المخزون، وينشئ طلباً مكتملاً
+    ليصبح بالإمكان إصدار فاتورة له، ويسجّل حركة مخزون مرتبطة بالطلب.
+    رقم هاتف الزبون اختياري.
     """
-    from app.models.inventory import ProductVariant
-    # ✅ إصلاح BUG-12: فلترة deleted_at لمنع بيع منتجات محذوفة من النظام
-    variant = db.query(ProductVariant).filter(
-        ProductVariant.qr_code == qr_code,
-        ProductVariant.deleted_at.is_(None)
-    ).first()
+    # يدعم كل أشكال الرمز: نص QR المطبوع، المسار المخزّن، أو كود المنتج
+    variant = resolve_variant_by_scan(db, qr_code)
     if not variant:
         raise HTTPException(status_code=404, detail="لم يتم العثور على منتج نشط برمز QR هذا")
 
-    updated_variant = record_direct_sale(
-        db=db,
-        variant_id=variant.id,
-        user_id=current_user.id,
-        quantity=1,
-        notes=note
-    )
-    db.commit()
-    # جلب ID الحركة الحقيقية
+    try:
+        updated_variant, order = record_direct_sale_with_order(
+            db=db,
+            variant_id=variant.id,
+            user_id=current_user.id,
+            quantity=1,
+            notes=note,
+            customer_phone=customer_phone,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"فشل تسجيل البيع: {str(e)}")
+
     last_mv = db.query(InventoryMovement).filter(
-        InventoryMovement.variant_id == variant.id
+        InventoryMovement.related_order_id == order.id
     ).order_by(InventoryMovement.id.desc()).first()
+
     return {
         "status": "success",
-        "message": f"تم بيع قطعة من {variant.qr_code} وخصمها من المخزون",
+        "message": f"تم بيع قطعة من {variant.qr_code} وإصدار الفاتورة رقم #{order.id}",
         "new_quantity": updated_variant.quantity_available,
-        "movement_id": last_mv.id if last_mv else 0
+        "movement_id": last_mv.id if last_mv else 0,
+        "order_id": order.id,
     }
 
 @router.get("/logs", response_model=List[InventoryMovementRead])
 def get_inventory_logs(
     db: Session = Depends(get_db),
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    # سقف إلزامي: كان limit مفتوحاً بلا حد، فبإمكان أي عميل طلب ?limit=999999999
+    # وسحب جدول الحركات بالكامل في طلب واحد.
+    limit: int = Query(100, ge=1, le=100),
     current_user: User = Depends(get_current_active_user)
 ) -> Any:
     """
@@ -187,7 +231,23 @@ def get_inventory_logs(
     # ✅ إصلاح BUG-13: حماية النقطة لتكون للمدير (رول 1 أو 2) فقط
     if not hasattr(current_user, 'role_id') or current_user.role_id not in [1, 2]:
         raise HTTPException(status_code=403, detail="هذه العملية متاحة للمديرين فقط")
-    logs = db.query(InventoryMovement).order_by(InventoryMovement.created_at.desc()).offset(skip).limit(limit).all()
+
+    # ✅ إصلاح N+1: مخطط الاستجابة يضم user و variant (ومعه color).
+    # بدون التحميل المسبق كان كل صف يُطلق استعلامات منفصلة عند التسلسل،
+    # أي مئات الاستعلامات الإضافية لصفحة من 100 صف.
+    # ملاحظة: InventoryMovement لا يملك علاقة product (عمود product_id فقط)،
+    # لذا نحمّل ما هو موجود فعلاً: user و variant.color.
+    logs = (
+        db.query(InventoryMovement)
+        .options(
+            joinedload(InventoryMovement.user),
+            joinedload(InventoryMovement.variant).joinedload(ProductVariant.color),
+        )
+        .order_by(InventoryMovement.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     return logs
 
 

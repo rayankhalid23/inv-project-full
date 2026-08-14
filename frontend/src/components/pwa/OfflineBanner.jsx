@@ -1,15 +1,37 @@
 import React from 'react';
-import { WifiOff, RefreshCw, CheckCircle2, Download } from 'lucide-react';
+import { WifiOff, RefreshCw, CheckCircle2, Download, ArrowUpCircle } from 'lucide-react';
 import { useOffline } from '../../context/OfflineContext';
 
 export default function OfflineBanner() {
-  const { isOffline, pendingCount, isSyncing, triggerManualSync, promptInstallApp, isAppInstalled } = useOffline();
+  const {
+    isOffline, pendingCount, isSyncing, triggerManualSync,
+    promptInstallApp, isAppInstalled, updateAvailable, applyUpdate,
+  } = useOffline();
+
+  // شريط التحديث: يظهر عند توفر نسخة جديدة، ولا يُطبَّق إلا بضغطة المستخدم
+  // حتى لا تُقاطع إعادة التحميل عملية بيع جارية.
+  const updateBar = updateAvailable ? (
+    <div className="bg-emerald-700 text-white px-4 py-2.5 shadow-md flex flex-wrap items-center justify-between gap-3 text-xs font-sans sticky top-0 z-[61]" dir="rtl">
+      <div className="flex items-center gap-2 font-bold">
+        <ArrowUpCircle className="w-4 h-4" />
+        <span>يتوفر إصدار جديد من التطبيق.</span>
+      </div>
+      <button
+        onClick={applyUpdate}
+        className="bg-white text-emerald-800 hover:bg-emerald-50 px-3 py-1.5 rounded-xl font-black transition-all active:scale-95"
+      >
+        تحديث الآن
+      </button>
+    </div>
+  ) : null;
 
   if (!isOffline && pendingCount === 0) {
-    return null;
+    return updateBar;
   }
 
   return (
+    <>
+    {updateBar}
     <div className="bg-[#0a1128] text-white border-b border-white/10 px-4 py-2.5 shadow-md flex flex-wrap items-center justify-between gap-3 text-xs font-sans transition-all sticky top-0 z-[60]" dir="rtl">
       <div className="flex items-center gap-2">
         {isOffline ? (
@@ -54,5 +76,6 @@ export default function OfflineBanner() {
         )}
       </div>
     </div>
+    </>
   );
 }

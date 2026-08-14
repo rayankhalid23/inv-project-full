@@ -35,7 +35,13 @@ class DeliveryAssignRequest(BaseModel):
 class QRScanRequest(BaseModel):
     qr_code: Optional[str] = None
     variant_id: Optional[int] = None
-    
+
+class QuickSaleRequest(BaseModel):
+    customer_name: str
+    # رقم هاتف الزبون — اختياري تماماً، يُحفظ مع الطلب ويظهر في الفاتورة
+    customer_phone: Optional[str] = None
+    items: List[OrderItemCreate]
+
 
 
 # ==================== Responses (الإرجاع) ==================== #

@@ -1,10 +1,14 @@
 import axios from 'axios';
+import { API_TIMEOUT_MS } from '../utils/netErrors';
 
 // 1. إعداد القاعدة الأساسية للطلب لضمان عدم تكرار العناوين
 const API_BASE_URL = window.location.origin; // تأكد من أن هذا هو رابط السيرفر لديك
 
 const api = axios.create({
     baseURL: API_BASE_URL,
+    // بدون مهلة، أي طلب على شبكة ضعيفة أو بوابة أسيرة يبقى معلقاً للأبد
+    // فتظل مؤشرات التحميل تدور ولا يستطيع المستخدم إغلاق النافذة أو إعادة المحاولة.
+    timeout: API_TIMEOUT_MS,
 });
 
 // 2. "Interceptor" لإضافة التوكن تلقائياً لكل الطلبات بدل تكرار الكود
@@ -429,19 +433,33 @@ processScanDamage: async (qrCode, note = "تالف") => {
  * يتوافق مع endpoint: POST /inventory/direct-sale-by-qr
  * @param {string} qrCode - الرمز الممسوح ضوئياً
  * @param {string} note - ملاحظة البيع
+ * @param {string|null} customerPhone - رقم هاتف الزبون (اختياري)
+ * @returns {object} يتضمن order_id لاستخدامه في تحميل الفاتورة
  */
-processScanSale: async (qrCode, note = "بيع مباشر") => {
+processScanSale: async (qrCode, note = "بيع مباشر", customerPhone = null) => {
     try {
-        const response = await api.post('/inventory/direct-sale-by-qr', null, {
-            params: {
-                qr_code: qrCode,
-                note: note
-            }
-        });
+        const params = { qr_code: qrCode, note: note };
+        if (customerPhone) params.customer_phone = customerPhone;
+        const response = await api.post('/inventory/direct-sale-by-qr', null, { params });
         return response.data;
     } catch (error) {
         console.error("Error in processScanSale API:", error.response?.data || error.message);
         throw error.response?.data?.detail || "حدث خطأ أثناء تسجيل البيع المباشر.";
+    }
+},
+
+/**
+ * تحويل أي قيمة ممسوحة إلى بيانات المنتج.
+ * يستخدم نفس منطق الخادم المستخدم عند التنفيذ، فلا تعرض الشاشة
+ * منتجاً ثم تفشل العملية بعده.
+ */
+resolveScannedCode: async (code) => {
+    try {
+        const response = await api.get('/inventory/scan/resolve', { params: { code } });
+        return response.data;
+    } catch (error) {
+        console.error("Error resolving scanned code:", error.response?.data || error.message);
+        throw error.response?.data?.detail || "تعذّر التعرّف على الرمز الممسوح.";
     }
 },
 

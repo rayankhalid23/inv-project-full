@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { mediaUrl, IMAGE_FALLBACK, onImageError } from '../../utils/media';
 import { 
   Package, AlertTriangle, ArrowDownUp, RefreshCw, 
   Layers, ShoppingBag, Clock, Trash2, RotateCcw, 
@@ -224,7 +225,7 @@ export default function ProductsReport({ period }) {
 >
                   <div className="flex items-center gap-3 min-w-0 flex-1">
                     <img 
-                      src={product.main_image ? `${API_BASE_URL}${product.main_image}` : 'https://placehold.co/150x150?text=Product'} 
+                      src={mediaUrl(product.main_image) || IMAGE_FALLBACK} onError={onImageError} 
                       alt="" 
                       className="w-10 h-10 sm:w-12 sm:h-12 object-cover rounded-xl border border-slate-200 bg-white shrink-0 shadow-sm"
                     />
@@ -298,7 +299,7 @@ export default function ProductsReport({ period }) {
                             <div className="col-span-2 flex items-center gap-2.5">
                               <CornerDownLeft className="h-3 w-3 text-slate-300 shrink-0 sm:block hidden" />
                               <img 
-                                src={variant.color_image ? `${API_BASE_URL}${variant.color_image}` : 'https://placehold.co/80x80?text=Color'} 
+                                src={mediaUrl(variant.color_image) || IMAGE_FALLBACK} onError={onImageError} 
                                 alt="" 
                                 className="w-7 h-7 object-cover rounded-lg border border-slate-200 bg-slate-50 shrink-0 shadow-xs"
                               />
@@ -391,7 +392,7 @@ function TopBottomList({ title, icon: Icon, data, type, color }) {
                   {index + 1}
                 </span>
                 <img 
-                  src={item.main_image ? `${API_BASE_URL}${item.main_image}` : 'https://placehold.co/100x100?text=Product'} 
+                  src={mediaUrl(item.main_image) || IMAGE_FALLBACK} onError={onImageError} 
                   alt="" 
                   className="w-8 h-8 object-cover rounded-lg border border-slate-200 bg-white shrink-0"
                 />

@@ -1,117 +1,48 @@
-import axios from 'axios';
-
-const QUEUE_KEY = 'bellagio_offline_queue';
-
 /**
- * جلب قائمة العمليات المخزنة محلياً عند انقطاع الإنترنت
+ * =====================================================================
+ * BELLAGIO PWA - طبقة توافق للطابور الأوفلاين (مهجورة)
+ * =====================================================================
+ *
+ * كان هذا الملف يحتفظ بطابور مستقل في localStorage، بينما محرك المزامنة
+ * (utils/syncEngine.js) يقرأ من IndexedDB فقط. النتيجة أن كل عملية بيع أو
+ * مسح تتم بدون إنترنت كانت تُحفظ هنا ولا تُرفع للسيرفر أبداً ولا تظهر في
+ * عدّاد "بانتظار المزامنة" — أي فقدان فعلي لبيانات المبيعات.
+ *
+ * صار مصدر الحقيقة الوحيد الآن هو IndexedDB عبر utils/idbStorage.js.
+ * يبقى هذا الملف كطبقة توافق رقيقة فقط حتى لا ينكسر أي استيراد قديم.
+ * الرجاء استخدام saveOfflineAction من utils/idbStorage.js في الكود الجديد.
  */
-export const getOfflineQueue = () => {
-  try {
-    const data = localStorage.getItem(QUEUE_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch (err) {
-    console.error('Error reading offline queue:', err);
-    return [];
-  }
-};
+
+import {
+  saveOfflineAction,
+  getPendingActions,
+  removePendingAction,
+  clearPendingActions,
+} from './idbStorage';
+
+/** @deprecated استخدم saveOfflineAction من utils/idbStorage.js */
+export const enqueueOfflineAction = (actionType, payload, description = '') =>
+  saveOfflineAction(actionType, payload, description);
+
+/** @deprecated استخدم getPendingActions من utils/idbStorage.js */
+export const getOfflineQueue = () => getPendingActions();
+
+/** @deprecated استخدم removePendingAction من utils/idbStorage.js */
+export const removeOfflineAction = (actionId) => removePendingAction(actionId);
+
+/** @deprecated استخدم clearPendingActions من utils/idbStorage.js */
+export const clearOfflineQueue = () => clearPendingActions();
 
 /**
- * حفظ عملية جديدة في الطابور المحلي للاحتفاظ بها
- */
-export const enqueueOfflineAction = (actionType, payload, description = '') => {
-  try {
-    const queue = getOfflineQueue();
-    const newAction = {
-      id: `offline_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      type: actionType,
-      payload,
-      description,
-      timestamp: new Date().toISOString(),
-    };
-    queue.push(newAction);
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-    console.log(`[OfflineQueue] Enqueued action: ${actionType}`, newAction);
-    return newAction;
-  } catch (err) {
-    console.error('Error saving offline action:', err);
-    return null;
-  }
-};
-
-/**
- * حذف عملية معالجة من الطابور
- */
-export const removeOfflineAction = (actionId) => {
-  try {
-    const queue = getOfflineQueue();
-    const updated = queue.filter(item => item.id !== actionId);
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(updated));
-  } catch (err) {
-    console.error('Error removing offline action:', err);
-  }
-};
-
-/**
- * تصفير الطابور بالكامل
- */
-export const clearOfflineQueue = () => {
-  try {
-    localStorage.removeItem(QUEUE_KEY);
-  } catch (err) {
-    console.error('Error clearing queue:', err);
-  }
-};
-
-/**
- * رفع ومزامنة العمليات المخزنة محلياً عند عودة الإنترنت
+ * @deprecated المزامنة صارت مسؤولية runAutoSync في utils/syncEngine.js.
+ * كانت النسخة القديمة من هذه الدالة غير مستدعاة من أي مكان في المشروع.
  */
 export const syncPendingOfflineActions = async (onSyncProgress) => {
-  const queue = getOfflineQueue();
-  if (!queue || queue.length === 0) {
-    return { success: true, count: 0 };
-  }
-
-  const token = localStorage.getItem('token');
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  const { runAutoSync } = await import('./syncEngine');
+  const result = await runAutoSync(onSyncProgress);
+  return {
+    success: true,
+    count: result.successCount || 0,
+    failed: result.failedCount || 0,
   };
-
-  let successCount = 0;
-  let failCount = 0;
-
-  for (const item of queue) {
-    try {
-      if (onSyncProgress) onSyncProgress(`جاري رفع: ${item.description || item.type}`);
-
-      let response;
-      if (item.type === 'CREATE_ORDER') {
-        response = await axios.post('/orders/', item.payload, { headers });
-      } else if (item.type === 'DIRECT_SALE') {
-        response = await axios.post(`/inventory/direct-sale-by-qr?qr_code=${encodeURIComponent(item.payload.qr_code)}&note=${encodeURIComponent(item.payload.note || '')}`, null, { headers });
-      } else if (item.type === 'SCAN_RETURN') {
-        response = await axios.post(`/orders/return-item-by-qr?qr_code=${encodeURIComponent(item.payload.qr_code)}&note=${encodeURIComponent(item.payload.note || '')}`, null, { headers });
-      } else if (item.type === 'SCAN_DAMAGE') {
-        response = await axios.post(`/orders/mark-as-damaged?qr_code=${encodeURIComponent(item.payload.qr_code)}&note=${encodeURIComponent(item.payload.note || '')}`, null, { headers });
-      } else if (item.type === 'UPDATE_ORDER') {
-        response = await axios.put(`/orders/${item.payload.id}`, item.payload.data, { headers });
-      } else if (item.type === 'ADD_STOCK') {
-        response = await axios.post('/inventory/add-stock', item.payload, { headers });
-      }
-
-      if (response && (response.status === 200 || response.status === 201)) {
-        removeOfflineAction(item.id);
-        successCount++;
-      }
-    } catch (error) {
-      console.error(`Failed to sync item ${item.id}:`, error);
-      failCount++;
-      // إذا كان الخطأ بسبب انتهاء التوكن أو خطأ سيرفر 400 غير الشبكة، نتجاوزه لتنظيف العملية
-      if (error.response && error.response.status >= 400 && error.response.status < 500) {
-        removeOfflineAction(item.id);
-      }
-    }
-  }
-
-  return { success: true, count: successCount, failed: failCount };
 };

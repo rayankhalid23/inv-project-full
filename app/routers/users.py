@@ -174,17 +174,30 @@ def read_user_details(
 
 async def sync_dashboard_after_user_change():
     """
-    تحديث البيانات عبر الـ WebSocket باستخدام دالة الإحصائيات الموجودة في order_service
+    تحديث البيانات عبر الـ WebSocket باستخدام دالة الإحصائيات الموجودة في order_service.
+
+    مهم للأداء: تُستدعى كمهمة خلفية بعد كل عملية تقريباً.
+    • إن لم يكن هناك أي متصفح متصل، نخرج فوراً — لا داعي لـ 5 استعلامات (~70 مللي).
+    • وإن وُجد متصل، نحسب الإحصائيات في thread pool لا على حلقة الأحداث،
+      وإلا تجمّد كل الطلبات الأخرى طوال مدة الحساب.
     """
-    db = SessionLocal()
+    if not manager.has_connections:
+        return
+
+    from fastapi.concurrency import run_in_threadpool
+
+    def _compute():
+        db = SessionLocal()
+        try:
+            return get_inventory_dashboard_stats(db)
+        finally:
+            db.close()
+
     try:
-        # هنا نستخدم الاسم المستورد get_inventory_dashboard_stats
-        stats = get_inventory_dashboard_stats(db) 
+        stats = await run_in_threadpool(_compute)
         await manager.broadcast(stats)
     except Exception as e:
         print(f"Error during WS broadcast: {e}")
-    finally:
-        db.close()
 
 
 # ---------------------------------------------------------

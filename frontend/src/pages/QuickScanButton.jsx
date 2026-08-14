@@ -1,11 +1,31 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ShoppingCart, RotateCcw, AlertTriangle, Camera, RefreshCw, Lock } from 'lucide-react';
+import { X, ShoppingCart, RotateCcw, AlertTriangle, Camera, RefreshCw, Lock, Phone, Zap } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
+import { Html5Qrcode } from 'html5-qrcode';
 
 import { catalogApi } from '../api/catalogApi';
-import { enqueueOfflineAction } from '../utils/offlineSync';
+import { orderApi } from '../api/orderApi';
+import QuickSalePanel from '../components/sales/QuickSalePanel';
+import { saveOfflineAction } from '../utils/idbStorage';
+import { isNetworkError } from '../utils/netErrors';
+
+const playScanBeep = () => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+  } catch (e) {}
+};
 
 export default function QuickScanPage({ isOpen, onClose }) {
   const navigate = useNavigate();
@@ -17,25 +37,69 @@ export default function QuickScanPage({ isOpen, onClose }) {
   const [error, setError] = useState('');
   const [scannedProduct, setScannedProduct] = useState(null);
   const [reason, setReason] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+
+  // منتجات لوحة البيع المدمجة
+  const [quickSaleProducts, setQuickSaleProducts] = useState([]);
+  const [loadingQuickSale, setLoadingQuickSale] = useState(false);
+
+  /** إعادة جلب المنتجات بعد بيع ناجح حتى تُعرض الكميات المحدَّثة */
+  const refreshSaleProducts = useCallback(async () => {
+    try {
+      const products = await orderApi.getAllProductsWithVariants();
+      setQuickSaleProducts(products || []);
+    } catch {
+      /* الفشل هنا لا يمنع إتمام البيع */
+    }
+  }, []);
+
+  // فارغ = مقبول (الحقل اختياري)؛ وإلا يجب أن يكون 10 أرقام تبدأ بـ 09
+  const phoneInvalid = customerPhone.length > 0 && !/^09\d{8}$/.test(customerPhone);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [cameraStatus, setCameraStatus] = useState('idle'); // idle | loading | active | error
   const [cameraErrorMsg, setCameraErrorMsg] = useState('');
+  // في وضع البيع الكاميرا مخفية افتراضياً ويفتحها المستخدم عند الحاجة
+  const [cameraEnabled, setCameraEnabled] = useState(false);
 
-  const videoRef = useRef(null);
-  const mediaStreamRef = useRef(null);
+  const html5QrCodeRef = useRef(null);
+  const lastScanTimeRef = useRef(0);
+
+  // لوحة البيع المدمجة + مرجع للنوع الحالي.
+  // نستخدم ref للنوع لأن processScannedCode تُمرَّر لكاميرا Html5Qrcode مرة
+  // واحدة، فلو قرأت scanType من الإغلاق لبقيت على قيمته وقت التسجيل.
+  const salePanelRef = useRef(null);
+  const scanTypeRef = useRef(scanType);
+  useEffect(() => { scanTypeRef.current = scanType; }, [scanType]);
+
+  // تحميل المنتجات تلقائياً بمجرد اختيار تبويب "بيع" (مرة واحدة فقط)،
+  // فلا يحتاج المستخدم أي ضغطة إضافية للوصول لواجهة البيع.
+  //
+  // نستخدم ref للحارس لا state: لو وُضع مؤشر التحميل ضمن قائمة الاعتماديات
+  // لأعاد تشغيل التأثير فور رفعه، فيُلغى الطلب الجاري ويبقى المؤشر معلّقاً.
+  const saleProductsRequestedRef = useRef(false);
+  useEffect(() => {
+    if (!isVisible || scanType !== 'sale') return;
+    if (saleProductsRequestedRef.current) return;
+
+    saleProductsRequestedRef.current = true;
+    setLoadingQuickSale(true);
+    orderApi.getAllProductsWithVariants()
+      .then((products) => setQuickSaleProducts(products || []))
+      .catch(() => {
+        saleProductsRequestedRef.current = false;   // اسمح بإعادة المحاولة
+        toast.error('تعذّر تحميل قائمة المنتجات');
+      })
+      .finally(() => setLoadingQuickSale(false));
+  }, [isVisible, scanType]);
 
   // إيقاف بث الكاميرا بنظافة
-  const stopCamera = useCallback(() => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-    if (window.localCameraStream) {
-      window.localCameraStream.getTracks().forEach(track => track.stop());
-      window.localCameraStream = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+  const stopCamera = useCallback(async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        await html5QrCodeRef.current.stop();
+        html5QrCodeRef.current.clear();
+      } catch (e) {}
+      html5QrCodeRef.current = null;
     }
     setCameraStatus('idle');
   }, []);
@@ -48,20 +112,29 @@ export default function QuickScanPage({ isOpen, onClose }) {
     setError('');
 
     try {
-      const result = await catalogApi.getFilteredVariants({ qr_code: cleanBarcode, search: cleanBarcode });
-      
-      if (result && result.items && result.items.length > 0) {
-        // المطابقة الدقيقة أو استلام أول عنصر مطابق للفلاتر
-        const matchedVariant = result.items.find(item => 
-          item.qr_code === cleanBarcode || 
-          (item.qr_code && item.qr_code.includes(cleanBarcode))
-        ) || result.items[0];
+      // نستخدم محلّل الخادم: يفهم نص الـ QR المطبوع (VAR:id|SKU:code) والمسار
+      // المخزّن وكود المنتج معاً. البحث السابق كان يطابق النص الممسوح مع العمود
+      // مباشرة، فكان يفشل مع أغلب المنتجات لأن العمود يخزّن مسار الصورة.
+      const v = await catalogApi.resolveScannedCode(cleanBarcode);
 
+      // في وضع البيع: نضيف الصنف مباشرة للسلة ونبقى على شاشة المسح
+      // ليتمكن الموظف من مسح عدة أصناف متتالية دون أي ضغطة إضافية.
+      if (v && v.variant_id && scanTypeRef.current === 'sale') {
+        salePanelRef.current?.addResolvedVariant(v);
+        setBarcode('');
+        return;
+      }
+
+      if (v && v.variant_id) {
         setScannedProduct({
-          name: matchedVariant.product_name || "منتج غير مسمى",
-          sku: matchedVariant.sku || matchedVariant.product_code || cleanBarcode,
-          available: matchedVariant.quantity_available || 0,
-          qr_code: matchedVariant.qr_code || cleanBarcode
+          name: v.product_name || "منتج غير مسمى",
+          sku: v.product_code || cleanBarcode,
+          available: v.quantity_available || 0,
+          price: v.selling_price || 0,
+          color: v.color_name,
+          size: v.size_name,
+          // نمرّر القيمة المخزّنة فعلاً ليطابقها الخادم عند التنفيذ
+          qr_code: v.qr_code || cleanBarcode
         });
         stopCamera();
         setStep('confirm');
@@ -73,71 +146,51 @@ export default function QuickScanPage({ isOpen, onClose }) {
     }
   }, [stopCamera]);
 
-  // تشغيل الكاميرا المباشرة داخل المربع الأسود عبر getUserMedia بتدرج قياسي
+  // تشغيل الكاميرا المباشرة والمسح التلقائي المباشر فور التعرف على الكود
   const startCamera = useCallback(async () => {
     setCameraStatus('loading');
     setCameraErrorMsg('');
 
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-      setCameraStatus('error');
-      if (typeof window !== 'undefined' && window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        setCameraErrorMsg('تتطلب الكاميرا المباشرة داخل المربع الأسود تشغيل الموقع عبر HTTPS أو localhost بحسب قوانين المتصفحات الأمنية.');
-      } else {
-        setCameraErrorMsg('تعذر تشغيل الكاميرا المباشرة. تأكد من منح الإذن للمتصفح.');
-      }
-      return;
-    }
+    try {
+      await stopCamera();
 
-    stopCamera();
+      const html5QrCode = new Html5Qrcode("quick-scan-camera-reader");
+      html5QrCodeRef.current = html5QrCode;
 
-    const constraintsList = [
-      { video: { facingMode: { exact: "environment" } } },
-      { video: { facingMode: "environment" } },
-      { video: { facingMode: "user" } },
-      { video: true }
-    ];
+      await html5QrCode.start(
+        { facingMode: "environment" },
+        { fps: 12, qrbox: { width: 220, height: 220 } },
+        (decodedText) => {
+          const now = Date.now();
+          if (now - lastScanTimeRef.current > 1500) {
+            lastScanTimeRef.current = now;
+            playScanBeep();
+            processScannedCode(decodedText);
+          }
+        },
+        () => {}
+      );
 
-    let stream = null;
-    let lastError = null;
-
-    for (const constraint of constraintsList) {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraint);
-        if (stream) break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    if (stream) {
-      mediaStreamRef.current = stream;
-      window.localCameraStream = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        try {
-          await videoRef.current.play();
-        } catch (e) {
-          console.warn("Video play error:", e);
-        }
-      }
       setCameraStatus('active');
-    } else {
-      console.warn("Camera getUserMedia failed:", lastError);
+    } catch (err) {
+      console.warn("Camera start error:", err);
       setCameraStatus('error');
-      if (lastError?.name === 'NotAllowedError' || lastError?.name === 'PermissionDeniedError') {
-        setCameraErrorMsg('تم رفض إذن الكاميرا. يرجى الضغط على إعدادات المتصفح وتفعيل الكاميرا للموقع.');
-      } else {
-        setCameraErrorMsg('تعذر التوصيل بالكاميرا. اضغط "تفعيل الكاميرا داخل المربع" أدناه.');
-      }
+      setCameraErrorMsg('تعذر فتح الكاميرا المباشرة تلقائياً. أدخل الكود يدوياً أدناه.');
     }
-  }, [stopCamera]);
+  }, [stopCamera, processScannedCode]);
+
+  // في وضع البيع تبقى الكاميرا مغلقة حتى يطلبها المستخدم (الاختيار من القائمة
+  // أسرع في الغالب)، بينما تُفتح تلقائياً في المرتجع والتالف لأن المسح هو
+  // الإجراء الأساسي فيهما.
+  const cameraShouldRun = step === 'scanning' && (scanType !== 'sale' || cameraEnabled);
 
   useEffect(() => {
     if (isVisible) {
       document.body.style.overflow = 'hidden';
-      if (step === 'scanning') {
+      if (cameraShouldRun) {
         startCamera();
+      } else {
+        stopCamera();
       }
     } else {
       document.body.style.overflow = 'unset';
@@ -148,7 +201,12 @@ export default function QuickScanPage({ isOpen, onClose }) {
       document.body.style.overflow = 'unset';
       stopCamera();
     };
-  }, [isVisible, step, startCamera, stopCamera]);
+  }, [isVisible, cameraShouldRun, startCamera, stopCamera]);
+
+  // إغلاق الكاميرا تلقائياً عند مغادرة تبويب البيع حتى لا تبقى تعمل بالخلفية
+  useEffect(() => {
+    if (scanType !== 'sale') setCameraEnabled(false);
+  }, [scanType]);
 
   const handleClose = () => {
     stopCamera();
@@ -156,6 +214,7 @@ export default function QuickScanPage({ isOpen, onClose }) {
     setError('');
     setScannedProduct(null);
     setReason('');
+    setCustomerPhone('');
     setStep('scanning');
     if (typeof onClose === 'function') {
       onClose();
@@ -173,6 +232,13 @@ export default function QuickScanPage({ isOpen, onClose }) {
   // 2. مرحلة الاعتماد النهائي
   const handleConfirmSubmit = async (e) => {
     e.preventDefault();
+
+    // لا نمنع الإرسال إن كان الحقل فارغاً — هو اختياري — بل فقط إن كُتب خطأً
+    if (scanType === 'sale' && phoneInvalid) {
+      setError('رقم الزبون غير صحيح. صححه أو امسحه بالكامل.');
+      return;
+    }
+
     setIsSubmitting(true);
     setError('');
 
@@ -186,36 +252,58 @@ export default function QuickScanPage({ isOpen, onClose }) {
       const actionType = scanType === 'return' ? 'SCAN_RETURN' : scanType === 'waste' ? 'SCAN_DAMAGE' : 'DIRECT_SALE';
       const desc = scanType === 'return' ? `مرتجع لـ ${scannedProduct.name}` : scanType === 'waste' ? `تالف لـ ${scannedProduct.name}` : `بيع مباشر لـ ${scannedProduct.name}`;
       
-      enqueueOfflineAction(actionType, { qr_code: scannedProduct.qr_code, note: targetNote }, desc);
+      const saved = await saveOfflineAction(actionType, {
+        qr_code: scannedProduct.qr_code,
+        note: targetNote,
+        // يُرسل مع البيع فقط، ويُحفظ في الطابور ليُرفع مع العملية عند عودة النت
+        ...(scanType === 'sale' && customerPhone ? { customer_phone: customerPhone } : {}),
+      }, desc);
       setIsSubmitting(false);
+      if (!saved) {
+        setError('تعذّر حفظ العملية محلياً! حاول مرة أخرى.');
+        return;
+      }
       toast.success('أوفلاين: تم حفظ العملية محلياً! سيتم رفعها عند الاتصال 📡');
       handleClose();
       return;
     }
 
+    let saleResult = null;
     try {
       if (scanType === 'return') {
         await catalogApi.processScanReturn(scannedProduct.qr_code, targetNote);
       } else if (scanType === 'waste') {
         await catalogApi.processScanDamage(scannedProduct.qr_code, targetNote);
       } else {
-        // بيع مباشر
-        await catalogApi.processScanSale(scannedProduct.qr_code, targetNote);
+        // بيع مباشر — يُنشئ طلباً وفاتورة ويسجّل حركة مخزون
+        saleResult = await catalogApi.processScanSale(scannedProduct.qr_code, targetNote, customerPhone || null);
       }
 
       setIsSubmitting(false);
-      const successMsg =
-        scanType === 'return' ? 'تم تسجيل المرتجع بنجاح!' :
-        scanType === 'waste'  ? 'تم تسجيل التالف بنجاح!'  :
-        'تم البيع وخصمه من المخزون بنجاح!';
-      toast.success(successMsg);
+      if (scanType === 'sale') {
+        const invoiceNo = saleResult?.order_id;
+        toast.success(invoiceNo
+          ? `تم البيع بنجاح — الفاتورة رقم #${invoiceNo} 🧾`
+          : 'تم البيع وخصمه من المخزون بنجاح!');
+      } else {
+        toast.success(scanType === 'return' ? 'تم تسجيل المرتجع بنجاح!' : 'تم تسجيل التالف بنجاح!');
+      }
       handleClose();
     } catch (err) {
-      if (!navigator.onLine || err.message?.includes('Network Error')) {
+      if (isNetworkError(err)) {
         const actionType = scanType === 'return' ? 'SCAN_RETURN' : scanType === 'waste' ? 'SCAN_DAMAGE' : 'DIRECT_SALE';
         const desc = scanType === 'return' ? `مرتجع لـ ${scannedProduct.name}` : scanType === 'waste' ? `تالف لـ ${scannedProduct.name}` : `بيع مباشر لـ ${scannedProduct.name}`;
-        enqueueOfflineAction(actionType, { qr_code: scannedProduct.qr_code, note: targetNote }, desc);
+        const saved = await saveOfflineAction(actionType, {
+        qr_code: scannedProduct.qr_code,
+        note: targetNote,
+        // يُرسل مع البيع فقط، ويُحفظ في الطابور ليُرفع مع العملية عند عودة النت
+        ...(scanType === 'sale' && customerPhone ? { customer_phone: customerPhone } : {}),
+      }, desc);
         setIsSubmitting(false);
+        if (!saved) {
+          setError('تعذّر حفظ العملية محلياً! حاول مرة أخرى.');
+          return;
+        }
         toast.success('أوفلاين: تم حفظ العملية محلياً! سيتم رفعها عند الاتصال 📡');
         handleClose();
       } else {
@@ -257,6 +345,47 @@ export default function QuickScanPage({ isOpen, onClose }) {
 
   const currentConfig = typeConfig[scanType];
 
+  /**
+   * مربع الكاميرا — عنصر واحد يُستخدم في الأوضاع الثلاثة.
+   * في وضع البيع يُمرَّر إلى لوحة البيع لتضعه بين حقول العميل والمنتجات،
+   * فيبقى تعريفه في مكان واحد بلا تكرار.
+   */
+  const cameraBox = (
+    <div className="relative h-48 sm:h-56 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-900 shadow-inner">
+      <div id="quick-scan-camera-reader" className="w-full h-full object-cover"></div>
+
+      {cameraStatus !== 'active' && (
+        <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white/80 p-4 text-center z-10">
+          {cameraStatus === 'loading' ? (
+            <>
+              <RefreshCw className="w-8 h-8 animate-spin text-[#800000]" />
+              <span className="text-xs font-bold text-slate-200">جاري فتح الكاميرا...</span>
+            </>
+          ) : (
+            <>
+              <Camera className="w-8 h-8 text-[#800000] mb-1" />
+              <p className="text-[11px] text-slate-300 font-medium px-2 leading-relaxed max-w-xs">
+                {cameraErrorMsg || 'اضغط لتفعيل الكاميرا ومنح الإذن.'}
+              </p>
+              <button
+                type="button"
+                onClick={startCamera}
+                className="mt-1 px-4 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
+              >
+                <Camera className="w-4 h-4" />
+                <span>تفعيل الكاميرا 📷</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {cameraStatus === 'active' && (
+        <div className="absolute inset-x-4 h-0.5 bg-[#800000] shadow-lg shadow-[#800000]/80 animate-bounce top-1/2 rounded-full z-20 pointer-events-none" />
+      )}
+    </div>
+  );
+
   return (
     <AnimatePresence>
       {isVisible && (
@@ -268,7 +397,9 @@ export default function QuickScanPage({ isOpen, onClose }) {
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: '100%', opacity: 0 }}
             transition={{ type: 'spring', damping: 28, stiffness: 300 }}
-            className="relative bg-white w-full sm:max-w-[420px] rounded-t-[28px] sm:rounded-[28px] p-5 pb-8 sm:pb-5 shadow-[0_-10px_60px_rgba(0,0,0,0.18)] z-10 text-center max-h-[90vh] overflow-y-auto"
+            className={`relative bg-white w-full rounded-t-[28px] sm:rounded-[28px] p-5 pb-8 sm:pb-5 shadow-[0_-10px_60px_rgba(0,0,0,0.18)] z-10 text-center max-h-[92vh] overflow-y-auto transition-[max-width] duration-300 ${
+              scanType === 'sale' ? 'sm:max-w-[560px]' : 'sm:max-w-[420px]'
+            }`}
           >
             {/* زر الإغلاق */}
             <button type="button" onClick={handleClose} className="absolute top-4 right-4 p-1.5 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-600 transition-all">
@@ -313,79 +444,52 @@ export default function QuickScanPage({ isOpen, onClose }) {
               </div>
             )}
 
-            {/* ============= الخطوة 1: شاشة المسح والكاميرا المباشرة داخل المربع الأسود ============= */}
+            {/* ============= الخطوة 1: المسح ============= */}
             {step === 'scanning' && (
-              <div className="space-y-4">
-                {/* المربع الأسود للكاميرا المباشرة */}
-                <div className="relative h-56 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-900 shadow-inner">
-                  
-                  {/* فيديو بث الكاميرا المباشر الحقيقي داخل المربع الأسود دائماً */}
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
-                      cameraStatus === 'active' ? 'opacity-100' : 'opacity-0 pointer-events-none'
-                    }`}
+              scanType === 'sale' ? (
+                /* وضع البيع: الترتيب هو بيانات العميل ← الكاميرا (اختيارية) ← المنتجات.
+                   الكاميرا تُمرَّر كعنصر ليضعها اللوح في مكانها الصحيح بينها. */
+                loadingQuickSale ? (
+                  <div className="flex items-center justify-center gap-2 py-10 text-slate-400">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span className="text-xs font-bold">جاري تحميل المنتجات...</span>
+                  </div>
+                ) : (
+                  <QuickSalePanel
+                    ref={salePanelRef}
+                    products={quickSaleProducts}
+                    onSaleComplete={refreshSaleProducts}
+                    cameraOpen={cameraEnabled}
+                    onToggleCamera={() => setCameraEnabled((v) => !v)}
+                    cameraSlot={cameraBox}
+                    scanError={error}
                   />
+                )
+              ) : (
+                <div className="space-y-4">
+                  {cameraBox}
 
-                  {/* حالة الانتظار أو الإشعار عند غلق الإذن داخل المربع الأسود */}
-                  {cameraStatus !== 'active' && (
-                    <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white/80 p-4 text-center z-10">
-                      {cameraStatus === 'loading' ? (
-                        <>
-                          <RefreshCw className="w-8 h-8 animate-spin text-[#800000]" />
-                          <span className="text-xs font-bold text-slate-200">جاري فتح الكاميرا المباشرة داخل المربع...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Camera className="w-8 h-8 text-[#800000] mb-1" />
-                          <p className="text-[11px] text-slate-300 font-medium px-2 leading-relaxed max-w-xs">
-                            {cameraErrorMsg || 'اضغط على زر تفعيل الكاميرا أدناه لمنح الإذن وتشغيل الكاميرا المباشرة هنا.'}
-                          </p>
-                          
-                          <button
-                            type="button"
-                            onClick={startCamera}
-                            className="mt-1 px-4 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
-                          >
-                            <Camera className="w-4 h-4" />
-                            <span>تفعيل الكاميرا المباشرة هنا 📷</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
-
-                  {/* خط المسح المتحرك الليزري داخل المربع الأسود عند اشتغال الكاميرا */}
-                  {cameraStatus === 'active' && (
-                    <div className="absolute inset-x-4 h-0.5 bg-[#800000] shadow-lg shadow-[#800000]/80 animate-bounce top-1/2 rounded-full z-20 pointer-events-none" />
-                  )}
+                  <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-3 pt-1">
+                    <input
+                      type="text"
+                      value={barcode}
+                      onChange={(e) => setBarcode(e.target.value)}
+                      placeholder="أدخل الباركود / كود المنتج يدوياً ثم Enter"
+                      autoFocus
+                      className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 focus:border-slate-400 focus:bg-white rounded-2xl text-[14px] text-center font-medium text-slate-800 outline-none transition-all placeholder:text-slate-400"
+                    />
+                    <button
+                      type="submit"
+                      className={`w-full py-3.5 font-bold rounded-2xl text-[13px] transition-all duration-300 text-white ${
+                        scanType === 'return' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'
+                      }`}
+                    >
+                      بحث وتأكيد
+                    </button>
+                    {error && <p className="text-xs font-bold text-red-600 text-center leading-relaxed">{error}</p>}
+                  </form>
                 </div>
-
-                <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-3 pt-1">
-                  <input
-                    type="text"
-                    value={barcode}
-                    onChange={(e) => setBarcode(e.target.value)}
-                    placeholder="أدخل الباركود / كود المنتج يدوياً ثم Enter"
-                    autoFocus
-                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 focus:border-slate-400 focus:bg-white rounded-2xl text-[14px] text-center font-medium text-slate-800 outline-none transition-all placeholder:text-slate-400"
-                  />
-                  <button
-                    type="submit"
-                    className={`w-full py-3.5 font-bold rounded-2xl text-[13px] transition-all duration-300 text-white ${
-                      scanType === 'return' ? 'bg-blue-600 hover:bg-blue-700' :
-                      scanType === 'waste'  ? 'bg-red-600 hover:bg-red-700'   :
-                      'bg-emerald-600 hover:bg-emerald-700'
-                    }`}
-                  >
-                    بحث وتأكيد
-                  </button>
-                  {error && <p className="text-xs font-bold text-red-600 text-center leading-relaxed">{error}</p>}
-                </form>
-              </div>
+              )
             )}
 
             {/* ============= الخطوة 2: تأكيد البيانات ============= */}
@@ -411,6 +515,40 @@ export default function QuickScanPage({ isOpen, onClose }) {
                     <p className="text-[11px] text-amber-800 font-medium leading-tight">
                       سيتم خصم <strong>قطعة واحدة</strong> من المخزون وإضافتها لسجل المبيعات فوراً.
                     </p>
+                  </div>
+                )}
+
+                {/* رقم الزبون — للبيع فقط، اختياري تماماً ويُحفظ في الفاتورة */}
+                {scanType === 'sale' && (
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-500 flex items-center gap-1.5">
+                      <Phone className="w-3 h-3 text-slate-400" />
+                      رقم الزبون
+                      <span className="text-slate-400 font-medium">(اختياري)</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="tel"
+                        inputMode="numeric"
+                        dir="ltr"
+                        maxLength={10}
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value.replace(/\D/g, ''))}
+                        placeholder="09XXXXXXXX"
+                        className={`w-full px-4 py-3 bg-slate-50 border rounded-xl text-xs outline-none font-medium transition-all text-center tracking-wide
+                          ${phoneInvalid
+                            ? 'border-red-300 bg-red-50 focus:border-red-400'
+                            : 'border-slate-200 focus:border-slate-400 focus:bg-white'}`}
+                      />
+                      {customerPhone && !phoneInvalid && (
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 text-sm">✓</span>
+                      )}
+                    </div>
+                    {phoneInvalid && (
+                      <p className="text-[10px] font-bold text-red-500">
+                        الرقم يجب أن يكون 10 أرقام ويبدأ بـ 09 — أو اتركه فارغاً
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -452,6 +590,7 @@ export default function QuickScanPage({ isOpen, onClose }) {
           </motion.div>
         </div>
       )}
+
     </AnimatePresence>
   );
 }

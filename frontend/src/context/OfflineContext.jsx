@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { getPendingActions } from '../utils/idbStorage';
+import { getPendingActions, migrateLegacyQueue } from '../utils/idbStorage';
 import { runAutoSync } from '../utils/syncEngine';
 
 const OfflineContext = createContext();
@@ -13,6 +13,8 @@ export const OfflineProvider = ({ children }) => {
   const [isAppInstalled, setIsAppInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [showInstallModal, setShowInstallModal] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const applyUpdateRef = useRef(null);
 
   // تحديث عداد العمليات المعلقة من IndexedDB
   const refreshPendingCount = useCallback(async () => {
@@ -37,9 +39,13 @@ export const OfflineProvider = ({ children }) => {
       try {
         const result = await runAutoSync();
         toast.dismiss(loadingToast);
-        
+
         if (result.successCount > 0) {
           toast.success(`تمت المزامنة بنجاح! تم رفع ${result.successCount} عملية للسيرفر 🚀`, { duration: 5000 });
+        }
+        // الجلسة منتهية: العمليات محفوظة ولم تُفقد، لكنها تحتاج تسجيل دخول لرفعها
+        if (result.authRequired) {
+          toast.error('انتهت صلاحية الجلسة. عملياتك محفوظة — سجّل الدخول لرفعها.', { duration: 8000 });
         }
       } catch (err) {
         toast.dismiss(loadingToast);
@@ -66,54 +72,108 @@ export const OfflineProvider = ({ children }) => {
     setIsIOS(isIosDevice);
 
     const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-    setIsAppInstalled(Boolean(isStandalone));
+    const wasInstalledBefore = localStorage.getItem('pwa_installed') === 'true';
+    setIsAppInstalled(Boolean(isStandalone) || wasInstalledBefore);
 
     const handleBeforeInstallPrompt = (e) => {
+      // لا نعرض زر التثبيت إذا كان المستخدم ثبّت التطبيق من قبل
+      if (localStorage.getItem('pwa_installed') === 'true') return;
       e.preventDefault();
       setDeferredInstallPrompt(e);
     };
 
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-
-    window.addEventListener('appinstalled', () => {
+    const handleAppInstalled = () => {
       setIsAppInstalled(true);
       setDeferredInstallPrompt(null);
+      localStorage.setItem('pwa_installed', 'true');
       toast.success('مبارك! تم تثبيت تطبيق بيلادجيو بنجاح 🎉');
-    });
+    };
 
-    refreshPendingCount();
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
 
-    // تحديث دوري لعداد IndexedDB
-    const interval = setInterval(refreshPendingCount, 3000);
+    // إنقاذ أي عمليات عالقة في الطابور القديم (localStorage) لمرة واحدة،
+    // ثم تحديث العدّاد حتى تظهر فوراً في شارة "بانتظار المزامنة".
+    migrateLegacyQueue()
+      .then((migrated) => {
+        if (migrated > 0) {
+          toast.success(`تم استرجاع ${migrated} عملية محفوظة سابقاً بانتظار المزامنة 📦`, { duration: 6000 });
+        }
+      })
+      .catch((e) => console.warn('Legacy queue migration failed:', e))
+      .finally(refreshPendingCount);
+
+    // تحديث دوري لعداد IndexedDB — 15 ثانية تكفي تماماً لعدّاد مرئي،
+    // بينما كان الفحص كل 3 ثوانٍ يفتح اتصالاً بقاعدة البيانات باستمرار بلا داعٍ.
+    const interval = setInterval(refreshPendingCount, 15000);
 
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
       clearInterval(interval);
     };
   }, [handleOnline, handleOffline, refreshPendingCount]);
 
-  // 2. تسجيل الـ Service Worker لضمان استقرار العمل الأوفلاين
+  // 2. تسجيل الـ Service Worker (يُولَّد عبر Workbox) مع كشف التحديثات
   useEffect(() => {
-    if ('serviceWorker' in navigator && process.env.NODE_ENV !== 'development') {
-      navigator.serviceWorker.register('/sw.js')
-        .then((reg) => {
-          console.log('[ServiceWorker] Registered successfully:', reg.scope);
-        })
-        .catch((err) => {
-          console.warn('[ServiceWorker] Registration failed:', err);
+    if (import.meta.env.DEV) return;
+
+    let cancelled = false;
+
+    // استيراد ديناميكي حتى لا ينكسر البناء إن لم تتوفر الوحدة الافتراضية
+    import('virtual:pwa-register')
+      .then(({ registerSW }) => {
+        if (cancelled) return;
+
+        const updateSW = registerSW({
+          onNeedRefresh() {
+            // نسخة جديدة جاهزة — لا نُحدّث تلقائياً حتى لا نقاطع عملية بيع جارية
+            setUpdateAvailable(true);
+            applyUpdateRef.current = () => updateSW(true);
+          },
+          onOfflineReady() {
+            console.log('[ServiceWorker] التطبيق جاهز للعمل بدون إنترنت ✅');
+          },
+          onRegisteredSW(swUrl) {
+            console.log('[ServiceWorker] Registered:', swUrl);
+          },
+          onRegisterError(err) {
+            console.warn('[ServiceWorker] Registration failed:', err);
+          },
         });
+      })
+      .catch((err) => console.warn('[ServiceWorker] register module failed:', err));
+
+    return () => { cancelled = true; };
+  }, []);
+
+  /** تطبيق التحديث الجاهز وإعادة تحميل الصفحة */
+  const applyUpdate = useCallback(() => {
+    if (applyUpdateRef.current) {
+      applyUpdateRef.current();
+      setUpdateAvailable(false);
     }
   }, []);
 
   // 3. دالة إطلاق تثبيت التطبيق
   const promptInstallApp = async () => {
     if (deferredInstallPrompt) {
-      deferredInstallPrompt.prompt();
-      const choiceResult = await deferredInstallPrompt.userChoice;
-      if (choiceResult.outcome === 'accepted') {
+      try {
+        deferredInstallPrompt.prompt();
+        const choiceResult = await deferredInstallPrompt.userChoice;
+        if (choiceResult.outcome === 'accepted') {
+          // نخفي الزر فورًا بدون انتظار حدث appinstalled
+          setIsAppInstalled(true);
+          setDeferredInstallPrompt(null);
+          localStorage.setItem('pwa_installed', 'true');
+        }
+      } catch (err) {
+        // قد يرفض المتصفح النافذة إذا استُدعيت مرتين أو كانت منتهية الصلاحية
+        console.warn('Install prompt failed:', err);
         setDeferredInstallPrompt(null);
+        setShowInstallModal(true);
       }
     } else {
       setShowInstallModal(true);
@@ -127,13 +187,25 @@ export const OfflineProvider = ({ children }) => {
       return;
     }
     setIsSyncing(true);
-    const result = await runAutoSync();
-    setIsSyncing(false);
-    await refreshPendingCount();
-    if (result.successCount > 0) {
-      toast.success(`تمت المزامنة بنجاح! تم رفع ${result.successCount} عملية للسيرفر.`);
-    } else {
-      toast.success('جميع البيانات متزامنة مع السيرفر بالكامل.');
+    try {
+      const result = await runAutoSync();
+
+      if (result.authRequired) {
+        toast.error('انتهت صلاحية الجلسة. عملياتك محفوظة — سجّل الدخول لرفعها.', { duration: 8000 });
+      } else if (result.successCount > 0) {
+        toast.success(`تمت المزامنة بنجاح! تم رفع ${result.successCount} عملية للسيرفر.`);
+      } else if (result.failedCount > 0) {
+        // لا نقول "كل شيء متزامن" بينما هناك عمليات فشلت فعلاً
+        toast.error(`تعذّر رفع ${result.failedCount} عملية. ستبقى محفوظة وسيُعاد المحاولة تلقائياً.`, { duration: 6000 });
+      } else {
+        toast.success('جميع البيانات متزامنة مع السيرفر بالكامل.');
+      }
+    } catch (err) {
+      console.error('Manual sync error:', err);
+      toast.error('تعذّرت المزامنة. عملياتك المحفوظة لم تُفقد.');
+    } finally {
+      setIsSyncing(false);
+      await refreshPendingCount();
     }
   };
 
@@ -145,6 +217,9 @@ export const OfflineProvider = ({ children }) => {
         pendingCount,
         isSyncing,
         isInstallable: Boolean(deferredInstallPrompt) || !isAppInstalled,
+        // true = المتصفح يدعم beforeinstallprompt → زر التثبيت الفوري بنقرة واحدة
+        // false = iOS أو متصفح آخر → يجب إظهار التعليمات اليدوية
+        canInstallNatively: Boolean(deferredInstallPrompt),
         isAppInstalled,
         isIOS,
         deferredInstallPrompt,
@@ -153,6 +228,8 @@ export const OfflineProvider = ({ children }) => {
         promptInstallApp,
         triggerManualSync,
         refreshPendingCount,
+        updateAvailable,
+        applyUpdate,
       }}
     >
       {children}

@@ -23,7 +23,7 @@ import json
 import logging
 from datetime import datetime
 from typing import List, Optional , Dict , Tuple
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from fastapi import HTTPException, status
 from app.models.inventory import  ProductColor, Product
 import os
@@ -186,7 +186,167 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
         raise HTTPException(status_code=500, detail=f"خطأ تقني: {str(e)}")
 
 
-async def process_qr_scan_logic(
+# =====================================================================
+# دالة البيع السريع - تُنشئ طلبًا وتُحوّل المخزون فورًا لـ "مباع"
+# =====================================================================
+def quick_sale_logic(db: Session, customer_name: str, items: list, user_id: int,
+                     customer_phone: str = None):
+    """
+    ينشئ طلبًا جديدًا بحالة 'prepared' مباشرةً مع تحويل الكميات فورًا:
+      quantity_available → total_sold  (بدون مرحلة الحجز)
+    items: قائمة من {"variant_id": int, "quantity": int}
+    customer_phone: اختياري — يُحفظ ضمن هواتف الزبون ويظهر في الفاتورة
+    """
+    if not items:
+        raise HTTPException(status_code=400, detail="قائمة المنتجات فارغة")
+
+    try:
+        total_order_price = Decimal('0.00')
+        order_items_to_add = []
+        movements_to_add = []
+        unique_product_ids = set()
+
+        sorted_items = sorted(items, key=lambda x: x["variant_id"])
+
+        for item in sorted_items:
+            quantity = int(item["quantity"])
+            if quantity <= 0:
+                continue
+
+            variant = db.query(ProductVariant).filter(
+                ProductVariant.id == int(item["variant_id"]),
+                ProductVariant.deleted_at.is_(None)
+            ).with_for_update().first()
+
+            if not variant:
+                raise HTTPException(status_code=404, detail=f"المتغير {item['variant_id']} غير موجود")
+
+            if not variant.color:
+                raise HTTPException(status_code=400, detail=f"بيانات المتغير {item['variant_id']} غير مكتملة")
+
+            p_id = variant.color.product_id
+            product = db.query(Product).filter(
+                Product.id == p_id,
+                Product.deleted_at.is_(None)
+            ).with_for_update().first()
+
+            if not product:
+                raise HTTPException(status_code=404, detail="المنتج الرئيسي غير موجود")
+
+            if variant.quantity_available < quantity:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"المخزون غير كافٍ لـ '{product.name}' (متاح: {variant.quantity_available}, مطلوب: {quantity})"
+                )
+
+            q_before = variant.quantity_available
+            # 🔥 تحويل مباشر: متاح → مباع (بدون مرحلة الحجز)
+            variant.quantity_available -= quantity
+            variant.total_sold = (variant.total_sold or 0) + quantity
+            q_after = variant.quantity_available
+            db.add(variant)
+
+            current_price = Decimal(str(product.selling_price or 0))
+            total_order_price += current_price * quantity
+            unique_product_ids.add(product.id)
+
+            order_items_to_add.append(OrderItem(
+                variant_id=variant.id,
+                product_id=product.id,
+                quantity=quantity,
+                picked_quantity=quantity,   # كل القطع "ممسوحة" فورًا
+                price_at_order=current_price
+            ))
+
+            movements_to_add.append(InventoryMovement(
+                variant_id=variant.id,
+                product_id=product.id,
+                user_id=user_id,
+                # ✅ بالسالب: البيع يُنقص المخزون. كانت مسجّلة بالموجب هنا وحدها
+                # بينما بقية مسارات البيع تسجّلها بالسالب، ما يكسر مطابقة الجرد
+                # (check_stock_integrity) ويقلب إشارة تقارير الحركة.
+                quantity_change=-quantity,
+                quantity_before=q_before,
+                quantity_after=q_after,
+                movement_type='sale',
+                notes="بيع سريع مباشر"
+            ))
+
+        phone_clean = (customer_phone or "").strip()
+        new_order = Order(
+            customer_name=customer_name,
+            # نحفظ الرقم فعلياً بدل العلامة الثابتة "—" حتى يظهر في الفاتورة والبحث
+            customer_phones=[phone_clean] if phone_clean else [],
+            address="بيع مباشر",
+            social_media_source="بيع سريع",
+            notes="طلب بيع سريع مباشر",
+            total_price=total_order_price,
+            created_by=user_id,
+            status='prepared'          # مُعدّ مباشرةً بدون مراحل
+        )
+        db.add(new_order)
+        db.flush()
+
+        for o_item in order_items_to_add:
+            o_item.order_id = new_order.id
+            db.add(o_item)
+
+        for movement in movements_to_add:
+            movement.related_order_id = new_order.id
+            movement.notes = f"بيع سريع #Order{new_order.id}"
+            db.add(movement)
+
+        log_order_initialization(
+            db=db,
+            user_id=user_id,
+            order_id=new_order.id,
+            customer_name=customer_name,
+            source="بيع سريع"
+        )
+
+        db.flush()
+        for prod_id in unique_product_ids:
+            sync_product_metrics(db, prod_id)
+
+        db.commit()
+        db.refresh(new_order)
+
+        # بناء تفاصيل البنود للإرجاع الفوري
+        items_detail = []
+        for o_item in order_items_to_add:
+            v = db.query(ProductVariant).filter(ProductVariant.id == o_item.variant_id).first()
+            color_name = v.color.color_name if v and v.color else ""
+            color_image = v.color.color_image if v and v.color else None
+            size_name = v.size.name if v and v.size else "افتراضي"
+            prod = db.query(Product).filter(Product.id == o_item.product_id).first()
+            items_detail.append({
+                "variant_id": o_item.variant_id,
+                "product_name": prod.name if prod else "",
+                "main_image": prod.main_image if prod else None,
+                "color_image": color_image,
+                "color_name": color_name,
+                "size": size_name,
+                "quantity": o_item.quantity,
+                "price_at_order": float(o_item.price_at_order),
+            })
+
+        return {
+            "order_id": new_order.id,
+            "customer_name": new_order.customer_name,
+            "total_price": float(new_order.total_price),
+            "status": new_order.status,
+            "items": items_detail,
+        }
+
+    except Exception as e:
+        db.rollback()
+        traceback.print_exc()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"خطأ تقني في البيع السريع: {str(e)}")
+
+
+def process_qr_scan_logic(
     db: Session, 
     order_id: int, 
     user_id: int, 
@@ -195,7 +355,7 @@ async def process_qr_scan_logic(
 ):
     # نضع الدالة بالكامل داخل try لضمان التراجع عن أي تغيير في حال حدوث أي خطأ
     try:
-        # 1. تحديد المتغير (البحث يدوي أو عبر QR)
+        # 1. تحديد المتغير (البحث يدوي أو عبر QR أو الكود)
         variant = None
         
         if variant_id:
@@ -206,31 +366,71 @@ async def process_qr_scan_logic(
         elif qr_code and isinstance(qr_code, str):
             clean_qr = qr_code.strip()
             filename = clean_qr.replace("\\", "/").split("/")[-1]
-            # ✅ دعم التطابق المباشر السريع مع الفهرس أولاً، ثم التراجع لاسم الملف
+            stripped_digits = clean_qr.lstrip("0")
+
+            # أ) فحص مطابقة QR الكود المباشر أو اسم الملف في جدول ProductVariant
             variant = db.query(ProductVariant).filter(
-                or_(ProductVariant.qr_code == clean_qr, ProductVariant.qr_code.like(f"%{filename}")),
+                or_(
+                    ProductVariant.qr_code == clean_qr,
+                    ProductVariant.qr_code.like(f"%{filename}")
+                ),
                 ProductVariant.deleted_at.is_(None)
             ).with_for_update().first()
+
+            # ب) إذا كان المدخل رقماً، فحص المطابقة مع ID المتغير المباشر
+            if not variant and clean_qr.isdigit():
+                variant = db.query(ProductVariant).filter(
+                    ProductVariant.id == int(clean_qr),
+                    ProductVariant.deleted_at.is_(None)
+                ).with_for_update().first()
+
+            # جـ) إذا لم يجد بالـ ID أو الـ QR، يبحث برمز المنتج الأب Product.code
+            if not variant:
+                conds = [Product.code == clean_qr, Product.code.like(f"%{clean_qr}%")]
+                if stripped_digits:
+                    conds.append(Product.code.like(f"%{stripped_digits}%"))
+
+                v_candidate = db.query(ProductVariant).join(ProductColor).join(Product).filter(
+                    or_(*conds),
+                    ProductVariant.deleted_at.is_(None),
+                    Product.deleted_at.is_(None)
+                ).first()
+                
+                if v_candidate:
+                    # ترجيح المتغير الموجود ضمن بنود هذا الطلب تحديداً
+                    order_match_v = db.query(ProductVariant).join(OrderItem, OrderItem.variant_id == ProductVariant.id).join(ProductColor).join(Product).filter(
+                        OrderItem.order_id == order_id,
+                        or_(*conds),
+                        OrderItem.deleted_at.is_(None),
+                        ProductVariant.deleted_at.is_(None)
+                    ).first()
+                    variant = order_match_v or v_candidate
         
         if not variant:
-            error_msg = f"المنتج غير موجود (ID: {variant_id})" if variant_id else f"الرمز {qr_code} غير مسجل"
+            error_msg = f"المنتج غير موجود (ID: {variant_id})" if variant_id else f"الكود الممسوح ({qr_code}) غير مسجل في النظام"
             raise HTTPException(status_code=404, detail=error_msg)
 
-        # 2. التحقق من انتماء المنتج للطلب
+        # 2. التحقق من انتماء المنتج للطلب (أولاً الأصناف التي لم يكتمل سحبها بعد)
         order_item = db.query(OrderItem).filter(
             OrderItem.order_id == order_id, 
             OrderItem.variant_id == variant.id,
-            OrderItem.deleted_at.is_(None)
+            OrderItem.deleted_at.is_(None),
+            OrderItem.picked_quantity < OrderItem.quantity
         ).with_for_update().first()
         
         if not order_item:
-            raise HTTPException(status_code=400, detail="هذا المنتج لا ينتمي لهذا الطلب")
+            # التحقق إن كان المنتج ينتمي للطلب ولكنه مكتمل التجهيز بالفعل
+            already_picked_item = db.query(OrderItem).filter(
+                OrderItem.order_id == order_id, 
+                OrderItem.variant_id == variant.id,
+                OrderItem.deleted_at.is_(None)
+            ).first()
+            if already_picked_item:
+                raise HTTPException(status_code=400, detail="تم مسح كافة القطع المطلوبة لهذا المنتج في هذا الطلب")
+            else:
+                raise HTTPException(status_code=400, detail="هذا المنتج لا ينتمي لأصناف هذا الطلب")
 
-        # 3. منع تجاوز الكمية المطلوبة
-        if order_item.picked_quantity >= order_item.quantity:
-            raise HTTPException(status_code=400, detail="تم مسح الكمية المطلوبة بالكامل")
-
-        # 4. تحديث الكمية الممسوحة
+        # 3. تحديث الكمية الممسوحة
         order_item.picked_quantity += 1
 
         # جلب الطلب لتحديث حالته
@@ -241,13 +441,12 @@ async def process_qr_scan_logic(
         if order.status == 'pending':
             order.status = 'in_preparation'
 
-        # 5. التحقق من اكتمال الطلب
+        # 4. التحقق من اكتمال كافة بنود الطلب
         all_items = db.query(OrderItem).filter(OrderItem.order_id == order_id).all()
         is_order_complete = all(item.picked_quantity == item.quantity for item in all_items)
 
         if is_order_complete:
             affected_product_ids = set()
-            # ✅ إصلاح N+1: جلب كل الـ variants دفعة واحدة بـ IN query بدلاً من loop query
             variant_ids = [item.variant_id for item in all_items]
             variants_map = {
                 v.id: v for v in db.query(ProductVariant)
@@ -258,21 +457,18 @@ async def process_qr_scan_logic(
             for item in all_items:
                 v = variants_map.get(item.variant_id)
                 if v:
-                    # تحويل من محجوز إلى مباع
                     v.quantity_reserved = max(0, v.quantity_reserved - item.quantity)
                     v.total_sold = (v.total_sold or 0) + item.quantity
                     if v.color:
                         affected_product_ids.add(v.color.product_id)
             
             db.flush()
-            # مزامنة الإحصائيات للمنتج الأب
             for p_id in affected_product_ids:
                 sync_product_metrics(db, p_id)
                 
             order.status = 'prepared'
 
-        
-# 5. التوثيق (لا يتم الوصول لهذا السطر إلا في حالة النجاح التام)
+        # 5. توثيق عملية المسح
         create_order_action_log(
             db=db,
             order_id=order_id,
@@ -285,16 +481,15 @@ async def process_qr_scan_logic(
             }
         )
         
-        # حفظ كل شيء دفعة واحدة
         db.commit()
-     
         
         return {
             "status": order.status, 
             "is_complete": is_order_complete,
-            "message": "تم التحديث بنجاح",
+            "message": f"تم مسح قطعة من {order_item.product_name or 'المنتج'} بنجاح ({order_item.picked_quantity}/{order_item.quantity})",
             "picked_quantity": order_item.picked_quantity,
-            "total_quantity": order_item.quantity
+            "total_quantity": order_item.quantity,
+            "variant_id": variant.id
         }
         
 
@@ -307,13 +502,10 @@ async def process_qr_scan_logic(
 
 
 def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str = "مرتجع"):
-    """منطق المرتجعات المباشرة للمخزن (أصلاح أخطاء المسافات)"""
-    clean_qr = (qr_code or "").strip()
-    filename = clean_qr.replace("\\", "/").split("/")[-1]
-    variant = db.query(ProductVariant).filter(
-        or_(ProductVariant.qr_code == clean_qr, ProductVariant.qr_code.like(f"%{filename}")),
-        ProductVariant.deleted_at.is_(None)
-    ).with_for_update().first()
+    """منطق المرتجعات المباشرة للمخزن"""
+    # ✅ محلّل موحّد يدعم نص الـ QR المطبوع (VAR:id|SKU:code) إضافةً للمسار والكود
+    from app.services.inventory_movement_service import resolve_variant_by_scan
+    variant = resolve_variant_by_scan(db, qr_code, lock=True)
     if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
 
     if variant.total_sold <= 0:
@@ -338,14 +530,10 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
     return {"status": "success", "new_qty": variant.quantity_available}
    
 def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "تالف"):
-    # 1. جلب البيانات
-    clean_qr = (qr_code or "").strip()
-    filename = clean_qr.replace("\\", "/").split("/")[-1]
-    variant = db.query(ProductVariant).filter(
-        or_(ProductVariant.qr_code == clean_qr, ProductVariant.qr_code.like(f"%{filename}")),
-        ProductVariant.deleted_at.is_(None)
-    ).with_for_update().first()
-    if not variant: 
+    # 1. جلب البيانات — محلّل موحّد يدعم كل أشكال الرمز الممسوح
+    from app.services.inventory_movement_service import resolve_variant_by_scan
+    variant = resolve_variant_by_scan(db, qr_code, lock=True)
+    if not variant:
         raise HTTPException(status_code=404, detail="الرمز غير موجود")
 
     if variant.quantity_available <= 0:
@@ -372,7 +560,7 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
 
     return {"status": "success", "new_qty": variant.quantity_available}
 
-async def assign_delivery_logic(db: Session, order_id: int, delivery_data: DeliveryAssignRequest, user_id: int):
+def assign_delivery_logic(db: Session, order_id: int, delivery_data: DeliveryAssignRequest, user_id: int):
     """إسناد شركة شحن وتحديث الحالة"""
     db_order = db.get(Order, order_id)
     if not db_order: 
@@ -401,7 +589,7 @@ async def assign_delivery_logic(db: Session, order_id: int, delivery_data: Deliv
     return db_order
    
 
-async def delete_order_logic(db: Session, order_id: int, user_id: int):
+def delete_order_logic(db: Session, order_id: int, user_id: int):
     """
     إلغاء الطلب وإعادة المخزون بناءً على حالة الطلب الحالية.
     يسمح بحذف الطلبات بمختلف الحالات (بما فيها المشحونة والجاهزة) 
@@ -426,7 +614,10 @@ async def delete_order_logic(db: Session, order_id: int, user_id: int):
         affected_product_ids = set()
 
         # 2. معالجة عناصر الطلب وعكس الكميات في المستودع
+        # ✅ إصلاح: تجاهل العناصر المحذوفة مسبقاً (soft-deleted) لمنع إعادة إضافة كمياتها للمخزون مرتين
         for item in db_order.items:
+            if item.deleted_at is not None:
+                continue
             variant = db.query(ProductVariant).filter(
                 ProductVariant.id == item.variant_id
             ).with_for_update().first()
@@ -677,7 +868,7 @@ def transition_order_status(db: Session, db_order: Order, old_status: str, new_s
         for p_id in affected_product_ids:
             sync_product_metrics(db, p_id)
 
-async def update_order_master_logic(db: Session, order_id: int, update_data: Dict, user_id: int):
+def update_order_master_logic(db: Session, order_id: int, update_data: Dict, user_id: int):
     new_item_ids = [it['variant_id'] for it in update_data.get('items', [])] if 'items' in update_data else []
     db_order = _get_locked_order_and_variants(db, order_id, new_item_ids)
 
@@ -765,7 +956,7 @@ def get_time_ago_ar(dt: datetime) -> str:
         return f"منذ {days} يوم"   
 
 
-async def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None, search: Optional[str] = None):
+def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100, status: Optional[str] = None, search: Optional[str] = None):
     """جلب كافة الطلبات مع دعم فلترة متقدمة وتشكيل البيانات للوحة التحكم"""
     
     # 1. بناء الاستعلام مع استبعاد المحذوفات وجلب كافة العلاقات اللازمة في ضربة واحدة لمنع مشكلة N+1
@@ -807,6 +998,8 @@ async def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int 
         product_images = []
         
         for item in order.items:
+            if item.deleted_at is not None:
+                continue
             total_qty += item.quantity
             total_picked += (item.picked_quantity or 0)
             
@@ -864,7 +1057,7 @@ def get_item_image(item):
 
 
 
-async def get_order_full_details_logic(db: Session, order_id: int):
+def get_order_full_details_logic(db: Session, order_id: int):
     # 1. جلب الطلب مع كل العلاقات في استعلام واحد (Performance optimization)
     order = db.query(Order).options(
         joinedload(Order.creator),
@@ -877,8 +1070,8 @@ async def get_order_full_details_logic(db: Session, order_id: int):
         return None
 
     # 2. حساب إجمالي الكميات للمسح (Total Progress)
-    total_ordered = sum(item.quantity for item in order.items)
-    total_picked = sum(item.picked_quantity or 0 for item in order.items)
+    total_ordered = sum(item.quantity for item in order.items if item.deleted_at is None)
+    total_picked = sum(item.picked_quantity or 0 for item in order.items if item.deleted_at is None)
 
     # 3. معالجة بيانات الموظفين (المنطق الشرطي لرجل التوصيل)
     personnel = {
@@ -895,6 +1088,8 @@ async def get_order_full_details_logic(db: Session, order_id: int):
     # 4. تجهيز قائمة المنتجات مع الصور والمسح الجزئي
     items_list = []
     for item in order.items:
+        if item.deleted_at is not None:
+            continue
         color_name = item.variant.color.color_name if item.variant and item.variant.color else None
         size_name = item.variant.size.name if item.variant and item.variant.size else None
         
@@ -1373,7 +1568,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 import traceback
 
-async def get_products_with_variants_logic(db: Session):
+def get_products_with_variants_logic(db: Session):
     try:
         # ✅ إصلاح: استبدال joinedload بـ selectinload لمنع Cartesian Product
         # joinedload على علاقات متداخلة 3 مستويات = ضرب الصفوف أسياً في SQL
@@ -1412,7 +1607,9 @@ async def get_products_with_variants_logic(db: Session):
                         "quantity_reserved": int(v.quantity_reserved or 0),
                         "total_sold": int(v.total_sold or 0),
                         "returned_quantity": int(v.returned_quantity or 0),
-                        "damaged_quantity": int(v.damaged_quantity or 0)
+                        "damaged_quantity": int(v.damaged_quantity or 0),
+                        "qr_code": v.qr_code,
+                        "sku": v.qr_code or str(v.id)
                     })
 
             # 3. بناء هيكل الرد الخاص بالمنتج الرئيسي والإجماليات المخزنة (Cache Columns)
@@ -1455,14 +1652,27 @@ async def get_products_with_variants_logic(db: Session):
         }
 
 
-async def get_top_and_bottom_inventory_report_logic(db: Session):
+def get_top_and_bottom_inventory_report_logic(db: Session):
     """
     دالة تقارير متقدمة: تجلب أفضل وأقل المتغيرات أداءً في (المبيعات، التوالف، الرواجع)
     بناءً على العلاقات المباشرة ومعالجة البيانات بشكل تجميعي فائق السرعة.
     """
     try:
         # 1. جلب المنتجات النشطة مع كافة العلاقات المرتبطة بها في استعلام واحد محسن
-        products = db.query(Product).filter(Product.deleted_at == None).all()
+        # ✅ إصلاح N+1: بدون selectinload كانت الحلقات أدناه (p.colors ثم
+        # color.variants ثم v.size) تُطلق استعلاماً منفصلاً لكل منتج ولون ومقاس
+        # عبر الكتالوج بالكامل. نستخدم selectinload لا joinedload لتفادي
+        # الضرب الديكارتي (نفس النمط المستخدم في get_products_with_variants_logic).
+        products = (
+            db.query(Product)
+            .options(
+                selectinload(Product.colors)
+                .selectinload(ProductColor.variants)
+                .selectinload(ProductVariant.size)
+            )
+            .filter(Product.deleted_at == None)
+            .all()
+        )
         
         all_variants_flat_list = []
         

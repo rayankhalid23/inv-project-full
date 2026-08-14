@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { API_TIMEOUT_MS } from '../utils/netErrors';
 
 // ========= خريطة تحويل حالات الطلب من الإنجليزية إلى العربية =========
 // تتوافق مع قيم الـ ENUM في قاعدة البيانات
@@ -37,7 +38,7 @@ export const STATUS_MAP_REVERSE = {
 
 const API_BASE_URL = window.location.origin;
 
-const api = axios.create({ baseURL: API_BASE_URL });
+const api = axios.create({ baseURL: API_BASE_URL, timeout: API_TIMEOUT_MS });
 
 // إضافة التوكن تلقائياً لكل الطلبات
 api.interceptors.request.use((config) => {
@@ -106,6 +107,28 @@ export const orderApi = {
             throw error.response?.data?.detail || 'حدث خطأ أثناء إنشاء الطلب.';
         }
     },
+
+    /**
+     * إنشاء طلب بيع سريع مباشر (Prepared وتحويل فوري للمخزون)
+     * يتوافق مع: POST /orders/quick-sale
+     * @param {object} saleData - { customer_name, items: [{variant_id, quantity}] }
+     */
+    quickSale: async (saleData) => {
+        try {
+            const payload = {
+                customer_name: saleData.customer_name,
+                customer_phone: saleData.customer_phone || null,
+                items: saleData.items,
+            };
+            const response = await api.post('/orders/quick-sale', payload);
+            return response.data;
+        } catch (error) {
+            console.error('Error executing quick sale:', error.response?.data || error.message);
+            throw error.response?.data?.detail || 'حدث خطأ أثناء تنفيذ البيع السريع.';
+        }
+    },
+
+
 
     /**
      * جلب تفاصيل طلب كاملة (العميل + المنتجات + الموظفون + التقدم)
@@ -316,6 +339,8 @@ export const orderApi = {
                     colorMap[key].variants.push({
                         id:                 v.variant_id,
                         size_name:          v.size_name,
+                        sku:                v.sku || v.qr_code || String(v.variant_id),
+                        qr_code:            v.qr_code,
                         quantity_available: v.quantity_available ?? 0,
                         quantity_reserved:  v.quantity_reserved  ?? 0,
                     });
@@ -324,6 +349,7 @@ export const orderApi = {
                 return {
                     id:     p.product_id,
                     name:   p.product_name,
+                    code:   p.product_code || '',
                     image:  p.main_image,
                     price:  p.prices?.selling_price,
                     colors: Object.values(colorMap),
@@ -359,6 +385,33 @@ export const orderApi = {
         } catch (error) {
             console.error('Error downloading invoice:', error.response?.data || error.message);
             throw error.response?.data?.detail || 'حدث خطأ أثناء تحميل الفاتورة.';
+        }
+    },
+
+    /**
+     * معاينة الطلبات المكتملة القابلة للحذف (للأدمن فقط) — لا تحذف شيئاً.
+     */
+    previewCompletedPurge: async () => {
+        try {
+            const response = await api.get('/orders/completed/purge-preview');
+            return response.data;
+        } catch (error) {
+            console.error('Error previewing purge:', error.response?.data || error.message);
+            throw error.response?.data?.detail || 'تعذّر جلب عدد الطلبات المكتملة.';
+        }
+    },
+
+    /**
+     * حذف نهائي للطلبات المكتملة وحركات مخزونها (للأدمن فقط).
+     * لا يمس المنتجات ولا الموظفين ولا كميات المخزون.
+     */
+    purgeCompletedOrders: async () => {
+        try {
+            const response = await api.delete('/orders/completed/purge');
+            return response.data;
+        } catch (error) {
+            console.error('Error purging completed orders:', error.response?.data || error.message);
+            throw error.response?.data?.detail || 'تعذّر حذف الطلبات المكتملة.';
         }
     },
 };

@@ -9,11 +9,18 @@ const DB_NAME = 'BellagioOfflineDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'pending_actions';
 
+// اتصال واحد مُعاد استخدامه بدل فتح اتصال جديد في كل عملية.
+// كان الكود السابق يفتح اتصالاً كل 3 ثوانٍ ولا يغلقه أبداً، مما يسرّب
+// الموارد تدريجياً في الجلسات الطويلة (جهاز نقطة بيع يعمل طوال اليوم).
+let dbPromise = null;
+
 /**
- * فتح وتجهيز قاعدة بيانات IndexedDB
+ * فتح وتجهيز قاعدة بيانات IndexedDB (اتصال واحد مشترك)
  */
 export const initIDB = () => {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+
+  dbPromise = new Promise((resolve, reject) => {
     if (!window.indexedDB) {
       console.warn('IndexedDB غير مدعوم في هذا المتصفح');
       return resolve(null);
@@ -22,12 +29,22 @@ export const initIDB = () => {
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = (event) => {
+      dbPromise = null; // اسمح بإعادة المحاولة لاحقاً بدل تجميد الفشل للأبد
       console.error('فشل فتح IndexedDB:', event.target.error);
       reject(event.target.error);
     };
 
     request.onsuccess = (event) => {
       const db = event.target.result;
+
+      // إذا طلب تبويب آخر ترقية النسخة نغلق هذا الاتصال حتى لا نحجبه
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      // إذا أُغلق الاتصال لأي سبب (طرد من المتصفح) نسمح بإعادة الفتح
+      db.onclose = () => { dbPromise = null; };
+
       resolve(db);
     };
 
@@ -40,6 +57,8 @@ export const initIDB = () => {
       }
     };
   });
+
+  return dbPromise;
 };
 
 /**
@@ -169,4 +188,52 @@ export const clearPendingActions = async () => {
 export const getPendingCount = async () => {
   const actions = await getPendingActions();
   return actions.length;
+};
+
+// مفتاح الطابور القديم الذي كان يُستخدم في localStorage عبر utils/offlineSync.js
+const LEGACY_QUEUE_KEY = 'bellagio_offline_queue';
+
+/**
+ * ترحيل أي عمليات عالقة في الطابور القديم (localStorage) إلى IndexedDB.
+ *
+ * كان النظام يحتوي على طابورين منفصلين: صفحات البيع والمسح تكتب في localStorage
+ * بينما محرك المزامنة يقرأ من IndexedDB فقط — فكانت عمليات البيع الأوفلاين
+ * لا تُرفع أبداً. هذه الدالة تنقذ أي بيانات عالقة من النظام القديم مرة واحدة.
+ *
+ * لا تُفرّغ المفتاح القديم إلا بعد نجاح نقل كل العناصر، حتى لا تُفقد عند أي خطأ.
+ */
+export const migrateLegacyQueue = async () => {
+  let queue = [];
+  try {
+    const raw = localStorage.getItem(LEGACY_QUEUE_KEY);
+    if (!raw) return 0;
+    queue = JSON.parse(raw);
+    if (!Array.isArray(queue) || queue.length === 0) {
+      localStorage.removeItem(LEGACY_QUEUE_KEY);
+      return 0;
+    }
+  } catch (err) {
+    console.error('[Migration] تعذّرت قراءة الطابور القديم:', err);
+    return 0;
+  }
+
+  let migrated = 0;
+  for (const item of queue) {
+    try {
+      const saved = await saveOfflineAction(item.type, item.payload, item.description || '');
+      if (saved) migrated++;
+    } catch (err) {
+      console.error('[Migration] فشل نقل عنصر من الطابور القديم:', item, err);
+    }
+  }
+
+  // لا نحذف القديم إلا إذا نُقل كل شيء بنجاح
+  if (migrated === queue.length) {
+    localStorage.removeItem(LEGACY_QUEUE_KEY);
+    console.log(`[Migration] تم نقل ${migrated} عملية من localStorage إلى IndexedDB وحذف الطابور القديم.`);
+  } else {
+    console.warn(`[Migration] نُقلت ${migrated} من أصل ${queue.length}؛ تم الإبقاء على الطابور القديم لمحاولة لاحقة.`);
+  }
+
+  return migrated;
 };

@@ -1,10 +1,23 @@
 from fastapi import WebSocket
-from typing import List
+from typing import Dict, List
+
+
 class ConnectionManager:
     def __init__(self):
         # نستخدم قاموس لربط معرف المستخدم باتصالاته (User-specific targeting)
         # { user_id: [websocket1, websocket2] }
         self.active_connections: Dict[int, List[WebSocket]] = {}
+
+    @property
+    def has_connections(self) -> bool:
+        """
+        هل يوجد أي متصفح متصل فعلاً؟
+
+        تُستخدم لتفادي حساب إحصائيات لوحة التحكم (5 استعلامات ~70 مللي ثانية)
+        بعد كل عملية بيع أو مسح بينما لا يوجد أي مستمع لها — كان هذا العمل
+        يُنفَّذ على حلقة الأحداث فيُجمّد الخادم لبقية المستخدمين بلا فائدة.
+        """
+        return any(conns for conns in self.active_connections.values())
 
     async def connect(self, websocket: WebSocket, user_id: int):
         await websocket.accept()

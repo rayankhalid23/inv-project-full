@@ -33,7 +33,7 @@ router = APIRouter(tags=["Product Variants"])
 
 
 @router.post("/batch-create")
-async def create_product_variants(
+def create_product_variants(
     product_color_id: int,
     variants_data: List[VariantCreate],
     background_tasks: BackgroundTasks, # سيستخدم السكيمة الموحدة من الملف الخارجي
@@ -78,8 +78,8 @@ async def create_product_variants(
             db.add(new_variant)
             db.flush() # الحصول على ID المتغير فوراً لاستخدامه في الـ QR
 
-            # 4. توليد الـ QR Code (يجب أن تكون الدالة async)
-            qr_path = await generate_variant_qr(new_variant.id, product.code)
+            # 4. توليد الـ QR Code
+            qr_path = generate_variant_qr(new_variant.id, product.code)
             new_variant.qr_code = qr_path
 
             # --- [إضافة: مراقبة المخزون] ---
@@ -127,7 +127,7 @@ async def create_product_variants(
 
 
 @router.patch("/{variant_id}", status_code=status.HTTP_200_OK)
-async def update_variant_partial(
+def update_variant_partial(
     variant_id: int,
     update_data: VariantUpdatePartial,
     background_tasks: BackgroundTasks,
@@ -230,7 +230,7 @@ async def update_variant_partial(
 # الدالة الأولى: حذف "مجموعة" (اللون وجميع مقاساته المرتبطة)
 # -------------------------------------------------------------------
 @router.delete("/color/{color_id}", status_code=status.HTTP_200_OK)
-async def delete_color_group(
+def delete_color_group(
     color_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -281,8 +281,7 @@ async def delete_color_group(
         for variant in variants:
             variant.deleted_at = delete_time
             # تصفير الكمية المتاحة حتى لا تظهر في المخزون (اختياري ولكنه مفضل برمجياً)
-            v.deleted_at = delete_time
-            v.quantity_available = 0
+            variant.quantity_available = 0
         
 
         color.deleted_at = delete_time # [تعديل] نقلها خارج حلقة المقاسات لتحسين الأداء
@@ -315,7 +314,7 @@ async def delete_color_group(
 # الدالة الثانية: حذف "ارتباط واحد" (مقاس محدد للون محدد)
 # -------------------------------------------------------------------
 @router.delete("/{variant_id}", status_code=status.HTTP_200_OK)
-async def delete_single_variant(
+def delete_single_variant(
     variant_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
@@ -381,7 +380,7 @@ async def delete_single_variant(
 
 
 @router.delete("/product/{product_id}")
-async def delete_full_product(product_id: int,background_tasks: BackgroundTasks, db: Session = Depends(get_db),current_user: User = Depends(RoleChecker([1, 2]))):
+def delete_full_product(product_id: int,background_tasks: BackgroundTasks, db: Session = Depends(get_db),current_user: User = Depends(RoleChecker([1, 2]))):
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product or product.deleted_at:
         raise HTTPException(status_code=404, detail="المنتج غير موجود")
@@ -433,17 +432,29 @@ async def delete_full_product(product_id: int,background_tasks: BackgroundTasks,
 
 
 async def refresh_dashboard_ws():
-    db = SessionLocal()
+    # نتخطى العمل كلياً إن لم يوجد متصل، ونحسب خارج حلقة الأحداث إن وُجد
+    if not manager.has_connections:
+        return
+
+    from fastapi.concurrency import run_in_threadpool
+
+    def _compute():
+        db = SessionLocal()
+        try:
+            return get_inventory_dashboard_stats(db)
+        finally:
+            db.close()
+
     try:
-        stats = get_inventory_dashboard_stats(db)
+        stats = await run_in_threadpool(_compute)
         await manager.broadcast(stats)
-    finally:
-        db.close()
+    except Exception as e:
+        print(f"WS refresh error: {e}")
 
 
 
 @router.get("/filter", response_model=PaginatedVariantFilterResponse, status_code=status.HTTP_200_OK)
-async def filter_product_variants(
+def filter_product_variants(
     search: Optional[str] = Query(None, description="البحث باسم المنتج أو كود المنتج"),
     catalog_id: Optional[int] = Query(None, description="معرف الكتالوج/القسم الافتراضي None يعطي الكل"),
     size_id: Optional[int] = Query(None, description="فلترة بحسب معرف المقاس المحدود"),
@@ -486,14 +497,21 @@ async def filter_product_variants(
 
     # 3. تطبيق فلتر البحث الذكي (اسم المنتج أو كود المنتج أو رمز الـ QR)
     if search:
-        search_filter = f"%{search.strip()}%"
-        query = query.filter(
-            or_(
-                Product.name.ilike(search_filter),
-                Product.code.ilike(search_filter),
-                ProductVariant.qr_code.ilike(search_filter)
-            )
-        )
+        clean_s = search.strip()
+        search_filter = f"%{clean_s}%"
+        conditions = [
+            Product.name.ilike(search_filter),
+            Product.code.ilike(search_filter),
+            ProductVariant.qr_code.ilike(search_filter)
+        ]
+        digits_only = clean_s.lstrip("0")
+        if digits_only and digits_only != clean_s:
+            digits_filter = f"%{digits_only}%"
+            conditions.extend([
+                Product.code.ilike(digits_filter),
+                ProductVariant.qr_code.ilike(digits_filter)
+            ])
+        query = query.filter(or_(*conditions))
 
     # 3.5 تطبيق فلتر الـ QR المباشر
     if qr_code:

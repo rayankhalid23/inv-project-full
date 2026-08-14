@@ -1,15 +1,18 @@
 {
+  "id": "/",
   "name": "BELLAGIO - نظام إدارة المخازن",
   "short_name": "BELLAGIO",
   "description": "نظام بيلادجيو المتكامل لإدارة المخازن والطلبات والمبيعات والموظفين",
-  "start_url": "/",
+  "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "any",
   "background_color": "#0a1128",
   "theme_color": "#800000",
   "dir": "rtl",
   "lang": "ar",
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/pwa-192x192.png",

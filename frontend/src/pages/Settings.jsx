@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   User, LogOut, Save, RefreshCw, 
-  Phone, Lock, ShieldCheck, XCircle, Download, Smartphone, Shield, Zap
+  Phone, Lock, ShieldCheck, XCircle
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { useOffline } from '../context/OfflineContext';
 import { useNavigate } from 'react-router-dom';
 import { updateProfile } from '../api/userApi';
+import { orderApi } from '../api/orderApi';
 import { toast } from 'react-hot-toast';
+import { Trash2, Database, AlertTriangle } from 'lucide-react';
 
 
 const Settings = () => {
@@ -29,6 +30,40 @@ const Settings = () => {
     password: false,
     confirmPassword: false
   });
+
+  // --- تنظيف الطلبات المكتملة (للأدمن فقط) ---
+  const isAdmin = Number(user?.role_id) === 1;
+  const [purgeInfo, setPurgeInfo] = useState(null);      // نتيجة المعاينة
+  const [purgeOpen, setPurgeOpen] = useState(false);     // نافذة التأكيد
+  const [purgeLoading, setPurgeLoading] = useState(false);
+
+  const openPurgeDialog = async () => {
+    setPurgeLoading(true);
+    try {
+      const info = await orderApi.previewCompletedPurge();
+      setPurgeInfo(info);
+      setPurgeOpen(true);
+    } catch (err) {
+      toast.error(typeof err === 'string' ? err : 'تعذّر جلب البيانات');
+    } finally {
+      setPurgeLoading(false);
+    }
+  };
+
+  const confirmPurge = async () => {
+    setPurgeLoading(true);
+    const id = toast.loading('جاري حذف الطلبات المكتملة...');
+    try {
+      const res = await orderApi.purgeCompletedOrders();
+      toast.success(res.message || 'تم التنظيف بنجاح', { id, duration: 6000 });
+      setPurgeOpen(false);
+      setPurgeInfo(null);
+    } catch (err) {
+      toast.error(typeof err === 'string' ? err : 'فشل الحذف', { id });
+    } finally {
+      setPurgeLoading(false);
+    }
+  };
 
   const resetToOriginal = useCallback(() => {
     if (user) {
@@ -257,31 +292,105 @@ const Settings = () => {
         </div>
       </div>
 
-      {/* بطاقة تثبيت وتنزيل التطبيق */}
-      <div className="bg-[#0a1128] rounded-3xl border border-white/10 p-6 lg:p-8 text-white shadow-xl relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-64 h-64 bg-[#800000]/20 rounded-full blur-3xl pointer-events-none" />
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6 relative z-10">
-          <div className="flex items-center gap-4">
-            <div className="p-3.5 rounded-2xl bg-[#800000] border border-white/20 shadow-lg shrink-0">
-              <Shield className="w-8 h-8 text-white" />
+      {/* بطاقة تنظيف البيانات — تظهر للأدمن فقط */}
+      {isAdmin && (
+        <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 lg:p-8">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
+            <div className="flex items-start gap-4">
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-100 shrink-0">
+                <Database className="w-7 h-7 text-slate-500" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-lg font-black text-slate-900">تنظيف الطلبات المكتملة</h3>
+                <p className="text-xs text-slate-500 font-medium leading-relaxed max-w-xl">
+                  حذف نهائي للطلبات التي <strong className="text-slate-700">تم إسنادها للتوصيل</strong> وحركات
+                  المخزون الخاصة بها، لتخفيف قاعدة البيانات من سجلات لم تعد بحاجة إليها.
+                  <br />
+                  <span className="text-emerald-600 font-bold">
+                    لا يؤثر على المنتجات ولا الموظفين ولا كميات المخزون ولا التقارير.
+                  </span>
+                </p>
+              </div>
             </div>
-            <div className="space-y-1">
-              <h3 className="text-xl font-black tracking-wide text-white">تطبيق BELLAGIO على جهازك</h3>
-              <p className="text-xs text-slate-300 font-medium leading-relaxed max-w-lg">
-                قم بتنزيل التطبيق كـ تطبيق آيفون أو أندرويد أو كمبيوتر للعمل بدون إنترنت وحفظ البيانات محلياً مع المزامنة التلقائية فور توفر النت!
+
+            <button
+              onClick={openPurgeDialog}
+              disabled={purgeLoading}
+              className="w-full md:w-auto flex items-center justify-center gap-2.5 bg-white border-2 border-red-200 text-red-600 hover:bg-red-600 hover:text-white hover:border-red-600 px-6 py-3.5 rounded-2xl font-bold transition-all active:scale-95 shrink-0 disabled:opacity-50"
+            >
+              {purgeLoading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Trash2 className="w-5 h-5" />}
+              <span>تنظيف الطلبات المكتملة</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة التأكيد مع عرض ما سيُحذف بالضبط قبل التنفيذ */}
+      {purgeOpen && purgeInfo && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" dir="rtl">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => !purgeLoading && setPurgeOpen(false)} />
+          <div className="relative bg-white rounded-[2rem] p-6 shadow-2xl max-w-md w-full border border-slate-100 animate-in zoom-in-95 duration-200">
+            <div className="w-14 h-14 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+              <AlertTriangle size={28} />
+            </div>
+            <h3 className="text-lg font-black text-slate-900 text-center mb-1">تأكيد الحذف النهائي</h3>
+            <p className="text-xs text-slate-500 text-center mb-5">هذا الإجراء لا يمكن التراجع عنه</p>
+
+            {purgeInfo.orders === 0 ? (
+              <p className="text-sm text-center text-slate-600 font-bold py-4">
+                لا توجد طلبات مكتملة للحذف حالياً ✅
               </p>
+            ) : (
+              <>
+                <div className="bg-slate-50 rounded-2xl p-4 space-y-2.5 mb-5 border border-slate-100">
+                  {[
+                    ['طلبات مكتملة', purgeInfo.orders],
+                    ['عناصر داخل الطلبات', purgeInfo.items],
+                    ['حركات مخزون مرتبطة', purgeInfo.movements],
+                  ].map(([label, val]) => (
+                    <div key={label} className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 font-medium">{label}</span>
+                      <span className="font-mono font-black text-slate-800" dir="ltr">{val}</span>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-200">
+                    <span className="text-slate-500 font-medium">إجمالي قيمتها</span>
+                    <span className="font-mono font-black text-[#800000]" dir="ltr">{purgeInfo.total_value}</span>
+                  </div>
+                </div>
+
+                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 mb-5">
+                  <p className="text-[11px] text-emerald-800 font-medium leading-relaxed">
+                    ✓ المنتجات وكميات المخزون تبقى كما هي<br />
+                    ✓ بيانات الموظفين والتقارير لا تتأثر<br />
+                    ✓ الطلبات المعلقة وقيد التجهيز والمجهّزة لا تُحذف
+                  </p>
+                </div>
+              </>
+            )}
+
+            <div className="flex gap-3">
+              {purgeInfo.orders > 0 && (
+                <button
+                  onClick={confirmPurge}
+                  disabled={purgeLoading}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-2xl text-xs font-black transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {purgeLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  نعم، احذف نهائياً
+                </button>
+              )}
+              <button
+                onClick={() => setPurgeOpen(false)}
+                disabled={purgeLoading}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-600 py-3 rounded-2xl text-xs font-black border border-slate-200 transition-colors disabled:opacity-50"
+              >
+                {purgeInfo.orders > 0 ? 'إلغاء' : 'إغلاق'}
+              </button>
             </div>
           </div>
-
-          <button
-            onClick={promptInstallApp}
-            className="w-full md:w-auto flex items-center justify-center gap-2.5 bg-gradient-to-r from-[#800000] to-[#b30000] hover:from-[#990000] hover:to-[#cc0000] text-white px-6 py-3.5 rounded-2xl font-bold shadow-lg shadow-[#800000]/40 transition-all active:scale-95 shrink-0"
-          >
-            <Download className="w-5 h-5" />
-            <span>تنزيل وتثبيت التطبيق 📲</span>
-          </button>
         </div>
-      </div>
+      )}
     </div>
   );
 };

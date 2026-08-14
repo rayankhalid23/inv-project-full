@@ -7,8 +7,10 @@ import {
   Trash2, ChevronDown, AlertCircle, CheckCircle2, Eye, Edit3, 
   Tag, Box, Hash, DollarSign, Archive, Lock, ShoppingCart, QrCode, Copy, TrendingUp, Download
 } from 'lucide-react';
-import { toast } from 'react-hot-toast'; // أو react-toastify حسب مكتبتك
+// ملاحظة: يُستورد باسم hotToast لأن اسم toast مستخدم كـ state محلي داخل المكوّن
+import { toast as hotToast } from 'react-hot-toast';
 import { catalogApi as fallbackCatalogApi } from "../../../api/catalogApi";
+import { mediaUrl, IMAGE_FALLBACK, onImageError } from "../../../utils/media";
 
 // --- Schema & Helpers ---
 const productSchema = z.object({
@@ -32,17 +34,12 @@ const productSchema = z.object({
   })).default([])
 });
 
-const BASE_URL = 'http://192.168.1.104:8000';
-const getFullUrl = (path) => {
-  if (!path) return null;
-  if (path instanceof File) return URL.createObjectURL(path);
-  const cleanPath = path.replace(/\\/g, '/');
-  return `${BASE_URL}${cleanPath.startsWith('/') ? '' : '/'}${cleanPath}`;
-};
+// روابط الصور تُبنى من المصدر الموحّد utils/media.js فقط.
+const getFullUrl = mediaUrl;
 
 
 // --- Main Dialog Component ---
-const ProductFormDialog = ({ open, onOpenChange, productToEdit, onSaveSuccess, initialMode , showToast, catalogApi, getFullUrl }) => {
+const ProductFormDialog = ({ open, onOpenChange, productToEdit, onSaveSuccess, initialMode , showToast, catalogApi, getFullUrl: getFullUrlProp }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [isDownloadingQr, setIsDownloadingQr] = useState(null); 
   const [isViewMode, setIsViewMode] = useState(initialMode === 'view');
@@ -63,22 +60,16 @@ const ProductFormDialog = ({ open, onOpenChange, productToEdit, onSaveSuccess, i
   const canManage = roleId !== undefined && roleId !== null ? Number(roleId) !== 3 : false;
 
 
-  // 🛠️ حزام أمان محلي لمعالجة مسارات الصور في حال عدم تمريرها من الأب
-const safeGetFullUrl = (path) => {
-  if (!path) return 'https://placehold.co/400?text=No+Image'; // صورة احتياطية
-  if (path instanceof File) return URL.createObjectURL(path); // إذا كانت ملف مرفوع محلياً
-  if (path.startsWith('http://') || path.startsWith('https://')) return path; // إذا كان رابط كامل
-  
-  // إذا كان مسار نسبي قادم من الباك إند (قم بتغيير المنفذ 8000 حسب مشروعك)
-  const baseUrl = 'http://192.168.1.104:8000';
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  return `${baseUrl}${cleanPath}`.replace(/\\/g, '/'); // تحويل أي مائل خلفي مسبب للمشاكل في ويندوز
-};
+  // نفس المصدر الموحّد، مع صورة بديلة محلية بدل استدعاء خدمة خارجية
+  // (placehold.co كان يفشل تماماً بدون إنترنت).
+  const safeGetFullUrl = (path) => mediaUrl(path) || IMAGE_FALLBACK;
   // حزام أمان للتنبيهات المحلية الخاصة بالنافذة المنبثقة
 const [localToastState, setLocalToastState] = useState({ show: false, message: '', type: 'success' });
 
   // حزام أمان ذكي وموحد لاستدعاء الـ API والـ Toast والروابط بأمان
   const activeApi = catalogApi || fallbackCatalogApi;
+  // إذا لم يمرّر الأب دالة روابط نستخدم النسخة المحلية بدل ترك القيمة undefined
+  const resolveUrl = typeof getFullUrlProp === "function" ? getFullUrlProp : getFullUrl;
   const triggerToast = (msg, type = "success") => {
     // تحديث الـ State المحلي أولاً لكي يقرأه السطر 334 المسبب للخطأ ويظهر في واجهة النافذة فوراً
     setLocalToastState({ show: true, message: msg, type });
@@ -91,8 +82,8 @@ const [localToastState, setLocalToastState] = useState({ show: false, message: '
     // حزام الأمان القديم الخاص بك لتبليغ الأب أو المكتبة الخارجية
     if (typeof showToast === "function") {
       showToast(msg, type);
-    } else if (typeof toast !== "undefined" && toast[type]) {
-      toast[type](msg);
+    } else if (hotToast && typeof hotToast[type] === "function") {
+      hotToast[type](msg);
     }
   };
   
@@ -234,7 +225,7 @@ const handleAddNewSizeToDB = async (sizeName) => {
                 })) || []
               });
               
-              if (typeof getFullUrl === "function") setImagePreview(getFullUrl(data.main_image));
+              setImagePreview(resolveUrl(data.main_image));
               setIsViewMode(initialMode === 'view');
             } catch (error) {
               console.error("Error loading product for edit:", error);
@@ -407,11 +398,11 @@ if (data.variants && data.variants.length > 0) {
       }
       // ب) إذا كان الخطأ متعلقاً بالوان المنتج
       else if (finalMessage.includes("اللون") || finalMessage.includes("color")) {
-        if (typeof showToast === "function") showToast(finalMessage, "error");
+        triggerToast(finalMessage, "error");
       }
       // ج) إذا كان الخطأ متعلقاً بالمقاسات أو الـ Batch Variants
       else if (finalMessage.includes("المقاس") || finalMessage.includes("الكمية") || finalMessage.includes("variant")) {
-        if (typeof showToast === "function") showToast(finalMessage, "error");
+        triggerToast(finalMessage, "error");
       }
     } 
     // 2. إذا كان الخطأ مصفوفة Validation تلقائية من FastAPI Pydantic
@@ -526,7 +517,7 @@ if (!open) return null;
                    <button 
                      onClick={() => {
                       navigator.clipboard.writeText(viewData.code);
-showToast("تم نسخ الكود", "success");
+                      triggerToast("تم نسخ الكود", "success");
                      }}
                      className="group flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-500 text-[10px] px-3 py-1 rounded-full font-bold transition-all active:scale-95"
                    >
@@ -599,7 +590,7 @@ showToast("تم نسخ الكود", "success");
   src={safeGetFullUrl(color.color_image)} 
   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
   alt={color.color_name} 
-  onError={(e) => { e.target.src = 'https://placehold.co/100?text=No+Image'; }} 
+  onError={onImageError} 
 />
         </div>
         
@@ -917,9 +908,9 @@ showToast("تم نسخ الكود", "success");
     watch={watch}
     dbSizes={dbSizes}
     errors={errors}
-    triggerToast={triggerToast}
-    catalogApi={catalogApi}
-    getFullUrl={getFullUrl}
+    showToast={triggerToast}
+    catalogApi={activeApi}
+    getFullUrl={resolveUrl}
     colorToDelete={colorToDelete}        
     setColorToDelete={setColorToDelete}  
     setSizeToDelete={setSizeToDelete}
@@ -965,7 +956,7 @@ showToast("تم نسخ الكود", "success");
           
               if (variantId && !String(variantId).startsWith('new-')) {
                 try {
-                  if (typeof showToast === "function") showToast("جاري الحذف من قاعدة البيانات...", "success");
+                  triggerToast("جاري الحذف من قاعدة البيانات...", "success");
                   await apiToUse.deleteSingleVariant(variantId);
                 } catch (error) {
                   const backendError = error.response?.data?.detail || "لا يمكن حذف المقاس لارتباطه بطلبيات أو فواتير قيد التنفيذ";
@@ -980,10 +971,8 @@ showToast("تم نسخ الكود", "success");
                 currentVariants[colorIdx].sizes.splice(sizeIdx, 1);
                 setValue("variants", [...currentVariants], { shouldDirty: true, shouldValidate: true });
                 
-                if (typeof showToast === "function") {
-                  showToast(`تم إزالة المقاس (${label}) بنجاح`, "success");
-                }
-                
+                triggerToast(`تم إزالة المقاس (${label}) بنجاح`, "success");
+
                 if (typeof onSaveSuccess === "function") onSaveSuccess();
               }
             }
@@ -1020,7 +1009,7 @@ showToast("تم نسخ الكود", "success");
 
             if (serverColorId && !String(serverColorId).startsWith('new-')) {
               try {
-                if (typeof showToast === "function") showToast("جاري حذف مجموعة اللون من السيرفر...", "success");
+                triggerToast("جاري حذف مجموعة اللون من السيرفر...", "success");
                 await activeApi.deleteColorGroup(serverColorId);
               } catch (error) {
                 alert("🚨 خطأ: " + (error.response?.data?.detail || "فشل حذف اللون من السيرفر"));
@@ -1030,7 +1019,7 @@ showToast("تم نسخ الكود", "success");
             }
             
             removeColor(colorIdx); 
-            if (typeof showToast === "function") showToast("تم حذف اللون وكافة مقاساته بنجاح", "success");
+            triggerToast("تم حذف اللون وكافة مقاساته بنجاح", "success");
             if (typeof onSaveSuccess === "function") onSaveSuccess();
             setColorToDelete(null);
           }}
@@ -1055,12 +1044,8 @@ const VariantCard = ({ control, register, setValue, watch, colorIndex, colorItem
   const activeApi = catalogApi;
   const triggerToast = typeof showToast === "function" ? showToast : (msg) => alert(msg);
   
-  // دالة احتياطية لقراءة مسار الصور بشكل سليم داخل الكارت
-  const safeGetFullUrl = typeof getFullUrl === "function" ? getFullUrl : (path) => {
-    if (!path) return "";
-    if (path instanceof File) return URL.createObjectURL(path);
-    return `${window.location.origin}${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/')}`;
-  };
+  // المصدر الموحّد لروابط الصور
+  const safeGetFullUrl = typeof getFullUrl === "function" ? getFullUrl : mediaUrl;
   // State للتحكم في إخفاء وإظهار المقاسات لكل لون بشكل مستقل
   const [isCollapsed, setIsCollapsed] = useState(false);
   

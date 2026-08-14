@@ -14,7 +14,10 @@ import {
 } from 'lucide-react';
 
 import { fetchEmployeesApi } from '../api/userApi';
-import { enqueueOfflineAction } from '../utils/offlineSync';
+import { saveOfflineAction } from '../utils/idbStorage';
+import { isNetworkError } from '../utils/netErrors';
+import ProductPicker from '../components/products/ProductPicker';
+
 
 
 // تم إزالة ToastContainer المخصص — يتم استخدام react-hot-toast مباشرة لمنع ازدواجية نظام الإشعارات
@@ -81,6 +84,7 @@ export default function SalesPage() {
   const [isScannerOpen, setIsScannerOpen]     = useState(false);
   const [isTrackingOpen, setIsTrackingOpen]   = useState(false);
   const [isEditOpen, setIsEditOpen]           = useState(false);
+
 
   // ---- States العمليات ----
   const [copiedId, setCopiedId]           = useState(null);
@@ -262,11 +266,15 @@ const handleScanProduct = async (barcodeValue) => {
   };
 
   // ========= ✅ إصلاح: useEffect موحد واحد لمنع تعارض 3 hooks منفصلة كانت تتصادم =========
+  // ⚠️ الاعتماد على selectedOrder كان يسبب تجمّد السكرول: عند إغلاق نافذة التفاصيل
+  // يبقى selectedOrder محفوظاً فيظل الشرط صحيحاً ويبقى body مقفولاً للأبد.
+  // الحل: الاعتماد على أعلام الفتح الصريحة فقط.
   useEffect(() => {
-    const anyModalOpen = isCreateOpen || isEditOpen || Boolean(selectedOrder);
-    document.body.style.overflow = anyModalOpen ? 'hidden' : 'unset';
-    return () => { document.body.style.overflow = 'unset'; };
-  }, [isCreateOpen, isEditOpen, selectedOrder]);
+    const anyModalOpen = isCreateOpen || isEditOpen || isDetailOpen;
+    // '' يعيد القيمة للورقة النمطية (body { overflow-x: hidden }) بدل 'unset' الذي يلغيها.
+    document.body.style.overflow = anyModalOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [isCreateOpen, isEditOpen, isDetailOpen]);
 
   // ========= فلترة الطلبات محلياً =========
   const filteredOrders = useMemo(() => {
@@ -321,21 +329,51 @@ const handleScanProduct = async (barcodeValue) => {
     }
   };
 
+  // ========= إغلاق تفاصيل الطلب =========
+  // تصفير selectedOrder يمنع بقاء طلب قديم في الذاكرة بعد الإغلاق،
+  // ولا نصفّره إذا كانت نافذة التعديل مفتوحة فوقها لأنها تعتمد عليه.
+  const handleCloseDetail = () => {
+    setIsDetailOpen(false);
+    if (!isEditOpen) setSelectedOrder(null);
+  };
+
   // ========= مسح QR لتجهيز المنتج =========
   // ✅ إصلاح: تم حذف getOrderDetails الثاني — نستخدم استجابة scanOrderItem مباشرة (نصف وقت الانتظار)
   const handleBarcodeScan = async (barcodeValue) => {
-    if (!selectedOrder || !barcodeValue.trim()) return;
+    if (!selectedOrder || !barcodeValue || !barcodeValue.trim()) return;
+    const cleanCode = barcodeValue.trim();
     setIsScanning(true);
     try {
-      const result = await orderApi.scanOrderItem(selectedOrder.id, barcodeValue.trim());
+      const result = await orderApi.scanOrderItem(selectedOrder.id, cleanCode);
       showToast(result?.message || 'تم مسح المنتج بنجاح');
       setManualBarcode('');
-      // تحديث الحالة مباشرة من استجابة السيرفر بدون طلب API ثانٍ
       const newStatus = result?.status || selectedOrder.status;
-      setSelectedOrder(prev => ({ ...prev, status: newStatus }));
+      const targetVariantId = result?.variant_id;
+
+      // تحديث شاشة تفاصيل الطلب وحالة القطع الممسوحة فوراً في الواجهة
+      setSelectedOrder(prev => {
+        if (!prev) return prev;
+        const items = (prev.items || []).map(it => {
+          if (targetVariantId && it.variant_id !== targetVariantId) return it;
+          const total = it.quantity ?? it.qty ?? 0;
+          const next = result?.picked_quantity ?? ((it.picked_quantity ?? 0) + 1);
+          return { ...it, picked_quantity: total ? Math.min(next, total) : next };
+        });
+        const totalPicked = items.reduce((s, it) => s + (it.picked_quantity ?? 0), 0);
+        const totalOrdered = prev.total_ordered_qty
+          ?? items.reduce((s, it) => s + (it.quantity ?? it.qty ?? 0), 0);
+        return {
+          ...prev,
+          status: newStatus,
+          items,
+          total_picked_qty: totalPicked,
+          progress_percentage: totalOrdered ? (totalPicked / totalOrdered) * 100 : 0,
+        };
+      });
+
       setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: newStatus } : o));
     } catch (err) {
-      showToast(typeof err === 'string' ? err : 'الكود الممسوح لا يطابق أي منتج في هذا الطلب', 'error');
+      showToast(typeof err === 'string' ? err : (err?.response?.data?.detail || 'الكود الممسوح لا يطابق أي منتج غير مكتمل في هذا الطلب'), 'error');
     } finally {
       setIsScanning(false);
     }
@@ -350,7 +388,29 @@ const handleScanProduct = async (barcodeValue) => {
       const result = await orderApi.scanOrderItemManual(selectedOrder.id, variantId);
       showToast(result?.message || 'تم التجهيز اليدوي بنجاح');
       const newStatus = result?.status || selectedOrder.status;
-      setSelectedOrder(prev => ({ ...prev, status: newStatus }));
+
+      // نحدّث عدّاد القطعة المجهزة محلياً أيضاً، وإلا بقي "تم مسحه 0/2"
+      // كما هو رغم نجاح العملية على السيرفر.
+      setSelectedOrder(prev => {
+        if (!prev) return prev;
+        const items = (prev.items || []).map(it => {
+          if (it.variant_id !== variantId) return it;
+          const total = it.quantity ?? it.qty ?? 0;
+          // نفضّل الرقم القادم من السيرفر لأنه المرجع الأدق، ونزيد محلياً كاحتياط
+          const next = result?.picked_quantity ?? ((it.picked_quantity ?? 0) + 1);
+          return { ...it, picked_quantity: total ? Math.min(next, total) : next };
+        });
+        const totalPicked = items.reduce((s, it) => s + (it.picked_quantity ?? 0), 0);
+        const totalOrdered = prev.total_ordered_qty
+          ?? items.reduce((s, it) => s + (it.quantity ?? it.qty ?? 0), 0);
+        return {
+          ...prev,
+          status: newStatus,
+          items,
+          total_picked_qty: totalPicked,
+          progress_percentage: totalOrdered ? (totalPicked / totalOrdered) * 100 : 0,
+        };
+      });
       setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: newStatus } : o));
     } catch (err) {
       showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء التجهيز اليدوي', 'error');
@@ -410,8 +470,13 @@ const handleScanProduct = async (barcodeValue) => {
           created_at: new Date().toISOString(),
           total_price: selectedVariants.reduce((sum, v) => sum + (v.quantity * 0), 0)
         };
-        enqueueOfflineAction('CREATE_ORDER', payload, `إنشاء طلب لـ ${payload.customer_name}`);
-        
+        // ننتظر تأكيد الحفظ فعلياً قبل إخبار المستخدم بأن الطلب محفوظ
+        const savedOffline = await saveOfflineAction('CREATE_ORDER', payload, `إنشاء طلب لـ ${payload.customer_name}`);
+        if (!savedOffline) {
+          showToast('تعذّر حفظ الطلب محلياً! لا تغلق الصفحة وحاول مرة أخرى.', 'error');
+          return;
+        }
+
         setOrders(prev => [offlineOrder, ...prev]);
         setIsCreateOpen(false);
         resetCreateForm();
@@ -431,8 +496,8 @@ const handleScanProduct = async (barcodeValue) => {
       if (typeof fetchInventoryStats === 'function') fetchInventoryStats();
       showToast(`تم إنشاء الطلب رقم #${newOrder.id} بنجاح`);
     } catch (err) {
-      if (!navigator.onLine || err.message?.includes('Network Error')) {
-        enqueueOfflineAction('CREATE_ORDER', {
+      if (isNetworkError(err)) {
+        const savedOffline = await saveOfflineAction('CREATE_ORDER', {
           customer_name: newOrderForm.customer_name.trim(),
           customer_phones: cleanedPhones,
           address: newOrderForm.address.trim(),
@@ -440,6 +505,11 @@ const handleScanProduct = async (barcodeValue) => {
           notes: newOrderForm.notes?.trim() || null,
           items: selectedVariants.map(v => ({ variant_id: v.variant_id, quantity: v.quantity })),
         }, `إنشاء طلب لـ ${newOrderForm.customer_name}`);
+
+        if (!savedOffline) {
+          showToast('تعذّر حفظ الطلب محلياً! لا تغلق الصفحة وحاول مرة أخرى.', 'error');
+          return;
+        }
 
         setIsCreateOpen(false);
         resetCreateForm();
@@ -457,7 +527,9 @@ const handleScanProduct = async (barcodeValue) => {
 
 
 // ========= إضافة متغير للطلب (مربوط مع المخزون والتنبيهات المحلية المخصصة) =========
-const addVariantToOrder = (variant, colorName, productName, sizeName) => {
+// مُثبّتة بـ useCallback: تُمرَّر لكل عناصر قائمة المنتجات، ولو تغيّرت هويتها
+// في كل تصيير لأبطلت React.memo وأعادت تصيير القائمة كاملة مع كل ضغطة مفتاح.
+const addVariantToOrder = useCallback((variant, colorName, productName, sizeName) => {
   const label = `${productName} - ${colorName} - ${sizeName}`;
   
   // قراءة المخزون المتاح مباشرة من حقل قاعدة البيانات الصحيح quantity_available
@@ -489,8 +561,8 @@ const addVariantToOrder = (variant, colorName, productName, sizeName) => {
     
     showToast(`تم إضافة الصنف للطلب بنجاح`, 'success');
   }
-};
-  
+}, [selectedVariants, showToast]);
+
 
 const removeVariant = (variantId) => {
   setSelectedVariants(prev => prev.filter(v => v.variant_id !== variantId));
@@ -644,6 +716,9 @@ const updateVariantQty = (variantId, qty) => {
     };
   }, [inventoryStats, orders]);
 
+  // ملاحظة: منطق بحث وفلترة وعرض المنتجات انتقل إلى
+  // components/products/ProductPicker.jsx ليُستخدم هنا وفي البيع السريع معاً.
+
   // ========= 2. حساب عدادات الفلاتر العلوية (مستقلة تماماً) =========
   const filterCounts = useMemo(() => ({
     'الكل':          orders.length,
@@ -691,13 +766,15 @@ const updateVariantQty = (variantId, qty) => {
               <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
               تحديث
             </button>
+            {/* زر "الوصول السريع (بيع مباشر)" انتقل إلى زر المسح في الشريط
+                الجانبي ضمن تبويب "بيع" — ليكون كل ما يخص البيع في مكان واحد. */}
             <button
-  onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); }}
-  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#800000] text-white hover:bg-[#660000] active:scale-95 transition-all shadow-sm shadow-[#800000]/20"
->
-  <Plus className="h-4 w-4" />
-  <span>طلب جديد</span>
-</button>
+              onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); }}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#800000] text-white hover:bg-[#660000] active:scale-95 transition-all shadow-sm shadow-[#800000]/20"
+            >
+              <Plus className="h-4 w-4" />
+              <span>طلب جديد</span>
+            </button>
           </div>
         </div>
 
@@ -1057,39 +1134,10 @@ const updateVariantQty = (variantId, qty) => {
                     ) : availableProducts.length === 0 ? (
                       <div className="text-center py-4 text-xs text-slate-400">لا توجد منتجات متاحة في الوقت الحالي</div>
                     ) : (
-                      <div className="space-y-2 border border-slate-200 rounded-xl p-2">
-                        {/* حقل البحث في المنتجات */}
-                        <div className="relative">
-                          <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
-                          <input
-                            type="text"
-                            value={productSearchQuery}
-                            onChange={e => setProductSearchQuery(e.target.value)}
-                            placeholder="ابحث بالاسم أو الكود أو الكتالوج أو المقاس..."
-                            className="w-full text-xs pr-9 pl-3 py-2 border border-slate-200 rounded-lg bg-slate-50 focus:bg-white focus:outline-none focus:border-[#800000] transition-all"
-                          />
-                          {productSearchQuery && (
-                            <button
-                              type="button"
-                              onClick={() => setProductSearchQuery('')}
-                              className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </div>
-                        {/* قائمة المنتجات مع الفلترة */}
-                        <div className="space-y-1 max-h-48 overflow-y-auto">
-                          {availableProducts.map(product => (
-                            <ProductSelector
-                              key={product.id}
-                              product={product}
-                              onAddVariant={addVariantToOrder}
-                              searchQuery={productSearchQuery}
-                            />
-                          ))}
-                        </div>
-                      </div>
+                      <ProductPicker
+                        products={availableProducts}
+                        onAddVariant={addVariantToOrder}
+                      />
                     )}
                   </>
                 )}
@@ -1176,7 +1224,7 @@ const updateVariantQty = (variantId, qty) => {
                 </div>
                 <StatusBadge status={selectedOrder.status} />
               </div>
-              <button onClick={() => setIsDetailOpen(false)} className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100">
+              <button onClick={handleCloseDetail} className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -1314,15 +1362,7 @@ const updateVariantQty = (variantId, qty) => {
                     {/* زر فتح الكاميرا النظيف (بدون أي خانة إدخال يدوي بجانبه) */}
                     <button
                       type="button"
-                      onClick={() => {
-                        if (typeof setIsScannerOpen === 'function') {
-                          setIsScannerOpen(true); 
-                        } else if (typeof handleStartScanner === 'function') {
-                          handleStartScanner();
-                        } else {
-                          showToast('جاري فتح كاميرا الباركود...', 'info');
-                        }
-                      }}
+                      onClick={() => setIsScannerOpen(true)}
                       className="flex items-center gap-1.5 text-xs font-bold text-white bg-[#800000] hover:bg-[#660000] px-3 py-1.5 rounded-xl shadow-sm transition-all active:scale-95"
                     >
                       <Camera className="h-4 w-4" />
@@ -1383,24 +1423,26 @@ const updateVariantQty = (variantId, qty) => {
             <div className="text-left min-w-[55px]">
               <span className="text-[10px] text-slate-400 block font-medium">تم مسحه</span>
               <span className="font-mono font-bold text-slate-800 text-xs" dir="ltr">
-                {item.picked_qty || 0} / {item.qty || item.quantity}
+                {item.picked_quantity ?? 0} / {item.quantity ?? item.qty ?? 0}
               </span>
             </div>
 
             {/* زر مسح يدوي المخصص لكل سطر منتج منفرد */}
-            <button
-              type="button"
-              onClick={() => {
-                if (typeof handlePickItemManually === 'function') {
-                  handlePickItemManually(item);
-                } else if (typeof handleIncrementItem === 'function') {
-                  handleIncrementItem(item); // دالة بديلة إن وجدت لتجهيز القطعة
-                }
-              }}
-              className="bg-[#800000]/5 hover:bg-[#800000] text-[#800000] hover:text-white px-2.5 py-1.5 rounded-lg font-bold text-[11px] transition-all border border-[#800000]/10 active:scale-95 shadow-sm"
-            >
-              مسح يدوي
-            </button>
+            {(() => {
+              const picked = item.picked_quantity ?? 0;
+              const total  = item.quantity ?? item.qty ?? 0;
+              const isDone = total > 0 && picked >= total;
+              return (
+                <button
+                  type="button"
+                  disabled={isScanning || isDone}
+                  onClick={() => handleManualScan(item.variant_id)}
+                  className="bg-[#800000]/5 hover:bg-[#800000] text-[#800000] hover:text-white disabled:opacity-40 disabled:hover:bg-[#800000]/5 disabled:hover:text-[#800000] disabled:cursor-not-allowed px-2.5 py-1.5 rounded-lg font-bold text-[11px] transition-all border border-[#800000]/10 active:scale-95 shadow-sm"
+                >
+                  {isDone ? 'مكتمل ✓' : 'مسح يدوي'}
+                </button>
+              );
+            })()}
           </div>
 
         </div>
@@ -1540,41 +1582,78 @@ const updateVariantQty = (variantId, qty) => {
 
 
       {/* ======================================================== */}
-      {/* نافذة الماسح الضوئي (محاكاة)                              */}
+      {/* نافذة الماسح الضوئي الفعلي                                */}
       {/* ======================================================== */}
       {isScannerOpen && (
-        <div className="fixed inset-0 bg-black/90 z-[70] flex flex-col items-center justify-center p-4 text-white">
+        <div className="fixed inset-0 bg-black/90 z-[70] flex flex-col items-center justify-center p-4 text-white" dir="rtl">
           <div className="absolute top-4 right-4 left-4 flex items-center justify-between">
-            <span className="text-xs font-bold tracking-wider text-slate-300">ماسح رمز QR / Barcode</span>
+            <span className="text-xs font-bold tracking-wider text-slate-300 flex items-center gap-2">
+              <ScanLine className="h-4 w-4 text-[#800000]" />
+              ماسح الـ QR والباركود الفعلي للطلب
+            </span>
             <button onClick={() => setIsScannerOpen(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition-all">
               <X className="h-5 w-5" />
             </button>
           </div>
-          <div className="max-w-md w-full space-y-6 text-center">
-            <div className="relative aspect-video w-full bg-slate-800 rounded-2xl border-2 border-dashed border-slate-600 flex flex-col items-center justify-center overflow-hidden shadow-2xl">
-              <div className="absolute inset-x-0 h-0.5 bg-[#6b1d2f] shadow-lg shadow-[#6b1d2f]/50 animate-bounce top-1/2" />
-              <ScanLine className="h-16 w-16 text-slate-600 mb-2" />
-              <p className="text-xs text-slate-400 px-6">اختر منتجاً من الأسفل لمحاكاة المسح</p>
+          <div className="max-w-md w-full space-y-5 text-center mt-6">
+            {/* مربع المسح الفعلي */}
+            <div className="relative aspect-video w-full bg-slate-900 rounded-2xl border-2 border-slate-700 flex flex-col items-center justify-center overflow-hidden shadow-2xl p-4 space-y-3">
+              <div className="absolute inset-x-0 h-0.5 bg-red-500 shadow-lg shadow-red-500/80 animate-pulse top-1/2" />
+              <ScanLine className="h-10 w-10 text-red-500 animate-pulse mb-1" />
+              <p className="text-xs text-slate-300 font-medium">وجّه كود الـ QR أو الباركود نحو الكاميرا أو أدخل الكود أدناه</p>
+              
+              {/* إدخال مباشر لقارئ الباركود أو اليدوي */}
+              <form onSubmit={(e) => { e.preventDefault(); if (manualBarcode.trim()) { handleBarcodeScan(manualBarcode); setIsScannerOpen(false); } }} className="w-full relative z-10 flex gap-2">
+                <input
+                  type="text"
+                  autoFocus
+                  value={manualBarcode}
+                  onChange={e => setManualBarcode(e.target.value)}
+                  placeholder="أدخل أو امسح الكود هنا..."
+                  className="flex-1 bg-slate-800 border border-slate-600 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-red-500 text-center font-mono"
+                />
+                <button type="submit" disabled={isScanning} className="bg-[#800000] hover:bg-[#660000] text-white px-3 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50">
+                  {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'مسح'}
+                </button>
+              </form>
             </div>
+
+            {/* قائمة بنود الطلب للمسح المباشر بنقرة */}
             {selectedOrder?.items && (
-              <div className="space-y-2">
-                <span className="text-xs text-slate-400 block font-bold">المنتجات المتوقعة في الطلب:</span>
-                {selectedOrder.items.map((item, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => { handleBarcodeScan(String(item.variant_id)); setIsScannerOpen(false); }}
-                    className="w-full bg-white/10 hover:bg-white/20 border border-white/10 p-3 rounded-xl text-right text-xs transition-all flex items-center justify-between"
-                  >
-                    <div>
-                      <span className="font-bold text-white block">{item.product_name}</span>
-                      <span className="text-[10px] font-mono text-slate-400">
-                        {item.color_name && `${item.color_name} - `}{item.size && item.size}
-                        {' '} | Variant ID: {item.variant_id}
-                      </span>
-                    </div>
-                    <span className="text-[10px] bg-[#6b1d2f] text-white px-2 py-0.5 rounded font-bold shrink-0">محاكاة مسح</span>
-                  </button>
-                ))}
+              <div className="space-y-2 text-right">
+                <span className="text-xs text-slate-300 block font-bold">بنود الطلب المتاحة للمسح والتجهيز:</span>
+                <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                  {selectedOrder.items.map((item, idx) => {
+                    const isDone = (item.picked_quantity ?? 0) >= (item.quantity ?? 1);
+                    return (
+                      <div
+                        key={idx}
+                        className={`w-full border p-2.5 rounded-xl text-xs transition-all flex items-center justify-between gap-2 ${
+                          isDone ? 'bg-emerald-950/40 border-emerald-800/50 opacity-75' : 'bg-white/10 hover:bg-white/20 border-white/10'
+                        }`}
+                      >
+                        <div className="text-right flex-1 min-w-0">
+                          <span className="font-bold text-white block truncate">{item.product_name}</span>
+                          <span className="text-[10px] font-mono text-slate-400 block truncate">
+                            {item.color_name && `${item.color_name} - `}{item.size && item.size} | الممسوح: ({item.picked_quantity ?? 0}/{item.quantity ?? 1})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isDone || isScanning}
+                          onClick={() => { handleBarcodeScan(String(item.variant_id)); }}
+                          className={`text-[10px] px-3 py-1.5 rounded-lg font-bold shrink-0 transition-all ${
+                            isDone 
+                              ? 'bg-emerald-800/50 text-emerald-300 cursor-not-allowed' 
+                              : 'bg-[#800000] hover:bg-[#660000] text-white active:scale-95'
+                          }`}
+                        >
+                          {isDone ? 'مكتمل ✅' : 'مسح وتجهيز'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -1649,87 +1728,6 @@ const updateVariantQty = (variantId, qty) => {
         </div>
       )}
 
-    </div>
-  );
-}
-
-// ========= مكوّن اختيار المنتج مع بحث =========
-function ProductSelector({ product, onAddVariant, searchQuery = '' }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const getImageUrl = (path) => path ? (path.startsWith('http') ? path : `${window.location.origin}/${path.replace(/^[\\\/]+/, '')}`) : null;
-
-  if (searchQuery) {
-    const q = searchQuery.toLowerCase();
-    const nameMatch = product.name?.toLowerCase().includes(q);
-    const catalogMatch = product.catalog_name?.toLowerCase().includes(q);
-    const skuMatch = product.colors?.some(c =>
-      c.variants?.some(v =>
-        (v.sku || '').toLowerCase().includes(q) ||
-        (v.size_name || v.size || '').toLowerCase().includes(q)
-      )
-    );
-    if (!nameMatch && !catalogMatch && !skuMatch) return null;
-  }
-
-  return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setIsOpen(p => !p)}
-        className="w-full flex items-center justify-between p-2.5 bg-slate-50 hover:bg-slate-100 transition-colors text-right"
-      >
-        <div className="flex items-center gap-3">
-          {product.image ? (
-            <img src={getImageUrl(product.image)} alt={product.name} className="h-8 w-8 rounded object-cover border border-slate-200 shrink-0" />
-          ) : (
-            <div className="h-8 w-8 rounded bg-slate-200 flex items-center justify-center border border-slate-200 shrink-0">
-              <Package className="h-4 w-4 text-slate-400 shrink-0" />
-            </div>
-          )}
-          <div className="text-right">
-            <span className="text-xs font-bold text-slate-800 block">{product.name}</span>
-            {product.catalog_name && (
-              <span className="text-[10px] text-slate-400 font-medium">{product.catalog_name}</span>
-            )}
-          </div>
-        </div>
-        {isOpen ? <ChevronUp className="h-3.5 w-3.5 text-slate-400 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 text-slate-400 shrink-0" />}
-      </button>
-      {isOpen && product.colors?.map(color => (
-        <div key={color.id} className="border-t border-slate-100">
-          <div className="px-3 py-2 bg-white text-[11px] font-bold text-slate-600 flex items-center gap-2">
-            {color.color_image ? (
-               <img src={getImageUrl(color.color_image)} alt={color.color_name} className="h-5 w-5 rounded-full object-cover border border-slate-200 shrink-0" />
-            ) : (
-               <span className="h-2 w-2 rounded-full bg-slate-300 inline-block shrink-0" />
-            )}
-            {color.color_name}
-          </div>
-          {color.variants?.map(variant => (
-            <button
-              type="button"
-              key={variant.id}
-              onClick={() => onAddVariant(variant, color.color_name, product.name, variant.size_name || variant.size || 'N/A')}
-              className="w-full flex items-center justify-between px-4 py-2 hover:bg-blue-50 transition-colors text-right border-t border-slate-50"
-            >
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-slate-700 font-medium">
-                  {variant.size_name || variant.size || 'N/A'}
-                </span>
-                {variant.sku && (
-                  <span className="text-[10px] font-mono text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{variant.sku}</span>
-                )}
-                <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                  (variant.quantity_available || 0) > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'
-                }`}>
-                  متاح: {variant.quantity_available ?? 0}
-                </span>
-              </div>
-              <span className="text-[10px] text-[#6b1d2f] font-bold bg-[#6b1d2f]/10 px-2 py-0.5 rounded">+ إضافة</span>
-            </button>
-          ))}
-        </div>
-      ))}
     </div>
   );
 }

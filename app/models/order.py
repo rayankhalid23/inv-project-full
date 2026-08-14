@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Text, DECIMAL, Enum, ForeignKey, JSON, TIMESTAMP, func, Index
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
-from app.core.database import Base
 
 
 class OrderItem(BaseModel):

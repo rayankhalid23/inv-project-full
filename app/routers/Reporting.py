@@ -8,13 +8,13 @@ from app.core.database import get_db
 from app.core.deps import RoleChecker
 from app.services.Reporting import ReportingService # استيراد الكلاس
 from app.services.time_helper import get_report_time_range
-from app.models.inventory import Product, ProductVariant
+from app.models.inventory import Product, ProductVariant, ProductColor
 from app.services.reports_pdf_generator import ReportsPDFGenerator
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
 @router.get("/comprehensive")
-async def get_comprehensive_report(
+def get_comprehensive_report(
     period: str = "1m", 
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2])) 
@@ -93,13 +93,13 @@ def get_performance_analytics(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/export-pdf")
-async def export_comprehensive_report_pdf(
+def export_comprehensive_report_pdf(
     period: str = "7d",
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2]))
 ):
     try:
-        pdf_buffer = await ReportsPDFGenerator.generate_report_pdf(db, period)
+        pdf_buffer = ReportsPDFGenerator.generate_report_pdf(db, period)
         filename = f"Bellagio_Comprehensive_Report_{period}_{datetime.now().strftime('%Y%m%d')}.pdf"
         return StreamingResponse(
             pdf_buffer,

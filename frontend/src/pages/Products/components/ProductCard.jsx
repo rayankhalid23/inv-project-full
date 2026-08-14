@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { MoreVertical, Package, Copy, Check, Download, Edit2, Trash2, Tag, Eye, Loader2, AlertCircle } from 'lucide-react';
 import ProductFormDialog from "./ProductFormDialog";
-import { catalogApi } from "../../../api/catalogApi"; 
+import { catalogApi } from "../../../api/catalogApi";
+import { mediaUrl, onImageError } from "../../../utils/media";
 
 const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, canManage: passedCanManage }) => {
   const [copied, setCopied] = useState(false);
@@ -16,17 +17,11 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, c
   const isManager = passedCanManage !== undefined
     ? passedCanManage
     : Number(JSON.parse(localStorage.getItem('user') || '{}')?.role_id ?? localStorage.getItem('role_id') ?? 3) !== 3;
-  const BASE_URL = 'http://127.0.0.1:8000';
-
-  // دالة مساعدة سريعة لتركيب الرابط وكسر كاش المتصفح فوراً عند الحفظ
-  const getCleanUrl = (urlPath) => {
-    if (!urlPath) return null;
-    if (urlPath.startsWith('http://') || urlPath.startsWith('https://')) return `${urlPath}?t=${new Date().getTime()}`;
-    const cleanedPath = urlPath.startsWith('/') ? urlPath : `/${urlPath}`;
-    return `${BASE_URL}${cleanedPath.replace(/\\/g, '/')}?t=${new Date().getTime()}`;
-  };
-
-  const imageUrl = getCleanUrl(product.main_image);
+  // رابط الصورة من المصدر الموحّد.
+  // أُزيل كسر الكاش (?t=timestamp) الذي كان يُضاف في كل تصيير: أسماء الملفات
+  // مبنية على UUID فلا تتغير محتوياتها أبداً، وأي صورة جديدة تأخذ اسماً جديداً.
+  // وجوده كان يُلغي كاش المتصفح والـ Service Worker ويُعيد تنزيل كل صورة كل مرة.
+  const imageUrl = mediaUrl(product.main_image);
 
   const handleCopy = (e, text) => {
     e.stopPropagation(); 
@@ -145,9 +140,12 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, c
         <div className="flex items-start gap-4">
           <div className="relative flex-shrink-0">
             {product.main_image ? (
-              <img 
-                src={imageUrl} 
-                alt={product.name} 
+              <img
+                src={imageUrl}
+                alt={product.name}
+                loading="lazy"
+                decoding="async"
+                onError={onImageError}
                 className="w-20 h-20 md:w-24 md:h-24 rounded-[1.5rem] object-cover border border-slate-50 shadow-inner"
               />
             ) : (

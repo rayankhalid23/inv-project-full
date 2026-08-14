@@ -32,7 +32,14 @@ def format_ar(text):
 class ReportsPDFGenerator:
 
     @classmethod
-    async def generate_report_pdf(cls, db, period: str) -> io.BytesIO:
+    def generate_report_pdf(cls, db, period: str) -> io.BytesIO:
+        """
+        متزامنة عن قصد: كل ما بداخلها استعلامات قاعدة بيانات ورسم reportlab
+        وتشكيل نص عربي — أي عمل CPU/IO متزامن بالكامل بلا أي await حقيقي.
+        كونها async def سابقاً كان يعني أنها تُنفَّذ على حلقة الأحداث مباشرة
+        فتُجمّد الخادم لكل المستخدمين طوال مدة توليد الـ PDF.
+        الآن يستدعيها المسار كدالة عادية فتعمل في thread pool.
+        """
         from app.services.Reporting import ReportingService
         from app.services.time_helper import get_report_time_range
         from app.services.order_service import (
@@ -53,9 +60,9 @@ class ReportsPDFGenerator:
 
         # 1. جلب البيانات
         inv_stats = get_inventory_dashboard_stats(db, period=period)
-        top_bottom_res = await get_top_and_bottom_inventory_report_logic(db)
+        top_bottom_res = get_top_and_bottom_inventory_report_logic(db)
         top_bottom_data = top_bottom_res.get("data", {}) if top_bottom_res.get("success") else {}
-        products_res = await get_products_with_variants_logic(db)
+        products_res = get_products_with_variants_logic(db)
         products_list = products_res.get("products", []) if products_res.get("success") else []
         emp_stats = ReportingService.get_employee_statistics(db)
         performance_data = ReportingService.get_performance_analytics(db, start_date, end_date)

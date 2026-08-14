@@ -4,9 +4,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 import asyncio
 from fastapi import HTTPException, status
-from app.models.inventory import InventoryMovement, ProductVariant, ProductColor
+from app.models.inventory import InventoryMovement, ProductVariant, ProductColor, Product
 from app.models.user import User
-from app.services.audit_service import create_inventory_log
+from app.services.audit_service import create_inventory_log, create_system_audit_log
 from app.crud.inventory_sync import sync_product_metrics
 
 # =====================================================================
@@ -142,6 +142,175 @@ def record_direct_sale(db: Session, variant_id: int, user_id: int, quantity: int
 
     sync_product_metrics(db, variant.product_id)
     return variant
+
+
+def resolve_variant_by_scan(db: Session, scanned: str, lock: bool = False):
+    """
+    يحوّل أي قيمة ممسوحة إلى المتغير (variant) الصحيح.
+
+    سبب وجودها: بيانات qr_code في قاعدة البيانات غير موحّدة الشكل —
+    معظم الصفوف تخزّن *مسار صورة* الـ QR (/static/uploads/qrcodes/qr_30_x.png)
+    بينما صورة الـ QR المطبوعة تُرمّز نصاً مختلفاً تماماً: "VAR:30|SKU:PRD-123".
+    لذلك كان مسح الملصق المطبوع لا يطابق أي صف إطلاقاً.
+
+    نجرّب بالترتيب: معرف المتغير من نص VAR، ثم تطابق تام، ثم اسم ملف
+    الصورة، ثم كود المنتج (SKU) — فيعمل المسح مع كل الأشكال الموجودة.
+    """
+    import re
+
+    code = (scanned or "").strip()
+    if not code:
+        return None
+
+    # مهم جداً للأداء والتزامن: البحث يتم **بدون** أي قفل.
+    # استخدام with_for_update مع LIKE '%...%' يمنع استعمال الفهرس فيمسح
+    # InnoDB الجدول كاملاً ويقفل كل صفوفه، فتتعطل كل عمليات المسح المتزامنة
+    # حتى تنتهي مهلة القفل (50 ثانية) — وهو سبب تعليق واجهة المبيعات.
+    # بعد تحديد الصف الصحيح نقفله وحده بالمفتاح الأساسي فقط.
+    def _q():
+        return db.query(ProductVariant).filter(ProductVariant.deleted_at.is_(None))
+
+    def _finish(v):
+        if v is None:
+            return None
+        if not lock:
+            return v
+        # قفل صف واحد بالمفتاح الأساسي: سريع ولا يمس بقية الجدول
+        return (db.query(ProductVariant)
+                  .filter(ProductVariant.id == v.id)
+                  .with_for_update()
+                  .first())
+
+    # 1) نص الـ QR المطبوع: VAR:{variant_id}|SKU:{product_code}
+    m = re.match(r"^VAR:(\d+)", code, re.IGNORECASE)
+    if m:
+        v = _q().filter(ProductVariant.id == int(m.group(1))).first()
+        if v:
+            return _finish(v)
+
+    # 2) تطابق تام مع القيمة المخزّنة
+    v = _q().filter(ProductVariant.qr_code == code).first()
+    if v:
+        return _finish(v)
+
+    # 3) مطابقة باسم ملف الصورة (عندما تُمرَّر المسارات)
+    filename = code.replace("\\", "/").split("/")[-1]
+    if filename and filename != code:
+        v = _q().filter(ProductVariant.qr_code.like(f"%{filename}")).first()
+        if v:
+            return _finish(v)
+    if filename:
+        v = _q().filter(ProductVariant.qr_code.like(f"%{filename}%")).first()
+        if v:
+            return _finish(v)
+
+    # 4) كود المنتج (SKU) — سواء جاء وحده أو ضمن نص الـ QR
+    sku = code
+    m2 = re.search(r"SKU:([^|]+)", code, re.IGNORECASE)
+    if m2:
+        sku = m2.group(1).strip()
+    if sku:
+        v = (_q().join(ProductColor, ProductVariant.product_color_id == ProductColor.id)
+                 .join(Product, ProductColor.product_id == Product.id)
+                 .filter(Product.code == sku).first())
+        if v:
+            return _finish(v)
+
+    return None
+
+
+def record_direct_sale_with_order(
+    db: Session,
+    variant_id: int,
+    user_id: int,
+    quantity: int = 1,
+    notes: str = None,
+    customer_phone: str = None,
+):
+    """
+    بيع مباشر عبر الماسح مع إنشاء طلب حقيقي.
+
+    سبب وجودها: record_direct_sale كانت تخصم المخزون وتسجّل حركة فقط بلا أي
+    طلب، ومسار الفاتورة يحتاج order_id — فلم يكن ممكناً إصدار فاتورة لبيع
+    الماسح السريع إطلاقاً. هنا ننشئ طلباً مكتملاً (shipped) بعنصر واحد،
+    فتعمل الفاتورة ويُربط سجل الحركة بالطلب.
+
+    رقم الزبون اختياري تماماً؛ إن لم يُدخل يُحفظ الطلب بقائمة هواتف فارغة.
+    """
+    from app.models.order import Order, OrderItem
+    from decimal import Decimal
+
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="الكمية يجب أن تكون أكبر من صفر")
+
+    variant = db.query(ProductVariant).filter(
+        ProductVariant.id == variant_id
+    ).with_for_update().first()
+    if not variant:
+        raise HTTPException(status_code=404, detail="المتغير غير موجود")
+
+    quantity_before = variant.quantity_available or 0
+    if quantity_before < quantity:
+        raise HTTPException(status_code=400, detail="الكمية المتاحة في المخزن أقل من المراد بيعه")
+
+    product = db.query(Product).filter(Product.id == variant.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="المنتج الرئيسي غير موجود")
+
+    unit_price = Decimal(str(product.selling_price or 0))
+    total_price = unit_price * quantity
+
+    phones = []
+    if customer_phone:
+        cleaned = str(customer_phone).strip()
+        if cleaned:
+            phones = [cleaned]
+
+    # الطلب يُنشأ مباشرة بحالة shipped لأن البضاعة سُلّمت فعلاً في البيع المباشر
+    order = Order(
+        customer_name="زبون بيع مباشر",
+        customer_phones=phones,
+        address="بيع مباشر من المتجر",
+        social_media_source=None,
+        notes=notes or "بيع مباشر عبر الماسح السريع",
+        total_price=total_price,
+        status="shipped",
+        created_by=user_id,
+    )
+    db.add(order)
+    db.flush()
+
+    db.add(OrderItem(
+        order_id=order.id,
+        variant_id=variant.id,
+        product_id=product.id,
+        quantity=quantity,
+        picked_quantity=quantity,   # مسحوب بالكامل — العملية تمت فوراً
+        price_at_order=unit_price,
+    ))
+
+    # تحديث المخزون
+    variant.quantity_available = quantity_before - quantity
+    variant.total_sold = (variant.total_sold or 0) + quantity
+    db.add(variant)
+    db.flush()
+
+    # حركة المخزون مرتبطة بالطلب حتى يظهرا معاً في السجل ويُحذفا معاً لاحقاً
+    create_inventory_log(
+        db=db,
+        variant_id=variant.id,
+        product_id=product.id,
+        user_id=user_id,
+        movement_type='sale',
+        quantity_change=-quantity,
+        quantity_before=quantity_before,
+        quantity_after=variant.quantity_available,
+        related_order_id=order.id,
+        notes=notes or 'بيع مباشر عبر الماسح',
+    )
+
+    sync_product_metrics(db, product.id)
+    return variant, order
 
 
 def record_manual_adjustment(db: Session, variant_id: int, user_id: int, new_total: int, notes: str):

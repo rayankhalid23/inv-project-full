@@ -164,6 +164,8 @@ class MovementResponse(BaseModel):
     message: str
     new_quantity: int
     movement_id: Optional[int] = None
+    # يُملأ في البيع المباشر فقط — تستخدمه الواجهة لعرض زر تحميل الفاتورة
+    order_id: Optional[int] = None
 
 
 class MovementSummary(BaseModel):

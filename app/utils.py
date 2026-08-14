@@ -7,6 +7,7 @@ import logging
 import qrcode
 from PIL import Image
 from fastapi import UploadFile, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.models.inventory import Product
@@ -14,46 +15,79 @@ from app.models.inventory import Product
 # إعداد السجلات (Logging) للمتابعة
 logger = logging.getLogger("BellagioUtils")
 
-# إعداد مسارات التخزين
-BASE_UPLOAD_DIR = "static/uploads"
-DIRS = {
-    "color": os.path.join(BASE_UPLOAD_DIR, "colors"),
-    "product": os.path.join(BASE_UPLOAD_DIR, "products"),
-    "qr": os.path.join(BASE_UPLOAD_DIR, "qrcodes"),
-}
+# إعداد مسارات التخزين — المصدر الوحيد هو app/core/media.py
+from app.core.media import (
+    MEDIA_ROOT as BASE_UPLOAD_DIR,
+    MEDIA_CATEGORIES,
+    build_media_path,
+    ensure_media_dirs,
+    media_dir,
+)
+
+# يبقى DIRS للتوافق مع أي استدعاء قديم، لكنه يُشتق من المصدر الموحّد
+DIRS = {cat: media_dir(cat) for cat in MEDIA_CATEGORIES}
+
 
 def ensure_upload_dirs():
     """التأكد من وجود جميع مجلدات التخزين عند بدء التشغيل"""
-    for path in DIRS.values():
-        os.makedirs(path, exist_ok=True)
+    ensure_media_dirs()
 
 # --- قسم معالجة الصور ---
 
+def _encode_image_sync(contents: bytes, category: str, size: tuple, prefix: str) -> str:
+    """الجزء الثقيل (فك الترميز، التصغير، ترميز WEBP) — يُنفَّذ خارج حلقة الأحداث."""
+    ensure_upload_dirs()
+    img = Image.open(io.BytesIO(contents))
+
+    # تحويل الصور ذات الخلفية الشفافة (PNG) إلى RGB لتجنب مشاكل WEBP
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    # تغيير الحجم مع الحفاظ على التناسب (Thumbnail)
+    img.thumbnail(size, Image.Resampling.LANCZOS)
+
+    filename = f"{prefix}_{uuid.uuid4().hex}.webp"
+    file_path = os.path.join(media_dir(category), filename)
+
+    # حفظ الصورة بصيغة WEBP موفرة للمساحة
+    img.save(file_path, "WEBP", quality=80, optimize=True)
+
+    # المسار القانوني الموحّد (نسبي، بفواصل "/" فقط)
+    return build_media_path(category, filename)
+
+
 async def _process_and_save_image(file: UploadFile, category: str, size: tuple, prefix: str) -> str:
-    """محرك معالجة الصور الموحد: ضغط، تغيير حجم، وتحويل لـ WEBP"""
+    """محرك معالجة الصور الموحد: ضغط، تغيير حجم، وتحويل لـ WEBP.
+
+    القراءة من الشبكة async حقيقية، أما معالجة الصورة فعمل CPU ثقيل كان
+    يُنفَّذ على حلقة الأحداث فيُجمّد الخادم لكل المستخدمين أثناء رفع أي صورة.
+    الآن يُنقل إلى thread pool عبر run_in_threadpool.
+    """
     try:
-        ensure_upload_dirs()
         contents = await file.read()
-        img = Image.open(io.BytesIO(contents))
-        
-        # تحويل الصور ذات الخلفية الشفافة (PNG) إلى RGB لتجنب مشاكل WEBP
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        
-        # تغيير الحجم مع الحفاظ على التناسب (Thumbnail)
-        img.thumbnail(size, Image.Resampling.LANCZOS)
-        
-        filename = f"{prefix}_{uuid.uuid4().hex}.webp"
-        file_path = os.path.join(DIRS[category], filename)
-        
-        # حفظ الصورة بصيغة WEBP موفرة للمساحة
-        img.save(file_path, "WEBP", quality=80, optimize=True)
-        
-        # إرجاع المسار بصيغة URL متوافقة مع الويب
-        return f"/{file_path.replace(os.sep, '/')}"
+        return await run_in_threadpool(_encode_image_sync, contents, category, size, prefix)
     except Exception as e:
         logger.error(f"Image Processing Error ({category}): {e}")
         raise HTTPException(status_code=500, detail="فشل في معالجة وتحويل الصورة")
+
+def save_upload_sync(file: Optional[UploadFile], category: str, size: tuple, prefix: str) -> Optional[str]:
+    """
+    نسخة متزامنة من حفظ الصور، للمسارات المعرَّفة بـ def (تعمل في thread pool).
+
+    تمر بنفس خط المعالجة تماماً (تصغير + تحويل WEBP) وتُرجع المسار القانوني،
+    فلا يبقى مكان يحفظ الملف الخام أو يكتب مسار قرص في قاعدة البيانات.
+    """
+    if not file or not file.filename:
+        return None
+    try:
+        contents = file.file.read()
+        return _encode_image_sync(contents, category, size, prefix)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Image Processing Error ({category}): {e}")
+        raise HTTPException(status_code=500, detail="فشل في معالجة وتحويل الصورة")
+
 
 async def process_and_save_color_image(file: Optional[UploadFile]):
     if not file or not file.filename: return None
@@ -83,8 +117,13 @@ def generate_product_code(db: Session) -> str:
         if not exists:
             return new_code
 
-async def generate_variant_qr(variant_id: int, product_code: str) -> str:
-    """توليد كود QR يحتوي على بيانات الصنف الفريدة"""
+def generate_variant_qr(variant_id: int, product_code: str) -> str:
+    """توليد كود QR يحتوي على بيانات الصنف الفريدة.
+
+    متزامنة عن قصد: لا تحتوي على أي await — مجرد توليد صورة وحفظها على القرص.
+    كونها async def سابقاً كان يجعلها تعمل على حلقة الأحداث وتُجمّد الخادم،
+    خصوصاً أنها تُستدعى داخل حلقة لكل مقاس عند إنشاء المتغيرات دفعة واحدة.
+    """
     ensure_upload_dirs()
     # بيانات الـ QR: معرف النسخة وكود المنتج
     qr_data = f"VAR:{variant_id}|SKU:{product_code}"
@@ -95,7 +134,7 @@ async def generate_variant_qr(variant_id: int, product_code: str) -> str:
     
     img = qr.make_image(fill_color="black", back_color="white")
     file_name = f"qr_{variant_id}_{uuid.uuid4().hex[:6]}.png"
-    file_path = os.path.join(DIRS["qr"], file_name)
-    
+    file_path = os.path.join(media_dir("qr"), file_name)
+
     img.save(file_path)
-    return f"/{file_path.replace(os.sep, '/')}"
+    return build_media_path("qr", file_name)

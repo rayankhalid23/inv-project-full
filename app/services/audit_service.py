@@ -11,13 +11,16 @@ except ImportError:
 
 # --- المحركات المركزية (Core Engines) ---
 
-def create_inventory_log(db: Session, variant_id: int, product_id: int, user_id: int, 
-                         movement_type: str, quantity_change: int, quantity_before: int, 
+def create_inventory_log(db: Session, variant_id: int, product_id: int, user_id: int,
+                         movement_type: str, quantity_change: int, quantity_before: int,
+                         quantity_after: int = None,
                          related_order_id: int = None, damage_reason: str = None, notes: str = None,details=None):
     """
     المحرك الخام لتسجيل أي حركة في المخزون.
+    quantity_after اختياري: إن لم يُمرَّر يُحسب تلقائياً من (before + change).
     """
-    quantity_after = quantity_before + quantity_change
+    if quantity_after is None:
+        quantity_after = quantity_before + quantity_change
     new_movement = InventoryMovement(
         variant_id=variant_id,
         product_id=product_id,

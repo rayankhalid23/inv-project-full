@@ -28,20 +28,22 @@ from app.schemas.inventory import VariantUpdatePartial
 from app.services.qr_service import QRGeneratorService
 from app.services.pdf_generator import generate_catalog_pdf
 from app.crud.inventory_sync import sync_product_metrics
-from app.utils import delete_old_image
+from app.utils import delete_old_image, save_upload_sync
 
 from app.services.audit_service import create_system_audit_log,log_product_data_update
 
 
 router = APIRouter(prefix="/products", tags=["Products"])
-UPLOAD_DIR = "static/uploads/products"
+# مجلد الرفع يُدار مركزياً في app/core/media.py
+from app.core.media import media_dir
+UPLOAD_DIR = media_dir("product")
 
 # التأكد من وجود مجلد الرفع
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_product(
+def create_product(
     background_tasks: BackgroundTasks,
     name: str = Form(...),
     catalog_id: int = Form(...),
@@ -73,16 +75,10 @@ async def create_product(
         image_path = None
         if image_file and image_file.filename:
             try:
-                ext = os.path.splitext(image_file.filename)[1]
-                filename = f"{uuid.uuid4().hex}{ext}"
-
-                disk_image_path = os.path.join(UPLOAD_DIR, filename)
-
-
-                with open(disk_image_path, "wb") as buffer:
-                    shutil.copyfileobj(image_file.file, buffer)
-
-                db_image_path = f"/static/uploads/products/{filename}"
+                # خط المعالجة الموحّد: تصغير + WEBP + مسار قانوني واحد.
+                # كان يُحفظ الملف الخام كما هو (صور هواتف بعدة ميجابايت) ويُبنى
+                # المسار يدوياً، فتباينت أشكال المسارات وثقلت الصفحات.
+                db_image_path = save_upload_sync(image_file, "product", (1200, 1200), "prod")
             except Exception as e:
                 raise HTTPException(status_code=500, detail="حدث خطأ أثناء حفظ صورة المنتج")
 
@@ -125,7 +121,7 @@ async def create_product(
 
 
 @router.put("/{product_id}", status_code=status.HTTP_200_OK)
-async def update_product(
+def update_product(
     product_id: int,
     name: Optional[str] = Form(None),
     catalog_id: Optional[int] = Form(None),
@@ -193,13 +189,8 @@ async def update_product(
         # تحديث الصورة (المكان الذي كان يسبب التكرار)
         if image_file and image_file.filename:
             old_img_path = product.main_image
-            ext = os.path.splitext(image_file.filename)[1]
-            filename = f"{uuid.uuid4().hex}{ext}"
-            saved_path = os.path.join(UPLOAD_DIR, filename)
-            
-            with open(saved_path, "wb") as buffer:
-                shutil.copyfileobj(image_file.file, buffer)
-            
+            # نفس خط المعالجة، ويُخزَّن المسار القانوني لا مسار القرص
+            saved_path = save_upload_sync(image_file, "product", (1200, 1200), "prod")
             product.main_image = saved_path
             has_actual_changes = True
             
@@ -238,7 +229,7 @@ async def update_product(
 
         
 @router.get("/dashboard", response_model=List[ProductDashboardItem])
-async def get_products_dashboard(
+def get_products_dashboard(
     offset: int = Query(0, ge=0, description="عدد العناصر التي تم تخطيها"),
     limit: int = Query(20, ge=1, le=100, description="عدد العناصر المراد جلبها في كل سحبة"),
     search: Optional[str] = Query(None, description="بحث بالاسم أو الكود"),
@@ -482,18 +473,30 @@ def export_all_active_qrs(
 
 
 async def refresh_dashboard_ws():
-    # نفتح جلسة جديدة لأن هذه المهمة تعمل في الخلفية بعد رد السيرفر
-    from app.core.database import SessionLocal 
-    db = SessionLocal()
+    # نتخطى العمل كلياً إن لم يوجد متصل، ونحسب خارج حلقة الأحداث إن وُجد
+    # (الحساب 5 استعلامات ~70 مللي كان يُجمّد الخادم بعد كل تعديل منتج)
+    if not manager.has_connections:
+        return
+
+    from app.core.database import SessionLocal
+    from fastapi.concurrency import run_in_threadpool
+
+    def _compute():
+        db = SessionLocal()
+        try:
+            return get_inventory_dashboard_stats(db)
+        finally:
+            db.close()
+
     try:
-        stats = get_inventory_dashboard_stats(db)
+        stats = await run_in_threadpool(_compute)
         await manager.broadcast(stats)
-    finally:
-        db.close()
+    except Exception as e:
+        print(f"WS refresh error: {e}")
 
 
 @router.get("/{product_id}/details")
-async def get_product_full_details(
+def get_product_full_details(
     product_id: int,
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2, 3])) # الصلاحيات المناسبة

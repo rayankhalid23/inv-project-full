@@ -173,53 +173,91 @@ class ReportingService:
 
     @staticmethod
     def get_employee_audit_report(db: Session, start_date, end_date):
+        """
+        ✅ إصلاح N+1: كانت الدالة تُنفّذ حتى 5 استعلامات لكل موظف داخل حلقة
+        (أي ~250 استعلاماً متتالياً لـ 50 موظفاً في طلب واحد). الآن استعلامان
+        تجميعيان فقط مهما بلغ عدد الموظفين.
+        """
         employees = db.query(User).filter(User.deleted_at == None).all()
-        report_data = []
+        if not employees:
+            return []
 
-        for emp in employees:
-            is_manager = emp.role_id in [1, 2]
-            
-            movements = db.query(
+        emp_ids = [e.id for e in employees]
+
+        # استعلام واحد: الرواجع والتوالف لكل الموظفين دفعة واحدة
+        movement_rows = (
+            db.query(
+                InventoryMovement.user_id.label('uid'),
                 func.sum(case((InventoryMovement.movement_type == 'return', 1), else_=0)).label('returns'),
-                func.sum(case((InventoryMovement.movement_type == 'damage', 1), else_=0)).label('damaged')
-            ).filter(InventoryMovement.user_id == emp.id, 
-                     InventoryMovement.created_at >= start_date, 
-                     InventoryMovement.created_at <= end_date).first()
+                func.sum(case((InventoryMovement.movement_type == 'damage', 1), else_=0)).label('damaged'),
+            )
+            .filter(
+                InventoryMovement.user_id.in_(emp_ids),
+                InventoryMovement.created_at >= start_date,
+                InventoryMovement.created_at <= end_date,
+            )
+            .group_by(InventoryMovement.user_id)
+            .all()
+        )
+        movements_by_user = {r.uid: r for r in movement_rows}
 
-            orders_count = db.query(SystemAuditLog).filter(
-                SystemAuditLog.user_id == emp.id,
+        # عدد الطلبات: مقيّد ببداية ونهاية الفترة (كما في المنطق الأصلي)
+        order_rows = (
+            db.query(SystemAuditLog.user_id.label('uid'), func.count().label('cnt'))
+            .filter(
+                SystemAuditLog.user_id.in_(emp_ids),
                 SystemAuditLog.action_target == "order",
                 SystemAuditLog.created_at >= start_date,
-                SystemAuditLog.created_at <= end_date
-            ).count()
+                SystemAuditLog.created_at <= end_date,
+            )
+            .group_by(SystemAuditLog.user_id)
+            .all()
+        )
+        orders_by_user = {r.uid: int(r.cnt or 0) for r in order_rows}
+
+        # أنشطة الإدارة: مقيّدة ببداية الفترة فقط (مطابقة للمنطق الأصلي عمداً)
+        audit_rows = (
+            db.query(
+                SystemAuditLog.user_id.label('uid'),
+                SystemAuditLog.action_target.label('target'),
+                func.count().label('cnt'),
+            )
+            .filter(
+                SystemAuditLog.user_id.in_(emp_ids),
+                SystemAuditLog.action_target.in_(["catalog", "product", "user"]),
+                SystemAuditLog.created_at >= start_date,
+            )
+            .group_by(SystemAuditLog.user_id, SystemAuditLog.action_target)
+            .all()
+        )
+        audit_by_user = {}
+        for r in audit_rows:
+            audit_by_user.setdefault(r.uid, {})[r.target] = int(r.cnt or 0)
+
+        report_data = []
+        for emp in employees:
+            is_manager = emp.role_id in [1, 2]
+            mv = movements_by_user.get(emp.id)
+            counts = audit_by_user.get(emp.id, {})
 
             stats = {
                 "name": emp.name,
                 "role": "Manager" if is_manager else "Staff",
                 "basic_actions": {
-                    "orders": orders_count,
-                    "returns": int(movements.returns or 0),
-                    "damaged": int(movements.damaged or 0)
-                }
+                    "orders": orders_by_user.get(emp.id, 0),
+                    "returns": int(mv.returns or 0) if mv else 0,
+                    "damaged": int(mv.damaged or 0) if mv else 0,
+                },
             }
 
             if is_manager:
                 stats["management_actions"] = {
-                    "catalogs_managed": db.query(SystemAuditLog).filter(
-                        SystemAuditLog.user_id == emp.id, 
-                        SystemAuditLog.action_target == "catalog", 
-                        SystemAuditLog.created_at >= start_date).count(),
-                    "products_managed": db.query(SystemAuditLog).filter(
-                        SystemAuditLog.user_id == emp.id, 
-                        SystemAuditLog.action_target == "product", 
-                        SystemAuditLog.created_at >= start_date).count(),
-                    "users_managed": db.query(SystemAuditLog).filter(
-                        SystemAuditLog.user_id == emp.id, 
-                        SystemAuditLog.action_target == "user", 
-                        SystemAuditLog.created_at >= start_date).count()
+                    "catalogs_managed": counts.get("catalog", 0),
+                    "products_managed": counts.get("product", 0),
+                    "users_managed": counts.get("user", 0),
                 }
             report_data.append(stats)
-        
+
         return sorted(report_data, key=lambda x: x["basic_actions"]["orders"], reverse=True)
 
     @staticmethod

@@ -26,7 +26,7 @@ const sidebarItems = [
 
 const MainLayout = ({ children }) => {
     const { user, logout } = useAuth();
-    const { promptInstallApp, isAppInstalled } = useOffline();
+    const { promptInstallApp, isAppInstalled, canInstallNatively } = useOffline();
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const location = useLocation();
     const navigate = useNavigate();
@@ -63,7 +63,7 @@ const MainLayout = ({ children }) => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex flex-col font-arabic" dir="rtl">
+    <div className="h-screen bg-[#F8FAFC] flex flex-col font-arabic overflow-hidden" dir="rtl">
       
       {/* 0 — شريط التنبيه عند الأوفلاين والمزامنة */}
       <OfflineBanner />
@@ -87,17 +87,6 @@ const MainLayout = ({ children }) => {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* زر التثبيت السريع في الهيدر */}
-          {!isAppInstalled && (
-            <button
-              onClick={promptInstallApp}
-              className="flex items-center gap-2 bg-[#800000]/10 hover:bg-[#800000] text-[#800000] hover:text-white px-3 py-2 rounded-xl text-xs font-bold transition-all border border-[#800000]/20 active:scale-95 shadow-sm"
-              title="تثبيت تطبيق بيلادجيو كـ تطبيق على جهازك"
-            >
-              <Download className="w-4 h-4" />
-              <span className="hidden sm:inline">تثبيت التطبيق 📲</span>
-            </button>
-          )}
 
           <button 
             onClick={() => navigate('/settings')} 
@@ -119,45 +108,69 @@ const MainLayout = ({ children }) => {
 
       <div className="flex flex-1 overflow-hidden relative">
         {/* 2 — السايدبار (Desktop) */}
-        <aside className="hidden lg:flex flex-col w-72 border-l border-slate-100 bg-white p-6 gap-2 overflow-y-auto">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400 font-black px-4 mb-4 opacity-70">قائمة التحكم</p>
-          <nav className="space-y-1.5 flex-1">
+        <aside className="hidden lg:flex flex-col w-72 border-l border-slate-100 bg-white px-5 py-8 overflow-y-auto">
+
+          {/* عنوان القائمة */}
+          <p className="text-[10px] uppercase tracking-[0.25em] text-slate-400 font-black px-3 mb-5 opacity-60">
+            قائمة التحكم
+          </p>
+
+          {/* روابط التنقل */}
+          <nav className="space-y-1 flex-1">
             {filteredSidebarItems.map((item) => (
               <NavItem key={item.path} item={item} />
             ))}
           </nav>
 
-          {/* زر تثبيت التطبيق في السايدبار إذا لم يكن مجمّعاً كـ PWA */}
-          {!isAppInstalled && (
-            <div className="mt-2 pt-3 border-t border-slate-100">
+          {/* ━━━ القسم السفلي ━━━ */}
+          <div className="mt-6 pt-5 border-t border-slate-100 space-y-2">
+
+            {/* زر تثبيت التطبيق */}
+            {!isAppInstalled && (
               <button
                 onClick={promptInstallApp}
-                className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold text-slate-700 bg-slate-100 hover:bg-[#800000] hover:text-white transition-all shadow-sm active:scale-95"
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl text-xs font-bold transition-all duration-200 active:scale-95 group border
+                  border-slate-200 hover:border-transparent
+                  bg-slate-50 text-slate-600
+                  hover:bg-[#800000] hover:text-white"
               >
-                <Download className="w-4 h-4 text-amber-500" />
-                <span>تحميل التطبيق على الجهاز</span>
+                {canInstallNatively ? (
+                  // beforeinstallprompt متاح → تثبيت فوري بنقرة واحدة
+                  <>
+                    <Download className="w-4 h-4 text-emerald-500 group-hover:text-white transition-colors shrink-0" />
+                    <span className="flex-1 text-right">تثبيت التطبيق فورًا ⚡</span>
+                  </>
+                ) : (
+                  // iOS أو متصفح لا يدعم الـ prompt → يفتح المودال التعليمي
+                  <>
+                    <Download className="w-4 h-4 text-amber-500 group-hover:text-white transition-colors shrink-0" />
+                    <span className="flex-1 text-right">تحميل التطبيق على الجهاز</span>
+                  </>
+                )}
               </button>
-            </div>
-          )}
+            )}
 
-          {/* زر المسح السريع في السايدبار */}
-          <div className="mt-2 pt-2 border-t border-slate-100">
+            {/* زر المسح السريع */}
             <button
               onClick={() => setIsScanSheetOpen(true)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-bold text-white bg-[#800000] hover:bg-[#660000] transition-all shadow-md shadow-[#800000]/20 active:scale-95"
+              className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl text-sm font-bold text-white bg-[#800000] hover:bg-[#660000] transition-all shadow-md shadow-[#800000]/20 active:scale-95"
             >
               <ScanLine className="w-5 h-5" />
               <span>مسح سريع (تالف / راجع / بيع)</span>
             </button>
+
+            {/* زر تسجيل الخروج */}
+            <button
+              onClick={logout}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-bold text-red-500 hover:bg-red-50 transition-colors"
+            >
+              <LogOut className="w-5 h-5" />
+              <span>تسجيل الخروج</span>
+            </button>
           </div>
 
-          <div className="mt-2 pt-4 border-t border-slate-50">
-              <button onClick={logout} className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-bold text-red-500 hover:bg-red-50 transition-colors">
-                <LogOut className="w-5 h-5" />
-                <span>تسجيل الخروج</span>
-              </button>
-          </div>
         </aside>
+
 
 
         {/* 3 — المحتوى الرئيسي */}
@@ -234,10 +247,19 @@ const MainLayout = ({ children }) => {
               {!isAppInstalled && (
                 <button
                   onClick={() => { setMobileMenuOpen(false); promptInstallApp(); }}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold text-slate-800 bg-slate-100 hover:bg-[#800000] hover:text-white transition-all active:scale-95 shadow-sm"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-xs font-bold text-slate-800 bg-slate-100 hover:bg-[#800000] hover:text-white transition-all active:scale-95 shadow-sm group"
                 >
-                  <Download className="w-4 h-4 text-amber-500" />
-                  <span>تثبيت تطبيق بيلادجيو 📲</span>
+                  {canInstallNatively ? (
+                    <>
+                      <Download className="w-4 h-4 text-emerald-500 group-hover:text-white transition-colors" />
+                      <span>تثبيت التطبيق فورًا ⚡</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4 text-amber-500 group-hover:text-white transition-colors" />
+                      <span>تثبيت تطبيق بيلادجيو 📲</span>
+                    </>
+                  )}
                 </button>
               )}
 
