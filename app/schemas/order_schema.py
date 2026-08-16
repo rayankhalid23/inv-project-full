@@ -16,6 +16,14 @@ class OrderCreate(BaseModel):
     social_media_source: Optional[str] = None
     notes: Optional[str] = None
     items: List[OrderItemCreate]
+    
+    # خيارات الشحن
+    shipping_provider: Optional[str] = "custom" # 'custom' | 'darb_assabil'
+    darb_service_id: Optional[str] = None
+    darb_city: Optional[str] = None
+    darb_area: Optional[str] = None
+    darb_payment_by: Optional[str] = "receiver" # 'receiver' | 'sender' | 'sales'
+    delivery_gender: Optional[str] = "رجالي" # 'رجالي' | 'نسائي'
 
 class OrderUpdate(BaseModel):
     customer_name: Optional[str] = None
@@ -26,11 +34,22 @@ class OrderUpdate(BaseModel):
     items: Optional[List[OrderItemCreate]] = None
     delivery_name: Optional[str] = None 
     delivery_type: Optional[str] = None
-
+    shipping_provider: Optional[str] = None
+    tracking_number: Optional[str] = None
+    shipment_id: Optional[str] = None
 
 class DeliveryAssignRequest(BaseModel):
     delivery_name: str
     delivery_type: str
+
+class DarbShipmentCreateRequest(BaseModel):
+    service: Optional[str] = None
+    city: str
+    area: str
+    address: str
+    paymentBy: Optional[str] = "receiver"
+    delivery_gender: Optional[str] = "رجالي"
+    notes: Optional[str] = None
 
 class QRScanRequest(BaseModel):
     qr_code: Optional[str] = None
@@ -51,13 +70,12 @@ class OrderResponse(BaseModel):
     customer_name: str
     total_price: Decimal
     status: str
+    shipping_provider: Optional[str] = "custom"
+    tracking_number: Optional[str] = None
+    shipment_id: Optional[str] = None
+    darb_shipment_warning: Optional[str] = None
     
     model_config = ConfigDict(from_attributes=True)
-
-from pydantic import BaseModel, ConfigDict
-from typing import List, Optional
-from decimal import Decimal
-from datetime import datetime
 
 class OrderItemDetailResponse(BaseModel):
     id: int
@@ -87,6 +105,11 @@ class OrderFullDetailResponse(BaseModel):
     created_by_name: str 
     inventory_employee_name: Optional[str] = None
     delivery_man_name: Optional[str] = None # سيظهر فقط حسب الحالة في الـ Logic
+    
+    # بيانات الشحن ودرب السبيل
+    shipping_provider: Optional[str] = "custom"
+    tracking_number: Optional[str] = None
+    shipment_id: Optional[str] = None
     
     # إحصائيات التجهيز
     total_ordered_qty: int

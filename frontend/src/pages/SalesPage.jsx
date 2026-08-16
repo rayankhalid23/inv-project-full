@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'react-hot-toast';
+import { Html5Qrcode } from 'html5-qrcode';
 import { orderApi, mapStatusToArabic } from '../api/orderApi';
 import {
   // الأيقونات الجديدة للإحصائيات والتنبيهات الحديثة
@@ -10,13 +11,29 @@ import {
   Copy, Check, User, Phone, MapPin, MessageSquare, X, 
   Minus, RefreshCw, Trash2, TrendingUp, ShieldCheck, Download,
   Loader2, ChevronDown, ChevronUp, ShoppingCart, FileText,
-  Hash, BadgeCheck, Info
+  Hash, BadgeCheck, Info, Zap, Send, Sparkles
 } from 'lucide-react';
 
 import { fetchEmployeesApi } from '../api/userApi';
 import { saveOfflineAction } from '../utils/idbStorage';
 import { isNetworkError } from '../utils/netErrors';
 import ProductPicker from '../components/products/ProductPicker';
+
+const playScanBeep = (isSuccess = true) => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = isSuccess ? 'sine' : 'sawtooth';
+    osc.frequency.setValueAtTime(isSuccess ? 880 : 330, ctx.currentTime);
+    gain.gain.setValueAtTime(0.25, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + (isSuccess ? 0.15 : 0.25));
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + (isSuccess ? 0.15 : 0.25));
+  } catch (e) {}
+};
 
 
 
@@ -25,16 +42,18 @@ import ProductPicker from '../components/products/ProductPicker';
 // ========= شارة حالة الطلب =========
 function StatusBadge({ status, className = '' }) {
   const cfg = {
-    'معلق':          'bg-amber-50 text-amber-700 border-amber-200',
-    'قيد التجهيز':  'bg-blue-50 text-blue-700 border-blue-200',
-    'تم التجهيز':   'bg-emerald-50 text-emerald-700 border-emerald-200',
-    'جاري الشحن':   'bg-purple-50 text-purple-700 border-purple-200',
-    'ملغي':         'bg-red-50 text-red-700 border-red-200',
-    'تم التوصيل':   'bg-sky-50 text-sky-700 border-sky-200',
+    'معلق':              'bg-amber-50 text-amber-700 border-amber-200',
+    'قيد التجهيز':      'bg-blue-50 text-blue-700 border-blue-200',
+    'تم التجهيز':       'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'تم اسناده للتوصيل': 'bg-purple-50 text-purple-700 border-purple-200',
+    'جاري الشحن':       'bg-purple-50 text-purple-700 border-purple-200',
+    'ملغي':             'bg-red-50 text-red-700 border-red-200',
+    'تم التوصيل':       'bg-sky-50 text-sky-700 border-sky-200',
   };
+  const displayStatus = status === 'جاري الشحن' ? 'تم اسناده للتوصيل' : status;
   return (
     <span className={`text-[10px] px-2.5 py-0.5 rounded-full border font-bold ${cfg[status] || 'bg-slate-50 text-slate-600 border-slate-200'} ${className}`}>
-      {status}
+      {displayStatus}
     </span>
   );
 }
@@ -42,21 +61,24 @@ function StatusBadge({ status, className = '' }) {
 // ========= أيقونة حالة الطلب =========
 function StatusIcon({ status }) {
   const cls = {
-    'معلق':          'bg-amber-50 text-amber-700 border-amber-100',
-    'قيد التجهيز':  'bg-blue-50 text-blue-700 border-blue-100',
-    'تم التجهيز':   'bg-emerald-50 text-emerald-700 border-emerald-100',
-    'جاري الشحن':   'bg-purple-50 text-purple-700 border-purple-100',
-    'ملغي':         'bg-red-50 text-red-700 border-red-100',
+    'معلق':              'bg-amber-50 text-amber-700 border-amber-100',
+    'قيد التجهيز':      'bg-blue-50 text-blue-700 border-blue-100',
+    'تم التجهيز':       'bg-emerald-50 text-emerald-700 border-emerald-100',
+    'تم اسناده للتوصيل': 'bg-purple-50 text-purple-700 border-purple-100',
+    'جاري الشحن':       'bg-purple-50 text-purple-700 border-purple-100',
+    'ملغي':             'bg-red-50 text-red-700 border-red-100',
+    'تم التوصيل':       'bg-sky-50 text-sky-700 border-sky-100',
   }[status] || 'bg-slate-50 text-slate-500 border-slate-200';
 
   return (
     <div className={`p-2 rounded-xl border shrink-0 ${cls}`}>
-      {status === 'معلق'         && <Clock className="h-5 w-5" />}
-      {status === 'قيد التجهيز' && <Layers className="h-5 w-5" />}
-      {status === 'تم التجهيز'  && <CheckCircle2 className="h-5 w-5" />}
-      {status === 'جاري الشحن'  && <Truck className="h-5 w-5" />}
-      {status === 'ملغي'        && <X className="h-5 w-5" />}
-      {!['معلق','قيد التجهيز','تم التجهيز','جاري الشحن','ملغي'].includes(status) && <Package className="h-5 w-5" />}
+      {status === 'معلق'               && <Clock className="h-5 w-5" />}
+      {status === 'قيد التجهيز'       && <Layers className="h-5 w-5" />}
+      {status === 'تم التجهيز'        && <CheckCircle2 className="h-5 w-5" />}
+      {(status === 'تم اسناده للتوصيل' || status === 'جاري الشحن') && <Truck className="h-5 w-5" />}
+      {status === 'ملغي'              && <X className="h-5 w-5" />}
+      {status === 'تم التوصيل'        && <ShieldCheck className="h-5 w-5" />}
+      {!['معلق','قيد التجهيز','تم التجهيز','تم اسناده للتوصيل','جاري الشحن','ملغي','تم التوصيل'].includes(status) && <Package className="h-5 w-5" />}
     </div>
   );
 }
@@ -97,6 +119,12 @@ export default function SalesPage() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
 
+  // ---- States كاميرا ماسح التجهيز السريع للطلب ----
+  const [scannerCameraStatus, setScannerCameraStatus] = useState('idle'); // idle | loading | active | error
+  const [scannerCameraError, setScannerCameraError]   = useState('');
+  const orderScannerRef        = useRef(null);
+  const orderLastScanTimeRef   = useRef(0);
+
   // ---- States إنشاء الطلب ----
   const [newOrderForm, setNewOrderForm] = useState({
     customer_name: '', 
@@ -110,6 +138,80 @@ export default function SalesPage() {
   const [loadingProducts, setLoadingProducts]     = useState(false);
   const [selectedVariants, setSelectedVariants]   = useState([]); // [{variant_id, quantity, label}]
   const [productSearchQuery, setProductSearchQuery] = useState(''); // بحث في قائمة المنتجات
+
+  // ---- States الشحن وشركة درب السبيل ----
+  const [shippingProvider, setShippingProvider]           = useState('darb_assabil');
+  const [darbServices, setDarbServices]                   = useState([]);
+  const [darbCitiesAreas, setDarbCitiesAreas]             = useState({});
+  const [loadingDarbData, setLoadingDarbData]             = useState(false);
+  const [selectedDarbService, setSelectedDarbService]     = useState('67f19a776dabff22987169e9');
+  const [selectedDarbCity, setSelectedDarbCity]           = useState('طرابلس');
+  const [selectedDarbArea, setSelectedDarbArea]           = useState('');
+  const [selectedDarbPaymentBy, setSelectedDarbPaymentBy] = useState('receiver');
+  const [deliveryGender, setDeliveryGender]               = useState('رجالي'); // 'رجالي' | 'نسائي'
+  const [darbDetailedAddress, setDarbDetailedAddress]     = useState('');
+
+  // States مرحلة إسناد التوصيل
+  const [deliveryAssignMethod, setDeliveryAssignMethod]   = useState('darb_assabil'); // 'darb_assabil' | 'local'
+  const [localDriverName, setLocalDriverName]             = useState('');
+  const [isDarbModalOpen, setIsDarbModalOpen]             = useState(false);
+  const [isSendingDarb, setIsSendingDarb]                 = useState(false);
+
+  // جلب بيانات باقات ومدن درب السبيل عند الحاجة
+  const loadDarbDataIfNeeded = useCallback(async (force = false) => {
+    if (!force && darbServices.length > 0 && Object.keys(darbCitiesAreas).length > 0) return;
+    setLoadingDarbData(true);
+    try {
+      const [services, cities] = await Promise.all([
+        orderApi.getDarbServices(),
+        orderApi.getDarbCitiesAndAreas()
+      ]);
+      const safeServices = Array.isArray(services) && services.length > 0 ? services : [
+        { id: '67f19a776dabff22987169e9', name: 'توصيل عادي (Standard)', description: 'التوصيل خلال 24-48 ساعة', is_default: true },
+        { id: '67f19a776dabff22987169e9', name: 'توصيل سريع (Express)', description: 'التوصيل في نفس اليوم' },
+        { id: '67f19a776dabff22987169e9', name: 'شحن بين المدن (Intercity)', description: 'شحن لجميع المدن' },
+      ];
+      setDarbServices(safeServices);
+      if (safeServices.length > 0) {
+        const defaultSrv = safeServices.find(s => s.is_default) || safeServices[0];
+        setSelectedDarbService(defaultSrv.id || defaultSrv._id || '67f19a776dabff22987169e9');
+      }
+      const safeCities = (cities && Object.keys(cities).length > 0) ? cities : {
+        "طرابلس": ["سوق الجمعة", "تاجوراء", "جنزور", "حي الأندلس", "بن عاشور", "عين زارة", "السراج", "غوط الشعال", "أبو سليم", "صلاح الدين"],
+        "بنغازي": ["الفويهات", "الكيش", "الصابري", "سيدي حسين", "الحدائق", "الماجوري", "الليثي", "طابلينو", "الهواري"],
+        "مصراتة": ["وسط المدينة", "قصر أحمد", "السكت", "الزروق", "الغيران", "طمينة", "يدر", "المحجوب"],
+        "الزاوية": ["وسط المدينة", "الزاوية الجنوبية", "الزاوية الغربية", "جوددائم", "الحرشة"],
+        "زليتن": ["وسط المدينة", "البازة", "الجمعة", "المنارة", "الساحل"],
+        "الخمس": ["وسط المدينة", "سوق الخميس", "كعبار", "سيلين", "لبدة"],
+      };
+      setDarbCitiesAreas(safeCities);
+      const cityKeys = Object.keys(safeCities);
+      if (cityKeys.length > 0) {
+        const initialCity = cityKeys.includes('طرابلس') ? 'طرابلس' : cityKeys[0];
+        setSelectedDarbCity(initialCity);
+        const areas = safeCities[initialCity] || [];
+        if (areas.length > 0) setSelectedDarbArea(areas[0]);
+      }
+    } catch (err) {
+      console.error('Failed to load Darb Assabil data:', err);
+    } finally {
+      setLoadingDarbData(false);
+    }
+  }, [darbServices.length, darbCitiesAreas]);
+
+  const handleDarbCityChange = (newCity) => {
+    setSelectedDarbCity(newCity);
+    const areas = darbCitiesAreas[newCity] || [];
+    if (areas.length > 0) {
+      setSelectedDarbArea(areas[0]);
+    } else {
+      setSelectedDarbArea('');
+    }
+  };
+
+  const availableAreasForSelectedCity = useMemo(() => {
+    return darbCitiesAreas[selectedDarbCity] || [];
+  }, [darbCitiesAreas, selectedDarbCity]);
 
   // 1. دالة لتحديث رقم معين داخل مصفوفة الفورم الأساسي
   const handleNewOrderPhoneChange = (index, value) => {
@@ -131,27 +233,26 @@ export default function SalesPage() {
     }));
   };
 
-  // 4. 🔥 دالة تصفير الفورم بالكامل (تُستدعى عند الإغلاق أو بعد نجاح الحفظ لمنع بقاء الأرقام القديمة)
+  // 4. 🔥 دالة تصفير الفورم بالكامل
   const resetCreateForm = useCallback(() => {
     setNewOrderForm({
       customer_name: '', 
-      customer_phones: [''], // ترجع لأصلها حقل واحد فارغ ونظيف
+      customer_phones: [''],
       address: '',
       social_media_source: '', 
       notes: '', 
       items: [],
     });
-    setSelectedVariants([]); // تصفير المنتجات المختارة
+    setSelectedVariants([]);
+    setShippingProvider('darb_assabil');
+    setDeliveryGender('رجالي');
+    setDarbDetailedAddress('');
   }, []);
 
-  // 5. 🔥 دالة معالجة البيانات وتجهيز الـ Payload المقاوم للأخطاء قبل الإرسال للسيرفر
-  // 🔥 دالة إنشاء الطلب الكاملة والمعدلة لتتوافق مع مصفوفة الأرقام الجديدة وتمنع خطأ الـ trim
- 
-  // ---- States الشحن ----
+  // ---- States الشحن القديم والتعديل ----
   const [deliveryType, setDeliveryType] = useState('');
   const [carrierName, setCarrierName]   = useState('');
 
-  // ---- States التعديل ----
   const [editForm, setEditForm] = useState({
     customer_name: '', customer_phones: '', address: '', notes: '',
   });
@@ -256,8 +357,14 @@ const handleScanProduct = async (barcodeValue) => {
     fetchOrders();
     fetchInventoryStats();
     fetchEmployeesList();
-    // ✅ لا نجلب المنتجات هنا — يتم جلبها عند فتح نموذج الطلب فقط (Lazy Load)
-  }, [fetchOrders, fetchInventoryStats, fetchEmployeesList]);
+    loadDarbDataIfNeeded();
+  }, [fetchOrders, fetchInventoryStats, fetchEmployeesList, loadDarbDataIfNeeded]);
+
+  useEffect(() => {
+    if (isCreateOpen) {
+      loadDarbDataIfNeeded();
+    }
+  }, [isCreateOpen, loadDarbDataIfNeeded]);
 
   const handleCopyToClipboard = (text, message = 'تم النسخ إلى الحافظة') => {
     if (!text) return;
@@ -338,17 +445,17 @@ const handleScanProduct = async (barcodeValue) => {
   };
 
   // ========= مسح QR لتجهيز المنتج =========
-  // ✅ إصلاح: تم حذف getOrderDetails الثاني — نستخدم استجابة scanOrderItem مباشرة (نصف وقت الانتظار)
   const handleBarcodeScan = async (barcodeValue) => {
     if (!selectedOrder || !barcodeValue || !barcodeValue.trim()) return;
     const cleanCode = barcodeValue.trim();
     setIsScanning(true);
     try {
       const result = await orderApi.scanOrderItem(selectedOrder.id, cleanCode);
-      showToast(result?.message || 'تم مسح المنتج بنجاح');
-      setManualBarcode('');
-      const newStatus = result?.status || selectedOrder.status;
+      playScanBeep(true);
+      const arabicStatus = mapStatusToArabic(result?.status) || selectedOrder.status;
       const targetVariantId = result?.variant_id;
+      showToast(result?.message || 'تم مسح وتجهيز الصنف بنجاح', 'success');
+      setManualBarcode('');
 
       // تحديث شاشة تفاصيل الطلب وحالة القطع الممسوحة فوراً في الواجهة
       setSelectedOrder(prev => {
@@ -364,39 +471,38 @@ const handleScanProduct = async (barcodeValue) => {
           ?? items.reduce((s, it) => s + (it.quantity ?? it.qty ?? 0), 0);
         return {
           ...prev,
-          status: newStatus,
+          status: arabicStatus,
           items,
           total_picked_qty: totalPicked,
           progress_percentage: totalOrdered ? (totalPicked / totalOrdered) * 100 : 0,
         };
       });
 
-      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: newStatus } : o));
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: arabicStatus } : o));
     } catch (err) {
-      showToast(typeof err === 'string' ? err : (err?.response?.data?.detail || 'الكود الممسوح لا يطابق أي منتج غير مكتمل في هذا الطلب'), 'error');
+      playScanBeep(false);
+      const msg = typeof err === 'string' ? err : (err?.response?.data?.detail || err?.message || 'الكود الممسوح لا يطابق أي منتج غير مكتمل في هذا الطلب');
+      showToast(msg, 'error');
     } finally {
       setIsScanning(false);
     }
   };
 
   // ========= مسح يدوي لتجهيز المنتج =========
-  // ✅ إصلاح: تم حذف getOrderDetails الثاني — نستخدم استجابة scanOrderItemManual مباشرة
   const handleManualScan = async (variantId) => {
     if (!selectedOrder || !variantId) return;
     setIsScanning(true);
     try {
       const result = await orderApi.scanOrderItemManual(selectedOrder.id, variantId);
-      showToast(result?.message || 'تم التجهيز اليدوي بنجاح');
-      const newStatus = result?.status || selectedOrder.status;
+      playScanBeep(true);
+      const arabicStatus = mapStatusToArabic(result?.status) || selectedOrder.status;
+      showToast(result?.message || 'تم المسح اليدوي وتجهيز القطعة بنجاح', 'success');
 
-      // نحدّث عدّاد القطعة المجهزة محلياً أيضاً، وإلا بقي "تم مسحه 0/2"
-      // كما هو رغم نجاح العملية على السيرفر.
       setSelectedOrder(prev => {
         if (!prev) return prev;
         const items = (prev.items || []).map(it => {
           if (it.variant_id !== variantId) return it;
           const total = it.quantity ?? it.qty ?? 0;
-          // نفضّل الرقم القادم من السيرفر لأنه المرجع الأدق، ونزيد محلياً كاحتياط
           const next = result?.picked_quantity ?? ((it.picked_quantity ?? 0) + 1);
           return { ...it, picked_quantity: total ? Math.min(next, total) : next };
         });
@@ -405,19 +511,71 @@ const handleScanProduct = async (barcodeValue) => {
           ?? items.reduce((s, it) => s + (it.quantity ?? it.qty ?? 0), 0);
         return {
           ...prev,
-          status: newStatus,
+          status: arabicStatus,
           items,
           total_picked_qty: totalPicked,
           progress_percentage: totalOrdered ? (totalPicked / totalOrdered) * 100 : 0,
         };
       });
-      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: newStatus } : o));
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: arabicStatus } : o));
     } catch (err) {
-      showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء التجهيز اليدوي', 'error');
+      playScanBeep(false);
+      const msg = typeof err === 'string' ? err : (err?.response?.data?.detail || err?.message || 'حدث خطأ أثناء التجهيز اليدوي');
+      showToast(msg, 'error');
     } finally {
       setIsScanning(false);
     }
   };
+
+  // ========= إدارة كاميرا الماسح الضوئي داخل الطلب =========
+  const stopOrderScanner = useCallback(async () => {
+    if (orderScannerRef.current) {
+      try {
+        await orderScannerRef.current.stop();
+        orderScannerRef.current.clear();
+      } catch (e) {}
+      orderScannerRef.current = null;
+    }
+    setScannerCameraStatus('idle');
+  }, []);
+
+  const startOrderScanner = useCallback(async () => {
+    setScannerCameraStatus('loading');
+    setScannerCameraError('');
+    try {
+      await stopOrderScanner();
+      const html5QrCode = new Html5Qrcode('order-camera-reader');
+      orderScannerRef.current = html5QrCode;
+      await html5QrCode.start(
+        { facingMode: 'environment' },
+        { fps: 14, qrbox: { width: 220, height: 220 } },
+        (decodedText) => {
+          const now = Date.now();
+          if (now - orderLastScanTimeRef.current > 1200) {
+            orderLastScanTimeRef.current = now;
+            handleBarcodeScan(decodedText);
+          }
+        },
+        () => {}
+      );
+      setScannerCameraStatus('active');
+    } catch (err) {
+      console.warn('Order camera start failed:', err);
+      setScannerCameraStatus('error');
+      setScannerCameraError('تعذر فتح الكاميرا المباشرة. يمكنك استخدام قارئ الباركود أو الإدخال اليدوي.');
+    }
+  }, [stopOrderScanner, handleBarcodeScan]);
+
+  useEffect(() => {
+    if (isScannerOpen) {
+      startOrderScanner();
+    } else {
+      stopOrderScanner();
+    }
+    return () => {
+      stopOrderScanner();
+    };
+  }, [isScannerOpen, startOrderScanner, stopOrderScanner]);
 
   const handleCreateOrder = async (e) => {
     e.preventDefault();
@@ -427,9 +585,10 @@ const handleScanProduct = async (barcodeValue) => {
       ? newOrderForm.customer_phones.map(p => p.trim()).filter(p => p !== '')
       : [];
 
-    // 2. فحص ملء الحقول الإلزامية الأساسية أولاً (الاسم، العنوان، ووجود رقم هاتف رئيسي واحد على الأقل)
-    if (!newOrderForm.customer_name.trim() || !newOrderForm.address.trim() || cleanedPhones.length === 0) {
-      showToast('يرجى ملء جميع الحقول الإلزامية واشتراط رقم هاتف واحد على الأقل', 'error');
+    // 2. فحص ملء الحقول الإلزامية الأساسية (الاسم، العنوان التفصيلي، ورقم هاتف صحيح)
+    const detailedAddr = darbDetailedAddress.trim();
+    if (!newOrderForm.customer_name.trim() || !detailedAddr || cleanedPhones.length === 0) {
+      showToast('يرجى كتابة اسم العميل، وتحديد العنوان التفصيلي، وإدخال رقم هاتف واحد على الأقل', 'error');
       return;
     }
 
@@ -450,14 +609,22 @@ const handleScanProduct = async (barcodeValue) => {
 
     setIsSaving(true);
     try {
-      // 5. بناء الـ Payload النظيف لإرساله إلى السيرفر كمصفوفة
+      // 5. بناء الـ Payload الموحد والمعتمد على معيار درب السبيل
+      const finalAddress = `${selectedDarbCity} - ${selectedDarbArea || 'وسط المدينة'} - ${detailedAddr}`;
+
       const payload = {
         customer_name:       newOrderForm.customer_name.trim(),
-        customer_phones:     cleanedPhones, // تمرير مصفوفة الأرقام النظيفة والمفحوصة بالكامل
-        address:             newOrderForm.address.trim(),
+        customer_phones:     cleanedPhones,
+        address:             finalAddress,
         social_media_source: newOrderForm.social_media_source?.trim() || null,
         notes:               newOrderForm.notes?.trim() || null,
         items:               selectedVariants.map(v => ({ variant_id: v.variant_id, quantity: v.quantity })),
+        shipping_provider:   'darb_assabil',
+        darb_service_id:     selectedDarbService,
+        darb_city:           selectedDarbCity,
+        darb_area:           selectedDarbArea || 'وسط المدينة',
+        darb_payment_by:     selectedDarbPaymentBy || 'receiver',
+        delivery_gender:     deliveryGender || 'رجالي',
       };
 
       if (!navigator.onLine) {
@@ -470,7 +637,6 @@ const handleScanProduct = async (barcodeValue) => {
           created_at: new Date().toISOString(),
           total_price: selectedVariants.reduce((sum, v) => sum + (v.quantity * 0), 0)
         };
-        // ننتظر تأكيد الحفظ فعلياً قبل إخبار المستخدم بأن الطلب محفوظ
         const savedOffline = await saveOfflineAction('CREATE_ORDER', payload, `إنشاء طلب لـ ${payload.customer_name}`);
         if (!savedOffline) {
           showToast('تعذّر حفظ الطلب محلياً! لا تغلق الصفحة وحاول مرة أخرى.', 'error');
@@ -489,12 +655,18 @@ const handleScanProduct = async (barcodeValue) => {
       // 6. تحديث الاستيت المحلية بنجاح
       setOrders(prev => [newOrder, ...prev]);
       setIsCreateOpen(false);
-      
-      // 7. تصفير الحقول وإرجاع مصفوفة الهواتف لحالتها الأصلية النظيفة ['']
       resetCreateForm();
       
       if (typeof fetchInventoryStats === 'function') fetchInventoryStats();
-      showToast(`تم إنشاء الطلب رقم #${newOrder.id} بنجاح`);
+
+      // التنبيه الذكي للمستخدم
+      if (newOrder.darb_shipment_warning) {
+        showToast(`تم حفظ الطلب محلياً (#${newOrder.id}) ولكن تعثر إرساله لدرب السبيل تلقائياً: ${newOrder.darb_shipment_warning}`, 'warning', 8000);
+      } else if (newOrder.tracking_number) {
+        showToast(`تم إنشاء الطلب #${newOrder.id} وتجهيز بوليصة درب السبيل (${newOrder.tracking_number}) بنجاح 🚀`, 'success', 6000);
+      } else {
+        showToast(`تم إنشاء الطلب رقم #${newOrder.id} بنجاح`);
+      }
     } catch (err) {
       if (isNetworkError(err)) {
         const savedOffline = await saveOfflineAction('CREATE_ORDER', {
@@ -519,9 +691,56 @@ const handleScanProduct = async (barcodeValue) => {
         showToast(backendMessage, 'error');
       }
     } finally {
-
-
       setIsSaving(false);
+    }
+  };
+
+  // ========= إرسال شحنة درب السبيل وتغيير الحالة فوراً إلى تم اسناده للتوصيل =========
+  const handleSendSelectedOrderToDarbDirectly = async (e) => {
+    if (e) e.preventDefault();
+    if (!selectedOrder) return;
+    
+    setIsSendingDarb(true);
+    try {
+      const res = await orderApi.createDarbShipment(selectedOrder.id, {
+        service: selectedDarbService || '67f19a776dabff22987169e9',
+        city: selectedDarbCity || 'طرابلس',
+        area: selectedDarbArea || 'وسط المدينة',
+        address: darbDetailedAddress.trim() || selectedOrder.address,
+        paymentBy: selectedDarbPaymentBy || 'receiver',
+        delivery_gender: deliveryGender || 'رجالي',
+        notes: selectedOrder.notes
+      });
+
+      const updatedTracking = res.tracking_number;
+      const updatedShipmentId = res.shipment_id;
+      const msg = res.message || (updatedTracking ? `تم إرسال الشحنة لدرب السبيل برقم تتبع: ${updatedTracking} 🚀` : 'تم إسناد الشحنة لدرب السبيل وتحديث الحالة إلى تم اسناده للتوصيل');
+
+      showToast(msg, res.status === 'warning' ? 'warning' : 'success', 6000);
+
+      setSelectedOrder(prev => ({
+        ...prev,
+        shipping_provider: 'darb_assabil',
+        tracking_number: updatedTracking || prev?.tracking_number,
+        shipment_id: updatedShipmentId || prev?.shipment_id,
+        status: 'تم اسناده للتوصيل',
+        delivery_man_name: updatedTracking ? `درب السبيل (${updatedTracking})` : 'شركة درب السبيل'
+      }));
+
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? {
+        ...o,
+        shipping_provider: 'darb_assabil',
+        tracking_number: updatedTracking || o.tracking_number,
+        shipment_id: updatedShipmentId || o.shipment_id,
+        status: 'تم اسناده للتوصيل',
+        delivery_man_name: updatedTracking ? `درب السبيل (${updatedTracking})` : 'شركة درب السبيل'
+      } : o));
+
+      setIsDarbModalOpen(false);
+    } catch (err) {
+      showToast(typeof err === 'string' ? err : 'تعذر إرسال الشحنة لشركة درب السبيل', 'error');
+    } finally {
+      setIsSendingDarb(false);
     }
   };
 
@@ -601,20 +820,21 @@ const updateVariantQty = (variantId, qty) => {
     }
   };
 
-  // ========= إسناد بيانات التوصيل =========
-  const handleConfirmDelivery = async () => {
-    if (!deliveryType || !carrierName.trim()) {
-      showToast('يرجى اختيار نوع الشحن وإدخال اسم الناقل', 'error');
+  // ========= إسناد سائق توصيل خاص وتحديث الحالة إلى تم اسناده للتوصيل =========
+  const handleAssignLocalDelivery = async () => {
+    if (!selectedOrder) return;
+    if (!localDriverName.trim()) {
+      showToast('يرجى إدخال اسم السائق أو المندوب', 'error');
       return;
     }
     setIsAssigning(true);
     try {
-      const updated = await orderApi.assignDelivery(selectedOrder.id, carrierName.trim(), deliveryType);
-      // ✅ إصلاح BUG-03: تحويل الحالة إلى عربي قبل تخزينها في الحالة
-      const arabicStatus = mapStatusToArabic(updated.status);
-      setSelectedOrder(prev => ({ ...prev, delivery_man_name: carrierName, status: arabicStatus }));
-      setOrders(prev => prev.map(o => o.id === (updated.id || selectedOrder.id) ? { ...o, status: arabicStatus } : o));
-      showToast('تم إسناد بيانات الشحن بنجاح');
+      const updated = await orderApi.assignDelivery(selectedOrder.id, localDriverName.trim(), 'توصيل خاص');
+      const arabicStatus = mapStatusToArabic(updated.status) || 'تم اسناده للتوصيل';
+      setSelectedOrder(prev => ({ ...prev, delivery_man_name: localDriverName.trim(), status: arabicStatus, shipping_provider: 'local' }));
+      setOrders(prev => prev.map(o => o.id === (updated.id || selectedOrder.id) ? { ...o, delivery_man_name: localDriverName.trim(), status: arabicStatus, shipping_provider: 'local' } : o));
+      showToast('تم إسناد السائق وتحديث الحالة إلى "تم اسناده للتوصيل" بنجاح', 'success');
+      setLocalDriverName('');
     } catch (err) {
       showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء إسناد الشحن', 'error');
     } finally {
@@ -769,7 +989,7 @@ const updateVariantQty = (variantId, qty) => {
             {/* زر "الوصول السريع (بيع مباشر)" انتقل إلى زر المسح في الشريط
                 الجانبي ضمن تبويب "بيع" — ليكون كل ما يخص البيع في مكان واحد. */}
             <button
-              onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); }}
+              onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); loadDarbDataIfNeeded(); }}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#800000] text-white hover:bg-[#660000] active:scale-95 transition-all shadow-sm shadow-[#800000]/20"
             >
               <Plus className="h-4 w-4" />
@@ -913,7 +1133,7 @@ const updateVariantQty = (variantId, qty) => {
                 </p>
               </div>
               <button
-                onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); }}
+                onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); loadDarbDataIfNeeded(); }}
                 className="text-xs bg-[#6b1d2f] text-white border border-[#6b1d2f] px-4 py-2 rounded-lg font-bold transition-all hover:bg-[#541624]"
               >
                 إنشاء طلب جديد
@@ -990,14 +1210,14 @@ const updateVariantQty = (variantId, qty) => {
 
             <form onSubmit={handleCreateOrder} className="p-5 space-y-4 overflow-y-auto flex-1 text-right">
 
-            {/* بيانات العميل - إعادة تصميم الهيكلية لتتحمل تمدد الأرقام بسلاسة */}
-            <div className="space-y-4">
+              {/* بيانات العميل الأساسية */}
+              <div className="space-y-4">
                 <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
                   <User className="h-4 w-4 text-[#800000]" />
                   <h3 className="text-xs font-bold text-slate-800">بيانات العميل الأساسية</h3>
                 </div>
 
-                {/* الصف الأول: اسم العميل يأخذ المساحة بالكامل لراحة التوزيع البصري */}
+                {/* اسم العميل */}
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-600 block">اسم العميل بالكامل <span className="text-red-500">*</span></label>
                   <input
@@ -1009,7 +1229,7 @@ const updateVariantQty = (variantId, qty) => {
                   />
                 </div>
 
-                {/* الصف الثاني: حاوية الهاتف مستقلة بذاتها لكي تتمدد للأسفل بحرية دون التأثير على الحقول المجاورة */}
+                {/* أرقام التواصل */}
                 <div className="bg-slate-50/30 border border-slate-200/60 rounded-2xl p-3 space-y-2">
                   <label className="text-xs font-bold text-slate-700 block flex items-center gap-1">
                     أرقام التواصل <span className="text-red-500">*</span>
@@ -1041,7 +1261,7 @@ const updateVariantQty = (variantId, qty) => {
                     </button>
                   </div>
 
-                  {/* الحقول الفرعية تنبثق بشكل طولي فخم دون التأثير على بقية النوافذ */}
+                  {/* الحقول الإضافية */}
                   {newOrderForm.customer_phones.slice(1).map((phone, index) => {
                     const actualIndex = index + 1;
                     return (
@@ -1071,40 +1291,148 @@ const updateVariantQty = (variantId, qty) => {
                   })}
                 </div>
 
-                {/* بقية تفاصيل الشحن والملاحظات منسقة وموحدة بذكاء */}
-                <div className="space-y-3">
+                {/* قسم بيانات الشحن وعنوان التوصيل الموحد */}
+                <div className="space-y-3 bg-slate-50/70 p-3.5 rounded-2xl border border-slate-200/80">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Truck className="h-4 w-4 text-[#800000]" />
+                      بيانات الشحن وعنوان التوصيل <span className="text-red-500">*</span>
+                    </label>
+                  </div>
+
+                  {loadingDarbData ? (
+                    <div className="flex items-center justify-center py-4 bg-white rounded-xl border border-slate-200 gap-2 text-xs text-slate-500">
+                      <Loader2 className="h-4 w-4 animate-spin text-amber-600" />
+                      <span>جاري جلب المدن والمناطق...</span>
+                    </div>
+                  ) : (
+                    <>
+                      {/* المدينة والمنطقة المتسلسلة */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            المدينة <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            value={selectedDarbCity}
+                            onChange={e => handleDarbCityChange(e.target.value)}
+                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                          >
+                            {Object.keys(darbCitiesAreas).map(city => (
+                              <option key={city} value={city}>
+                                {city}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            المنطقة <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            value={selectedDarbArea}
+                            onChange={e => setSelectedDarbArea(e.target.value)}
+                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                          >
+                            {availableAreasForSelectedCity.map(area => (
+                              <option key={area} value={area}>
+                                {area}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* العنوان التفصيلي */}
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold text-slate-700 block">
+                          العنوان التفصيلي (الشارع / أقرب نقطة دالة) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="مثال: بالقرب من جامع الصقع، عمارة 4"
+                          value={darbDetailedAddress}
+                          onChange={e => setDarbDetailedAddress(e.target.value)}
+                          className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800"
+                        />
+                      </div>
+
+                      {/* نوع التوصيل وباقة الخدمة وجهة الدفع */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        {/* نوع التوصيل */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            نوع التوصيل
+                          </label>
+                          <select
+                            value={deliveryGender}
+                            onChange={e => setDeliveryGender(e.target.value)}
+                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                          >
+                            <option value="رجالي">👨 توصيل رجالي</option>
+                            <option value="نسائي">👩 توصيل نسائي</option>
+                          </select>
+                        </div>
+
+                        {/* باقة الخدمة */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            نوع باقة الخدمة
+                          </label>
+                          <select
+                            value={selectedDarbService}
+                            onChange={e => setSelectedDarbService(e.target.value)}
+                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                          >
+                            {darbServices.map(srv => (
+                              <option key={srv.id} value={srv.id}>
+                                {srv.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* جهة دفع الشحن */}
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-bold text-slate-700 block">
+                            جهة دفع الشحن
+                          </label>
+                          <select
+                            value={selectedDarbPaymentBy}
+                            onChange={e => setSelectedDarbPaymentBy(e.target.value)}
+                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800"
+                          >
+                            <option value="receiver">المستلم (الزبون يدفع)</option>
+                            <option value="sender">المرسل (المتجر يدفع)</option>
+                          </select>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-slate-600 block">عنوان التوصيل بالكامل <span className="text-red-500">*</span></label>
+                    <label className="text-xs font-medium text-slate-600 block">اسم حساب العميل على السوشيال ميديا</label>
                     <input
-                      type="text" required
-                      placeholder="المدينة / المنطقة / أقرب نقطة دالة"
-                      value={newOrderForm.address}
-                      onChange={e => setNewOrderForm(p => ({ ...p, address: e.target.value }))}
+                      type="text"
+                      placeholder="رابط الحساب أو اسم المستخدم (يوزر)"
+                      value={newOrderForm.social_media_source}
+                      onChange={e => setNewOrderForm(p => ({ ...p, social_media_source: e.target.value }))}
                       className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-slate-50/50 transition-all focus:bg-white"
                     />
                   </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600 block">اسم حساب العميل على السوشيال ميديا</label>
-                      <input
-                        type="text"
-                        placeholder="رابط الحساب أو اسم المستخدم (يوزر)"
-                        value={newOrderForm.social_media_source}
-                        onChange={e => setNewOrderForm(p => ({ ...p, social_media_source: e.target.value }))}
-                        className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-slate-50/50 transition-all focus:bg-white"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600 block">ملاحظات خاصة بالتوصيل</label>
-                      <input
-                        type="text"
-                        placeholder="توقيت التسليم المفضل، ملاحظة للمندوب..."
-                        value={newOrderForm.notes}
-                        onChange={e => setNewOrderForm(p => ({ ...p, notes: e.target.value }))}
-                        className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-slate-50/50 transition-all focus:bg-white"
-                      />
-                    </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-slate-600 block">ملاحظات خاصة بالطلب والتوصيل</label>
+                    <input
+                      type="text"
+                      placeholder="توقيت التسليم المفضل، ملاحظة للمندوب..."
+                      value={newOrderForm.notes}
+                      onChange={e => setNewOrderForm(p => ({ ...p, notes: e.target.value }))}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-slate-50/50 transition-all focus:bg-white"
+                    />
                   </div>
                 </div>
               </div>
@@ -1322,6 +1650,68 @@ const updateVariantQty = (variantId, qty) => {
                         <span><strong>ملاحظة:</strong> {selectedOrder.notes}</span>
                       </div>
                     )}
+
+                    {/* قسم تفاصيل الشحن وبوليصة درب السبيل */}
+                    <div className="sm:col-span-2 bg-slate-50/80 border border-slate-200/80 rounded-xl p-2.5 space-y-2 mt-1">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                          <Truck className="h-3.5 w-3.5 text-[#800000]" />
+                          <span>طريقة الشحن والتوصيل:</span>
+                          {selectedOrder.shipping_provider === 'darb_assabil' ? (
+                            <span className="bg-amber-100 text-amber-800 text-[10px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 border border-amber-300">
+                              <Zap className="h-3 w-3 text-amber-600" />
+                              شركة درب السبيل
+                            </span>
+                          ) : (
+                            <span className="bg-slate-200 text-slate-700 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                              توصيل محلي / خاص
+                            </span>
+                          )}
+                        </div>
+
+                        {/* زر إسناد لدرب السبيل إذا لم تكن مسندة بعد */}
+                        {!selectedOrder.tracking_number && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              loadDarbDataIfNeeded();
+                              setDarbDetailedAddress(selectedOrder.address || '');
+                              setIsDarbModalOpen(true);
+                            }}
+                            className="flex items-center gap-1 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all active:scale-95 shadow-sm"
+                          >
+                            <Zap className="h-3 w-3" />
+                            <span>إرسال الشحنة لدرب السبيل ⚡</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* رقم التتبع والبوليصة إن وجد */}
+                      {selectedOrder.tracking_number ? (
+                        <div className="flex items-center justify-between bg-white border border-amber-200/80 rounded-lg p-2 text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <BadgeCheck className="h-4 w-4 text-emerald-600" />
+                            <span className="text-slate-600 font-medium">رقم التتبع / البوليصة:</span>
+                            <span className="font-mono font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                              {selectedOrder.tracking_number}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyToClipboard(selectedOrder.tracking_number, 'تم نسخ رقم تتبع الشحنة')}
+                            className="flex items-center gap-1 text-[10px] font-bold text-amber-700 hover:bg-amber-50 px-2 py-1 rounded border border-amber-200 transition-all active:scale-95"
+                          >
+                            <Copy className="h-3 w-3" />
+                            <span>نسخ</span>
+                          </button>
+                        </div>
+                      ) : selectedOrder.shipping_provider === 'darb_assabil' ? (
+                        <div className="text-[11px] text-amber-700 bg-amber-50/70 p-1.5 rounded border border-amber-100 flex items-center gap-1">
+                          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                          <span>الشحنة معلقة أو لم يتم إصدار البوليصة بعد. يمكنك الضغط على الزر أعلاه لإعادة الإرسال.</span>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
                   {/* معلومات الموظفين والوقت */}
@@ -1501,45 +1891,124 @@ const updateVariantQty = (variantId, qty) => {
                   </div>
                 )}
 
-                {/* قسم إسناد الشحن الفوري عند اكتمال التجهيز */}
-                {selectedOrder.status === 'تم التجهيز' && (
-                  <div className="p-4 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-3">
-                    <span className="text-xs font-bold text-emerald-900 flex items-center gap-1">
-                      <Truck className="h-4 w-4 text-emerald-700" />
-                      اكتمل التجهيز! يرجى إسناد جهة الشحن:
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                      <div className="space-y-1">
-                        <label className="font-bold text-slate-700">نوع الشحن</label>
-                        <select
-                          value={deliveryType}
-                          onChange={e => setDeliveryType(e.target.value)}
-                          className="w-full p-2 border border-slate-300 bg-white rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-[#800000]"
-                        >
-                          <option value="">-- اختر --</option>
-                          <option value="شركة توصيل">شركة شحن وتوصيل متعاقدة</option>
-                          <option value="توصيل خاص">مندوب توصيل خاص</option>
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="font-bold text-slate-700">اسم الناقل أو المندوب</label>
-                        <input
-                          type="text"
-                          placeholder="مثال: درب السبيل ..."
-                          value={carrierName}
-                          onChange={e => setCarrierName(e.target.value)}
-                          className="w-full p-2 border border-slate-300 bg-white rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-[#800000]"
-                        />
-                      </div>
+                {/* قسم إسناد الشحن والتوصيل الفوري عند اكتمال التجهيز */}
+                {(selectedOrder.status === 'تم التجهيز' || selectedOrder.status === 'prepared') && (
+                  <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-2xl space-y-3.5 animate-fadeIn">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                        اكتمل تجهيز كافة الأصناف! اختر طريقة إسناد التوصيل:
+                      </span>
+                      <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                        جاهز للإسناد
+                      </span>
                     </div>
-                    <button
-                      onClick={handleConfirmDelivery}
-                      disabled={isAssigning}
-                      className="w-full bg-[#800000] hover:bg-[#660000] text-white font-bold text-xs py-2 rounded-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      {isAssigning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Truck className="h-4 w-4" />}
-                      تأكيد إسناد الشحن
-                    </button>
+
+                    {/* تبديل طريقة الإسناد بين درب السبيل وتوصيل خاص */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDeliveryAssignMethod('darb_assabil')}
+                        className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
+                          deliveryAssignMethod === 'darb_assabil'
+                            ? 'bg-white border-amber-600 text-amber-900 shadow-sm ring-2 ring-amber-500/10'
+                            : 'bg-emerald-100/40 border-emerald-200 text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <span className={`w-2.5 h-2.5 rounded-full border-2 ${deliveryAssignMethod === 'darb_assabil' ? 'border-amber-600 bg-amber-600' : 'border-slate-400'}`} />
+                        <span className="flex items-center gap-1">
+                          <span>شركة درب السبيل</span>
+                          <Zap className="h-3 w-3 text-amber-500" />
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDeliveryAssignMethod('local')}
+                        className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
+                          deliveryAssignMethod === 'local'
+                            ? 'bg-white border-[#800000] text-[#800000] shadow-sm ring-2 ring-[#800000]/10'
+                            : 'bg-emerald-100/40 border-emerald-200 text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        <span className={`w-2.5 h-2.5 rounded-full border-2 ${deliveryAssignMethod === 'local' ? 'border-[#800000] bg-[#800000]' : 'border-slate-400'}`} />
+                        <span>توصيل خاص / محلي</span>
+                      </button>
+                    </div>
+
+                    {/* محتوى خيار درب السبيل */}
+                    {deliveryAssignMethod === 'darb_assabil' && (
+                      <div className="bg-white border border-amber-200 rounded-xl p-3 space-y-3 text-xs">
+                        <div className="flex items-center justify-between text-slate-700 text-[11px]">
+                          <span className="font-medium text-slate-500">عنوان التوصيل المسجل:</span>
+                          <span className="font-bold text-slate-800">{selectedOrder.address || '—'}</span>
+                        </div>
+
+                        {/* تأكيد نوع التوصيل قبل الإرسال لدرب السبيل */}
+                        <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-[11px]">
+                          <span className="font-bold text-slate-600">نوع المندوب / التوصيل:</span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDeliveryGender('رجالي')}
+                              className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                                deliveryGender === 'رجالي'
+                                  ? 'bg-blue-50 text-blue-800 border border-blue-200 shadow-xs'
+                                  : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
+                              }`}
+                            >
+                              👨 رجالي
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeliveryGender('نسائي')}
+                              className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                                deliveryGender === 'نسائي'
+                                  ? 'bg-rose-50 text-rose-800 border border-rose-200 shadow-xs'
+                                  : 'bg-slate-50 text-slate-500 hover:bg-slate-100'
+                              }`}
+                            >
+                              👩 نسائي
+                            </button>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleSendSelectedOrderToDarbDirectly}
+                          disabled={isSendingDarb}
+                          className="w-full bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 shadow-md active:scale-95 disabled:opacity-50"
+                        >
+                          {isSendingDarb ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4 text-amber-200" />}
+                          <span>إرسال الشحنة لشركة درب السبيل وتغيير الحالة فوراً 🚀</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* محتوى خيار التوصيل الخاص / المحلي */}
+                    {deliveryAssignMethod === 'local' && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-3 space-y-2.5 text-xs">
+                        <div className="space-y-1">
+                          <label className="font-bold text-slate-700 block">اسم السائق أو مندوب التوصيل <span className="text-red-500">*</span></label>
+                          <input
+                            type="text"
+                            placeholder="أدخل اسم السائق (مثال: أحمد، مندوب طرابلس...)"
+                            value={localDriverName}
+                            onChange={e => setLocalDriverName(e.target.value)}
+                            className="w-full p-2.5 border border-slate-300 bg-slate-50 focus:bg-white rounded-xl text-xs focus:outline-none focus:border-[#800000] focus:ring-1 focus:ring-[#800000] font-medium"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAssignLocalDelivery}
+                          disabled={isAssigning || !localDriverName.trim()}
+                          className="w-full bg-[#800000] hover:bg-[#660000] text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 shadow-md active:scale-95 disabled:opacity-50"
+                        >
+                          {isAssigning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Truck className="h-4 w-4" />}
+                          <span>حفظ وإسناد للتوصيل</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1582,80 +2051,202 @@ const updateVariantQty = (variantId, qty) => {
 
 
       {/* ======================================================== */}
-      {/* نافذة الماسح الضوئي الفعلي                                */}
+      {/* نافذة ماسح الباركود وQR المباشر لتجهيز الطلب              */}
       {/* ======================================================== */}
-      {isScannerOpen && (
-        <div className="fixed inset-0 bg-black/90 z-[70] flex flex-col items-center justify-center p-4 text-white" dir="rtl">
-          <div className="absolute top-4 right-4 left-4 flex items-center justify-between">
-            <span className="text-xs font-bold tracking-wider text-slate-300 flex items-center gap-2">
-              <ScanLine className="h-4 w-4 text-[#800000]" />
-              ماسح الـ QR والباركود الفعلي للطلب
-            </span>
-            <button onClick={() => setIsScannerOpen(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition-all">
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-          <div className="max-w-md w-full space-y-5 text-center mt-6">
-            {/* مربع المسح الفعلي */}
-            <div className="relative aspect-video w-full bg-slate-900 rounded-2xl border-2 border-slate-700 flex flex-col items-center justify-center overflow-hidden shadow-2xl p-4 space-y-3">
-              <div className="absolute inset-x-0 h-0.5 bg-red-500 shadow-lg shadow-red-500/80 animate-pulse top-1/2" />
-              <ScanLine className="h-10 w-10 text-red-500 animate-pulse mb-1" />
-              <p className="text-xs text-slate-300 font-medium">وجّه كود الـ QR أو الباركود نحو الكاميرا أو أدخل الكود أدناه</p>
-              
-              {/* إدخال مباشر لقارئ الباركود أو اليدوي */}
-              <form onSubmit={(e) => { e.preventDefault(); if (manualBarcode.trim()) { handleBarcodeScan(manualBarcode); setIsScannerOpen(false); } }} className="w-full relative z-10 flex gap-2">
+      {isScannerOpen && selectedOrder && (
+        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[80] flex flex-col items-center justify-center p-3 sm:p-4 text-white font-sans select-none" dir="rtl">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full shadow-2xl flex flex-col max-h-[92vh] overflow-hidden">
+            
+            {/* الهيدر العلوي الأنيق */}
+            <div className="p-4 border-b border-slate-800/80 bg-slate-900/90 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-[#800000] text-white shadow-md">
+                  <ScanLine className="h-5 w-5" />
+                </div>
+                <div className="text-right">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white">ماسح تجهيز الطلب #{selectedOrder.id}</h3>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                      {selectedOrder.customer_name}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">وجّه الكاميرا نحو باركود المنتج أو امسح بالجهاز اليدوي</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsScannerOpen(false)}
+                className="h-8 w-8 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition-all active:scale-95"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4 overflow-y-auto flex-1">
+              {/* شريط تقدم التجهيز العام */}
+              <div className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-slate-300">نسبة اكتمال تجهيز الأصناف</span>
+                  <span className="font-mono font-bold text-amber-400">
+                    <span dir="ltr">
+                      {selectedOrder.total_picked_qty || 0} / {selectedOrder.total_ordered_qty || 0}
+                    </span> قطعة ({Math.round(selectedOrder.progress_percentage || 0)}%)
+                  </span>
+                </div>
+                <div className="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-2 rounded-full transition-all duration-500 ${
+                      (selectedOrder.progress_percentage || 0) >= 100 ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' : 'bg-[#800000]'
+                    }`}
+                    style={{ width: `${Math.min(selectedOrder.progress_percentage || 0, 100)}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* مربع الكاميرا الفعلي المباشر */}
+              <div className="relative h-48 sm:h-52 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-800 shadow-inner">
+                <div id="order-camera-reader" className="w-full h-full object-cover"></div>
+
+                {scannerCameraStatus !== 'active' && (
+                  <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white/80 p-4 text-center z-10">
+                    {scannerCameraStatus === 'loading' ? (
+                      <>
+                        <RefreshCw className="w-7 h-7 animate-spin text-[#800000]" />
+                        <span className="text-xs font-bold text-slate-200">جاري فتح الكاميرا المباشرة...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Camera className="w-7 h-7 text-[#800000] mb-0.5" />
+                        <p className="text-[11px] text-slate-300 font-medium px-2 leading-relaxed max-w-xs">
+                          {scannerCameraError || 'اضغط لتفعيل الكاميرا وقراءة الأكواد تلقائياً.'}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={startOrderScanner}
+                          className="mt-1 px-4 py-2 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>تفعيل الكاميرا 📷</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {scannerCameraStatus === 'active' && (
+                  <>
+                    <div className="absolute inset-x-6 h-0.5 bg-red-500 shadow-lg shadow-red-500/80 animate-pulse top-1/2 rounded-full z-20 pointer-events-none" />
+                    <div className="absolute top-2 right-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold z-20 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      <span>الكاميرا تعمل بنشاط</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* خانة إدخال الباركود اليدوي أو مسدس الباركود */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (manualBarcode.trim()) {
+                    handleBarcodeScan(manualBarcode);
+                  }
+                }}
+                className="flex gap-2"
+              >
                 <input
                   type="text"
                   autoFocus
                   value={manualBarcode}
                   onChange={e => setManualBarcode(e.target.value)}
-                  placeholder="أدخل أو امسح الكود هنا..."
-                  className="flex-1 bg-slate-800 border border-slate-600 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-red-500 text-center font-mono"
+                  placeholder="أدخل الباركود أو امسح بالمسدس ثم اضغط Enter..."
+                  className="flex-1 bg-slate-950 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#800000] focus:ring-1 focus:ring-[#800000] text-center font-mono transition-all"
                 />
-                <button type="submit" disabled={isScanning} className="bg-[#800000] hover:bg-[#660000] text-white px-3 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50">
+                <button
+                  type="submit"
+                  disabled={isScanning || !manualBarcode.trim()}
+                  className="bg-[#800000] hover:bg-[#990000] disabled:opacity-40 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 shrink-0 flex items-center gap-1"
+                >
                   {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : 'مسح'}
                 </button>
               </form>
-            </div>
 
-            {/* قائمة بنود الطلب للمسح المباشر بنقرة */}
-            {selectedOrder?.items && (
+              {/* قائمة بنود الطلب التفاعلية مع أزرار المسح الفوري */}
               <div className="space-y-2 text-right">
-                <span className="text-xs text-slate-300 block font-bold">بنود الطلب المتاحة للمسح والتجهيز:</span>
-                <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                  {selectedOrder.items.map((item, idx) => {
-                    const isDone = (item.picked_quantity ?? 0) >= (item.quantity ?? 1);
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                    <Package className="h-3.5 w-3.5 text-[#800000]" />
+                    بنود الطلب ({selectedOrder.items?.length || 0} أصناف):
+                  </span>
+                </div>
+
+                <div className="max-h-52 overflow-y-auto space-y-1.5 pr-0.5">
+                  {selectedOrder.items && selectedOrder.items.map((item, idx) => {
+                    const picked = item.picked_quantity ?? 0;
+                    const total  = item.quantity ?? item.qty ?? 1;
+                    const isDone = picked >= total;
+
                     return (
                       <div
                         key={idx}
-                        className={`w-full border p-2.5 rounded-xl text-xs transition-all flex items-center justify-between gap-2 ${
-                          isDone ? 'bg-emerald-950/40 border-emerald-800/50 opacity-75' : 'bg-white/10 hover:bg-white/20 border-white/10'
+                        className={`w-full border p-2.5 rounded-xl text-xs transition-all flex items-center justify-between gap-2.5 ${
+                          isDone 
+                            ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-200' 
+                            : 'bg-slate-950/50 border-slate-800 hover:border-slate-700 text-slate-200'
                         }`}
                       >
-                        <div className="text-right flex-1 min-w-0">
-                          <span className="font-bold text-white block truncate">{item.product_name}</span>
-                          <span className="text-[10px] font-mono text-slate-400 block truncate">
-                            {item.color_name && `${item.color_name} - `}{item.size && item.size} | الممسوح: ({item.picked_quantity ?? 0}/{item.quantity ?? 1})
-                          </span>
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <div className={`w-2 h-2 rounded-full shrink-0 ${isDone ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                          <div className="min-w-0 flex-1">
+                            <span className="font-bold block truncate text-slate-100">{item.product_name || item.name}</span>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                              {(item.color_name || item.color) && <span>اللون: {item.color_name || item.color}</span>}
+                              {(item.size || item.size_name) && <span>المقاس: {item.size || item.size_name}</span>}
+                            </div>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          disabled={isDone || isScanning}
-                          onClick={() => { handleBarcodeScan(String(item.variant_id)); }}
-                          className={`text-[10px] px-3 py-1.5 rounded-lg font-bold shrink-0 transition-all ${
-                            isDone 
-                              ? 'bg-emerald-800/50 text-emerald-300 cursor-not-allowed' 
-                              : 'bg-[#800000] hover:bg-[#660000] text-white active:scale-95'
-                          }`}
-                        >
-                          {isDone ? 'مكتمل ✅' : 'مسح وتجهيز'}
-                        </button>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`font-mono text-xs font-bold px-2 py-0.5 rounded-lg border ${
+                            isDone ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-200'
+                          }`} dir="ltr">
+                            {picked} / {total}
+                          </span>
+
+                          <button
+                            type="button"
+                            disabled={isDone || isScanning}
+                            onClick={() => handleManualScan(item.variant_id)}
+                            className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition-all active:scale-95 shadow-sm ${
+                              isDone
+                                ? 'bg-emerald-800/40 text-emerald-300 border border-emerald-700/40 cursor-default'
+                                : 'bg-[#800000] hover:bg-[#990000] text-white'
+                            }`}
+                          >
+                            {isDone ? 'مكتمل ✓' : 'مسح يدوي'}
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
               </div>
-            )}
+            </div>
+
+            {/* الفوتر */}
+            <div className="p-3.5 bg-slate-950/90 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">
+                الحالة الحالية: <strong className="text-white">{selectedOrder.status}</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsScannerOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all"
+              >
+                إغلاق الماسح
+              </button>
+            </div>
+
           </div>
         </div>
       )}
@@ -1721,6 +2312,154 @@ const updateVariantQty = (variantId, qty) => {
                 <button type="submit" disabled={isSaving}
                   className="px-4 py-2 bg-[#6b1d2f] text-white rounded-lg text-xs font-semibold hover:bg-[#541624] ...">
                   {isSaving ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> حفظ...</> : 'حفظ التغييرات'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* نافذة إرسال الشحنة لشركة درب السبيل (Darb Assabil Modal)  */}
+      {/* ======================================================== */}
+      {isDarbModalOpen && selectedOrder && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[75] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full border border-slate-200 shadow-2xl flex flex-col max-h-[90vh]">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-amber-50/50 rounded-t-2xl">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-amber-100 text-amber-800">
+                  <Zap className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900">إرسال الشحنة لشركة درب السبيل</h2>
+                  <p className="text-[11px] text-slate-500">للطلب #{selectedOrder.id} - العميل: {selectedOrder.customer_name}</p>
+                </div>
+              </div>
+              <button onClick={() => setIsDarbModalOpen(false)} className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSendExistingOrderToDarb} className="p-5 space-y-4 overflow-y-auto flex-1 text-right">
+              {loadingDarbData ? (
+                <div className="flex flex-col items-center justify-center py-8 gap-2 text-xs text-slate-500">
+                  <Loader2 className="h-6 w-6 animate-spin text-amber-600" />
+                  <span>جاري تحميل باقات ومدن التوصيل...</span>
+                </div>
+              ) : (
+                <>
+                  {/* باقة الخدمة */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      باقة الخدمة (Service Package) <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={selectedDarbService}
+                      onChange={e => setSelectedDarbService(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800 font-medium"
+                    >
+                      {darbServices.map(srv => (
+                        <option key={srv.id} value={srv.id}>
+                          {srv.name} {srv.description ? `— ${srv.description}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* المدينة والمنطقة المتسلسلة */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        المدينة المدعومة <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={selectedDarbCity}
+                        onChange={e => handleDarbCityChange(e.target.value)}
+                        className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800 font-medium"
+                      >
+                        {Object.keys(darbCitiesAreas).map(city => (
+                          <option key={city} value={city}>
+                            {city}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-700 block">
+                        المنطقة <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={selectedDarbArea}
+                        onChange={e => setSelectedDarbArea(e.target.value)}
+                        className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800 font-medium"
+                      >
+                        {availableAreasForSelectedCity.map(area => (
+                          <option key={area} value={area}>
+                            {area}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* العنوان التفصيلي */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      العنوان التفصيلي (الشارع / أقرب نقطة دالة) <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="مثال: بالقرب من جامع الصقع، عمارة 4"
+                      value={darbDetailedAddress}
+                      onChange={e => setDarbDetailedAddress(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800"
+                    />
+                  </div>
+
+                  {/* جهة دفع الشحن */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      جهة دفع تكلفة الشحن (Payment By)
+                    </label>
+                    <select
+                      value={selectedDarbPaymentBy}
+                      onChange={e => setSelectedDarbPaymentBy(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800"
+                    >
+                      <option value="receiver">المستلم (الزبون يدفع الشحن عند الاستلام - الافتراضي)</option>
+                      <option value="sender">المرسل (المتجر يتحمل تكلفة الشحن)</option>
+                      <option value="sales">المبيعات (مخصوم من إجمالي المبيعات)</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsDarbModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 transition-all"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSendingDarb || loadingDarbData}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-50 flex items-center gap-1.5 shadow-sm active:scale-95"
+                >
+                  {isSendingDarb ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>جاري إرسال الشحنة...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-3.5 w-3.5" />
+                      <span>تأكيد وإصدار بوليصة الشحن</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

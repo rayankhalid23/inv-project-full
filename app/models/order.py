@@ -63,6 +63,9 @@ class Order(BaseModel):
 
     # معلومات الشحن
     delivery_info = Column(String(255), nullable=True)
+    shipping_provider = Column(String(50), nullable=True, default='custom') # 'custom' | 'darb_assabil'
+    tracking_number = Column(String(100), nullable=True)
+    shipment_id = Column(String(100), nullable=True)
     
     # حقول التوقيت (الموجودة في أسفل الصورة)
     created_at = Column(TIMESTAMP, server_default=func.now())

@@ -35,10 +35,56 @@ from app.services.order_service import (
     get_inventory_dashboard_stats,
     OrderInvoiceService,
     get_products_with_variants_logic,
-    get_top_and_bottom_inventory_report_logic
+    get_top_and_bottom_inventory_report_logic,
+    create_darb_shipment_for_order_logic
 )
+from app.services.darb_assabil_service import darb_assabil_service
+from app.schemas.order_schema import DarbShipmentCreateRequest
 
 router = APIRouter(tags=["Orders"])
+
+# ==================== مسارات الربط مع شركة درب السبيل ==================== #
+
+@router.get("/shipping/darb-assabil/services")
+def get_darb_assabil_services(current_user: User = Depends(get_current_user)):
+    """جلب قائمة باقات الخدمة المتاحة من شركة درب السبيل"""
+    return darb_assabil_service.get_services()
+
+
+@router.get("/shipping/darb-assabil/cities")
+def get_darb_assabil_cities(current_user: User = Depends(get_current_user)):
+    """جلب قائمة المدن من درب السبيل"""
+    return darb_assabil_service.get_cities()
+
+
+@router.get("/shipping/darb-assabil/areas")
+def get_darb_assabil_areas(
+    city: Optional[str] = None,
+    city_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """جلب قائمة المناطق لمدينة محددة من درب السبيل"""
+    return darb_assabil_service.get_areas(city=city, city_id=city_id)
+
+
+@router.get("/shipping/darb-assabil/cities-areas")
+def get_darb_assabil_cities_and_areas(current_user: User = Depends(get_current_user)):
+    """جلب قائمة المدن والمناطق المدعومة للتوصيل مع درب السبيل"""
+    return darb_assabil_service.get_cities_and_areas()
+
+
+@router.post("/{order_id}/shipping/darb-assabil/create-shipment")
+def create_darb_assabil_shipment(
+    order_id: int,
+    shipment_data: DarbShipmentCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """إنشاء أو إعادة محاولة إرسال بوليصة الشحن لشركة درب السبيل لطلب محدد"""
+    res = create_darb_shipment_for_order_logic(db=db, order_id=order_id, shipment_data=shipment_data, user_id=current_user.id)
+    background_tasks.add_task(broadcast_inventory_update, SessionLocal, manager)
+    return res
 
 
 async def broadcast_inventory_update(db_session_factory, manager):
@@ -112,9 +158,10 @@ def return_item(
     qr_code: str,
     background_tasks: BackgroundTasks, 
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(get_current_user),
+    note: str = "مرتجع مخزني"
 ):
-    result = standalone_return_logic(db, qr_code, current_user.id)
+    result = standalone_return_logic(db, qr_code, current_user.id, note)
     background_tasks.add_task(sync_dashboard_after_user_change)
     background_tasks.add_task(broadcast_inventory_update, SessionLocal, manager)
     return result

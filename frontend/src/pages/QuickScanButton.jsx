@@ -271,22 +271,21 @@ export default function QuickScanPage({ isOpen, onClose }) {
     let saleResult = null;
     try {
       if (scanType === 'return') {
-        await catalogApi.processScanReturn(scannedProduct.qr_code, targetNote);
+        const retRes = await catalogApi.processScanReturn(scannedProduct.qr_code, targetNote);
+        setIsSubmitting(false);
+        toast.success(retRes?.message || 'تم تسجيل المرتجع بنجاح!');
       } else if (scanType === 'waste') {
-        await catalogApi.processScanDamage(scannedProduct.qr_code, targetNote);
+        const damRes = await catalogApi.processScanDamage(scannedProduct.qr_code, targetNote);
+        setIsSubmitting(false);
+        toast.success(damRes?.message || 'تم تسجيل التالف بنجاح!');
       } else {
         // بيع مباشر — يُنشئ طلباً وفاتورة ويسجّل حركة مخزون
         saleResult = await catalogApi.processScanSale(scannedProduct.qr_code, targetNote, customerPhone || null);
-      }
-
-      setIsSubmitting(false);
-      if (scanType === 'sale') {
+        setIsSubmitting(false);
         const invoiceNo = saleResult?.order_id;
         toast.success(invoiceNo
           ? `تم البيع بنجاح — الفاتورة رقم #${invoiceNo} 🧾`
-          : 'تم البيع وخصمه من المخزون بنجاح!');
-      } else {
-        toast.success(scanType === 'return' ? 'تم تسجيل المرتجع بنجاح!' : 'تم تسجيل التالف بنجاح!');
+          : (saleResult?.message || 'تم البيع وخصمه من المخزون بنجاح!'));
       }
       handleClose();
     } catch (err) {

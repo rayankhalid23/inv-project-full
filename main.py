@@ -2,6 +2,11 @@ import sys
 import os
 import asyncio
 import logging
+from dotenv import load_dotenv
+
+# تحميل متغيرات البيئة من ملف .env في بداية تشغيل التطبيق
+load_dotenv()
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware

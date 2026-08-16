@@ -41,11 +41,12 @@ from bidi.algorithm import get_display
 from .audit_service import log_order_qr_scan, create_order_action_log, log_order_initialization
 from .inventory_movement_service import record_return_to_stock, record_damage_entry
 from app.crud.inventory_sync import sync_product_metrics
+from app.services.darb_assabil_service import darb_assabil_service
 
 # استيراد الموديلات والسكيمات
 from app.models.order import Order, OrderItem, OrderAction
 from app.models.inventory import Product, ProductVariant
-from app.schemas.order_schema import OrderCreate, OrderUpdate, DeliveryAssignRequest
+from app.schemas.order_schema import OrderCreate, OrderUpdate, DeliveryAssignRequest, DarbShipmentCreateRequest
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,11 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
             except:
                 phones = [phones] # تحويلها لقائمة إذا كانت نصاً عادياً
 
-
+        darb_warning = None
+        shipping_prov = order_data.shipping_provider or "custom"
+        tracking_no = None
+        shipment_identifier = None
+        delivery_info_text = None
 
         new_order = Order(
             customer_name=order_data.customer_name,
@@ -140,7 +145,11 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
             notes=order_data.notes,
             total_price=total_order_price,
             created_by=user_id,
-            status='pending'
+            status='pending',
+            shipping_provider=shipping_prov,
+            tracking_number=tracking_no,
+            shipment_id=shipment_identifier,
+            delivery_info=delivery_info_text
         )
 
         db.add(new_order)
@@ -150,12 +159,18 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
             o_item.order_id = new_order.id
             db.add(o_item)
 
-
         for movement in movements_to_add:
             movement.related_order_id = new_order.id
             movement.notes = f"Order #{new_order.id} - Sale"
             db.add(movement)   
 
+        # 5. تجهيز معلومات التوصيل الأولية
+        if shipping_prov == "darb_assabil":
+            delivery_city = order_data.darb_city or ""
+            delivery_area = order_data.darb_area or ""
+            gender_txt = f"[{order_data.delivery_gender}] " if order_data.delivery_gender else ""
+            new_order.delivery_info = f"درب السبيل {gender_txt}({delivery_city} - {delivery_area})".strip()
+            new_order.shipping_provider = "darb_assabil"
 
         log_order_initialization(
             db=db,
@@ -173,6 +188,11 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
         # 7. الحفظ النهائي
         db.commit()
         db.refresh(new_order)
+        
+        # إرفاق التنبيه الذكي بالاستجابة إذا حدث تعثر
+        if darb_warning:
+            setattr(new_order, "darb_shipment_warning", darb_warning)
+            
         return new_order
 
         
@@ -365,49 +385,27 @@ def process_qr_scan_logic(
             ).with_for_update().first()
         elif qr_code and isinstance(qr_code, str):
             clean_qr = qr_code.strip()
-            filename = clean_qr.replace("\\", "/").split("/")[-1]
-            stripped_digits = clean_qr.lstrip("0")
+            # استخدام المحلل الموحد الموثوق والسريع
+            from app.services.inventory_movement_service import resolve_variant_by_scan
+            variant = resolve_variant_by_scan(db, clean_qr, lock=True)
 
-            # أ) فحص مطابقة QR الكود المباشر أو اسم الملف في جدول ProductVariant
-            variant = db.query(ProductVariant).filter(
-                or_(
-                    ProductVariant.qr_code == clean_qr,
-                    ProductVariant.qr_code.like(f"%{filename}")
-                ),
-                ProductVariant.deleted_at.is_(None)
-            ).with_for_update().first()
-
-            # ب) إذا كان المدخل رقماً، فحص المطابقة مع ID المتغير المباشر
-            if not variant and clean_qr.isdigit():
-                variant = db.query(ProductVariant).filter(
-                    ProductVariant.id == int(clean_qr),
-                    ProductVariant.deleted_at.is_(None)
-                ).with_for_update().first()
-
-            # جـ) إذا لم يجد بالـ ID أو الـ QR، يبحث برمز المنتج الأب Product.code
             if not variant:
-                conds = [Product.code == clean_qr, Product.code.like(f"%{clean_qr}%")]
-                if stripped_digits:
-                    conds.append(Product.code.like(f"%{stripped_digits}%"))
-
-                v_candidate = db.query(ProductVariant).join(ProductColor).join(Product).filter(
-                    or_(*conds),
+                # محاولة مطابقة إضافية لرموز الأصناف في هذا الطلب
+                order_item_candidate = db.query(OrderItem).join(ProductVariant).join(Product).filter(
+                    OrderItem.order_id == order_id,
+                    OrderItem.deleted_at.is_(None),
                     ProductVariant.deleted_at.is_(None),
-                    Product.deleted_at.is_(None)
+                    or_(
+                        Product.code == clean_qr,
+                        ProductVariant.qr_code == clean_qr,
+                        ProductVariant.id == (int(clean_qr) if clean_qr.isdigit() else -1)
+                    )
                 ).first()
-                
-                if v_candidate:
-                    # ترجيح المتغير الموجود ضمن بنود هذا الطلب تحديداً
-                    order_match_v = db.query(ProductVariant).join(OrderItem, OrderItem.variant_id == ProductVariant.id).join(ProductColor).join(Product).filter(
-                        OrderItem.order_id == order_id,
-                        or_(*conds),
-                        OrderItem.deleted_at.is_(None),
-                        ProductVariant.deleted_at.is_(None)
-                    ).first()
-                    variant = order_match_v or v_candidate
+                if order_item_candidate:
+                    variant = db.query(ProductVariant).filter(ProductVariant.id == order_item_candidate.variant_id).with_for_update().first()
         
         if not variant:
-            error_msg = f"المنتج غير موجود (ID: {variant_id})" if variant_id else f"الكود الممسوح ({qr_code}) غير مسجل في النظام"
+            error_msg = f"المنتج غير مسجل في النظام (ID: {variant_id})" if variant_id else f"الكود الممسوح ({qr_code}) غير مسجل في النظام"
             raise HTTPException(status_code=404, detail=error_msg)
 
         # 2. التحقق من انتماء المنتج للطلب (أولاً الأصناف التي لم يكتمل سحبها بعد)
@@ -426,7 +424,7 @@ def process_qr_scan_logic(
                 OrderItem.deleted_at.is_(None)
             ).first()
             if already_picked_item:
-                raise HTTPException(status_code=400, detail="تم مسح كافة القطع المطلوبة لهذا المنتج في هذا الطلب")
+                raise HTTPException(status_code=400, detail="تم مسح وتجهيز كافة القطع المطلوبة لهذا المنتج في هذا الطلب مسبقاً")
             else:
                 raise HTTPException(status_code=400, detail="هذا المنتج لا ينتمي لأصناف هذا الطلب")
 
@@ -442,8 +440,8 @@ def process_qr_scan_logic(
             order.status = 'in_preparation'
 
         # 4. التحقق من اكتمال كافة بنود الطلب
-        all_items = db.query(OrderItem).filter(OrderItem.order_id == order_id).all()
-        is_order_complete = all(item.picked_quantity == item.quantity for item in all_items)
+        all_items = db.query(OrderItem).filter(OrderItem.order_id == order_id, OrderItem.deleted_at.is_(None)).all()
+        is_order_complete = all(item.picked_quantity >= item.quantity for item in all_items)
 
         if is_order_complete:
             affected_product_ids = set()
@@ -457,7 +455,7 @@ def process_qr_scan_logic(
             for item in all_items:
                 v = variants_map.get(item.variant_id)
                 if v:
-                    v.quantity_reserved = max(0, v.quantity_reserved - item.quantity)
+                    v.quantity_reserved = max(0, (v.quantity_reserved or 0) - item.quantity)
                     v.total_sold = (v.total_sold or 0) + item.quantity
                     if v.color:
                         affected_product_ids.add(v.color.product_id)
@@ -468,7 +466,19 @@ def process_qr_scan_logic(
                 
             order.status = 'prepared'
 
-        # 5. توثيق عملية المسح
+        # 5. استخراج اسم الصنف بأمان بدون أخطاء Attribute
+        prod_name = "منتج"
+        if order_item.product and getattr(order_item.product, "name", None):
+            prod_name = order_item.product.name
+        elif order_item.variant and order_item.variant.product and getattr(order_item.variant.product, "name", None):
+            prod_name = order_item.variant.product.name
+
+        color_text = order_item.variant.color.color_name if (order_item.variant and order_item.variant.color) else ""
+        size_text = order_item.variant.size.name if (order_item.variant and order_item.variant.size) else ""
+        variant_desc = f"{color_text} - {size_text}".strip(" -")
+        full_item_name = f"{prod_name} ({variant_desc})" if variant_desc else prod_name
+
+        # 6. توثيق عملية المسح
         create_order_action_log(
             db=db,
             order_id=order_id,
@@ -476,46 +486,58 @@ def process_qr_scan_logic(
             action_type="manual_scan" if variant_id else "qr_scan_success",
             details={
                 "variant_id": variant.id, 
+                "product_name": full_item_name,
                 "is_complete": is_order_complete,
-                "picked_qty": order_item.picked_quantity
+                "picked_qty": order_item.picked_quantity,
+                "total_qty": order_item.quantity
             }
         )
         
         db.commit()
         
+        scan_label = "المسح اليدوي لـ" if variant_id else "مسح"
+        if is_order_complete:
+            resp_msg = f"تم {scan_label} قطعة من ({full_item_name}) واكتمل تجهيز الطلب بالكامل! 🚀 ({order_item.picked_quantity}/{order_item.quantity})"
+        else:
+            resp_msg = f"تم {scan_label} قطعة من ({full_item_name}) بنجاح ({order_item.picked_quantity}/{order_item.quantity})"
+
         return {
             "status": order.status, 
             "is_complete": is_order_complete,
-            "message": f"تم مسح قطعة من {order_item.product_name or 'المنتج'} بنجاح ({order_item.picked_quantity}/{order_item.quantity})",
+            "message": resp_msg,
+            "product_name": full_item_name,
             "picked_quantity": order_item.picked_quantity,
             "total_quantity": order_item.quantity,
             "variant_id": variant.id
         }
-        
 
     except Exception as e:
-        db.rollback() # تراجع عن أي شيء في حال فشل أي خطوة
+        db.rollback()
         if isinstance(e, HTTPException):
             raise e
-        raise HTTPException(status_code=500, detail=f"خطأ تقني في المعالجة: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=f"خطأ في معالجة المسح: {str(e)}")
 
 
 def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str = "مرتجع"):
-    """منطق المرتجعات المباشرة للمخزن"""
-    # ✅ محلّل موحّد يدعم نص الـ QR المطبوع (VAR:id|SKU:code) إضافةً للمسار والكود
+    """منطق المرتجعات المباشرة للمخزن عبر رمز QR"""
     from app.services.inventory_movement_service import resolve_variant_by_scan
     variant = resolve_variant_by_scan(db, qr_code, lock=True)
-    if not variant: raise HTTPException(status_code=404, detail="الرمز غير موجود")
+    if not variant:
+        raise HTTPException(status_code=404, detail=f"لم يتم العثور على منتج برمز QR: {qr_code}")
 
-    if variant.total_sold <= 0:
-        raise HTTPException(status_code=400, detail="لا يوجد قطع مبيوعة لإعادة استرجاعها")    
+    if (variant.total_sold or 0) <= 0:
+        raise HTTPException(status_code=400, detail="لا توجد قطع مسجلة كمبيوعة لهذا الصنف لإعادة استرجاعها")    
 
-    q_before = variant.quantity_available
+    q_before = variant.quantity_available or 0
 
-    # ✅ تنفيذ العملية أولاً ثم حساب q_after لضمان صحة سجلات حركات المخزون
     record_return_to_stock(db, variant_id=variant.id, user_id=user_id, quantity=1, notes=note)
     q_after = variant.quantity_available
+
+    prod_name = variant.product.name if variant.product else "المنتج"
+    c_name = variant.color.color_name if variant.color else ""
+    s_name = variant.size.name if variant.size else ""
+    v_desc = f"{c_name} - {s_name}".strip(" -")
+    v_label = f"{prod_name} ({v_desc})" if v_desc else prod_name
 
     create_system_audit_log(
         db=db,
@@ -523,28 +545,39 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
         action_target="inventory_return",
         target_id=variant.id,
         action_type="return",
-        details={"qr_code": qr_code, "note": note}
+        details={"qr_code": qr_code, "note": note, "product_name": v_label, "new_qty": q_after}
     )
 
     db.commit()
-    return {"status": "success", "new_qty": variant.quantity_available}
-   
+    return {
+        "status": "success",
+        "message": f"تم إرجاع قطعة من ({v_label}) إلى المخزن بنجاح 🔄 (الكمية المتاحة الآن: {q_after})",
+        "product_name": v_label,
+        "previous_qty": q_before,
+        "new_qty": q_after
+    }
+
+
 def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "تالف"):
-    # 1. جلب البيانات — محلّل موحّد يدعم كل أشكال الرمز الممسوح
+    """تسجيل إتلاف قطعة عبر رمز QR وخصمها من المخزون"""
     from app.services.inventory_movement_service import resolve_variant_by_scan
     variant = resolve_variant_by_scan(db, qr_code, lock=True)
     if not variant:
-        raise HTTPException(status_code=404, detail="الرمز غير موجود")
+        raise HTTPException(status_code=404, detail=f"لم يتم العثور على منتج برمز QR: {qr_code}")
 
-    if variant.quantity_available <= 0:
-        raise HTTPException(status_code=400, detail="لا توجد كمية متاحة لإتلافها")
+    if (variant.quantity_available or 0) <= 0:
+        raise HTTPException(status_code=400, detail="الكمية المتاحة صفر — لا توجد قطع متاحة بالمخزن لإتلافها")
 
+    q_before = variant.quantity_available or 0
 
-    q_before = variant.quantity_available
-
-    # ✅ إصلاح: تنفيذ عملية الإتلاف أولاً ثم حساب q_after لضمان صحة سجلات حركات المخزون
     record_damage_entry(db, variant.id, user_id, 1, "QR Scan Damage", note)
-    q_after = variant.quantity_available  # الآن بعد الخصم
+    q_after = variant.quantity_available
+
+    prod_name = variant.product.name if variant.product else "المنتج"
+    c_name = variant.color.color_name if variant.color else ""
+    s_name = variant.size.name if variant.size else ""
+    v_desc = f"{c_name} - {s_name}".strip(" -")
+    v_label = f"{prod_name} ({v_desc})" if v_desc else prod_name
 
     create_system_audit_log(
         db=db,
@@ -552,13 +585,18 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
         action_target="inventory_damage",
         target_id=variant.id,
         action_type="damaged_qr",
-        details={"qr_code": qr_code, "note": note}
+        details={"qr_code": qr_code, "note": note, "product_name": v_label, "new_qty": q_after}
     )
 
+    db.commit()
 
-    db.commit() # حفظ كل شيء في القاعدة
-
-    return {"status": "success", "new_qty": variant.quantity_available}
+    return {
+        "status": "success",
+        "message": f"تم تسجيل إتلاف قطعة من ({v_label}) بنجاح ⚠️ (الكمية المتبقية: {q_after})",
+        "product_name": v_label,
+        "previous_qty": q_before,
+        "new_qty": q_after
+    }
 
 def assign_delivery_logic(db: Session, order_id: int, delivery_data: DeliveryAssignRequest, user_id: int):
     """إسناد شركة شحن وتحديث الحالة"""
@@ -587,6 +625,113 @@ def assign_delivery_logic(db: Session, order_id: int, delivery_data: DeliveryAss
         raise HTTPException(status_code=500, detail=f"فشل تحديث قاعدة البيانات: {str(e)}")
         
     return db_order
+
+
+def create_darb_shipment_for_order_logic(db: Session, order_id: int, shipment_data: DarbShipmentCreateRequest, user_id: int):
+    """
+    إنشاء شحنة جديدة لطلب موجود وإرسالها لشركة درب السبيل وتحديث بوليصة الشحن
+    """
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="الطلب غير موجود")
+
+    phones = order.customer_phones
+    if isinstance(phones, str):
+        try:
+            phones = json.loads(phones)
+        except Exception:
+            phones = [phones]
+    phone_to_use = phones[0] if phones and len(phones) > 0 else ""
+
+    darb_products = []
+    for item in order.items:
+        if item.deleted_at is None:
+            v = item.variant
+            color_name = v.color.color_name if v and v.color else ""
+            size_name = v.size.name if v and v.size else ""
+            p_title = f"{item.product.name} ({color_name} - {size_name})".strip() if item.product else "منتج"
+            darb_products.append({
+                "title": p_title,
+                "quantity": item.quantity,
+                "amount": float(item.price_at_order),
+                "currency": "LYD",
+                "isChargeable": True
+            })
+
+    gender_text = f"نوع التوصيل: {shipment_data.delivery_gender}" if shipment_data.delivery_gender else ""
+    raw_notes = shipment_data.notes or order.notes or ""
+    combined_notes = f"{gender_text} | {raw_notes}".strip(" |") if gender_text else raw_notes
+
+    payload = {
+        "service": shipment_data.service,
+        "customer_phone": phone_to_use,
+        "customer_name": order.customer_name,
+        "city": shipment_data.city,
+        "area": shipment_data.area,
+        "address": shipment_data.address or order.address,
+        "paymentBy": shipment_data.paymentBy or "receiver",
+        "delivery_gender": shipment_data.delivery_gender or "رجالي",
+        "products": darb_products,
+        "notes": combined_notes,
+        "order_id": order.id,
+        "total_amount": float(order.total_price)
+    }
+
+    shipment_res = darb_assabil_service.create_local_shipment(payload)
+    if shipment_res.get("success"):
+        order.shipping_provider = "darb_assabil"
+        order.tracking_number = shipment_res.get("tracking_number")
+        order.shipment_id = shipment_res.get("shipment_id")
+        gender_desc = f" ({shipment_data.delivery_gender})" if shipment_data.delivery_gender else ""
+        order.delivery_info = f"درب السبيل{gender_desc} (تتبع: {order.tracking_number})" if order.tracking_number else f"شركة درب السبيل{gender_desc}"
+        order.status = "shipped"
+        create_order_action_log(
+            db=db,
+            order_id=order.id,
+            user_id=user_id,
+            action_type="darb_assabil_shipped",
+            details={
+                "tracking_number": order.tracking_number,
+                "shipment_id": order.shipment_id,
+                "city": shipment_data.city,
+                "area": shipment_data.area
+            }
+        )
+        db.commit()
+        db.refresh(order)
+        return {
+            "status": "success",
+            "message": f"تم إنشاء بوليصة الشحن بنجاح برقم تتبع: {order.tracking_number}",
+            "tracking_number": order.tracking_number,
+            "shipment_id": order.shipment_id,
+            "order_id": order.id
+        }
+    else:
+        err = shipment_res.get("error") or "فشل في إرسال الشحنة لشركة درب السبيل"
+        order.shipping_provider = "darb_assabil"
+        order.delivery_info = f"درب السبيل ({shipment_data.city} - {shipment_data.area})"
+        order.status = "shipped"
+        create_order_action_log(
+            db=db,
+            order_id=order.id,
+            user_id=user_id,
+            action_type="darb_assabil_assigned",
+            details={
+                "warning": err,
+                "city": shipment_data.city,
+                "area": shipment_data.area
+            }
+        )
+        db.commit()
+        db.refresh(order)
+        return {
+            "status": "warning",
+            "message": f"تم إسناد الطلب لشركة درب السبيل وتغيير الحالة إلى 'تم اسناده للتوصيل' ({err})",
+            "tracking_number": None,
+            "shipment_id": None,
+            "order_id": order.id,
+            "warning": err
+        }
    
 
 def delete_order_logic(db: Session, order_id: int, user_id: int):
@@ -1037,7 +1182,11 @@ def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100,
             "progress_status": status_with_progress, # مثال: 4/2
             "employee_name": employee_name,
             "time_ago": get_time_ago_ar(order.created_at),
-            "product_images": product_images # مصفوفة تحتوي على روابط/مسارات الصور
+            "product_images": product_images, # مصفوفة تحتوي على روابط/مسارات الصور
+            "shipping_provider": order.shipping_provider or "custom",
+            "tracking_number": order.tracking_number,
+            "shipment_id": order.shipment_id,
+            "delivery_info": order.delivery_info
         })
 
     return result
@@ -1128,6 +1277,15 @@ def get_order_full_details_logic(db: Session, order_id: int):
             "notes": order.notes
         },
         "personnel": personnel,
+        "shipping": {
+            "provider": order.shipping_provider or "custom",
+            "tracking_number": order.tracking_number,
+            "shipment_id": order.shipment_id,
+            "delivery_info": order.delivery_info
+        },
+        "shipping_provider": order.shipping_provider or "custom",
+        "tracking_number": order.tracking_number,
+        "shipment_id": order.shipment_id,
         "items": items_list,
         "actions": actions_list,
         "summary": {

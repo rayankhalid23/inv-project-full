@@ -7,7 +7,7 @@ export const STATUS_MAP = {
     'pending':        'معلق',
     'in_preparation': 'قيد التجهيز',
     'prepared':       'تم التجهيز',
-    'shipped':         'جاري الشحن', // أو اتركها 'تم اسناده للتوصيل' حسب رغبتك في التصميم، المهم تثبيتها
+    'shipped':        'تم اسناده للتوصيل',
     'delivered':      'تم التوصيل',
     'cancelled':      'ملغي',
     'returned':       'مرتجع بالكامل',
@@ -412,6 +412,86 @@ export const orderApi = {
         } catch (error) {
             console.error('Error purging completed orders:', error.response?.data || error.message);
             throw error.response?.data?.detail || 'تعذّر حذف الطلبات المكتملة.';
+        }
+    },
+
+    // ==================== دوال الربط مع شركة درب السبيل ==================== //
+
+    /**
+     * جلب قائمة باقات الخدمة المتاحة من شركة درب السبيل
+     */
+    getDarbServices: async () => {
+        try {
+            const response = await api.get('/orders/shipping/darb-assabil/services');
+            return Array.isArray(response.data) ? response.data : [];
+        } catch (error) {
+            console.error('Error fetching Darb Assabil services:', error.response?.data || error.message);
+            return [
+                { id: '67f19a776dabff22987169e9', name: 'توصيل عادي (Standard)', description: 'توصيل خلال 24-48 ساعة' },
+                { id: '67f19a776dabff22987169e9', name: 'توصيل سريع (Express)', description: 'توصيل في نفس اليوم' },
+                { id: '67f19a776dabff22987169e9', name: 'شحن بين المدن (Intercity)', description: 'شحن لجميع المدن' },
+            ];
+        }
+    },
+
+    /**
+     * جلب قائمة المدن من شركة درب السبيل
+     */
+    getDarbCities: async () => {
+        try {
+            const response = await api.get('/orders/shipping/darb-assabil/cities');
+            return Array.isArray(response.data) ? response.data : [];
+        } catch (error) {
+            console.error('Error fetching Darb Assabil cities:', error.response?.data || error.message);
+            return [];
+        }
+    },
+
+    /**
+     * جلب قائمة المناطق لمدينة محددة من شركة درب السبيل
+     */
+    getDarbAreas: async (city) => {
+        try {
+            const response = await api.get('/orders/shipping/darb-assabil/areas', { params: { city } });
+            return Array.isArray(response.data) ? response.data : [];
+        } catch (error) {
+            console.error('Error fetching Darb Assabil areas:', error.response?.data || error.message);
+            return [];
+        }
+    },
+
+    /**
+     * جلب قائمة المدن والمناطق المدعومة من شركة درب السبيل
+     */
+    getDarbCitiesAndAreas: async () => {
+        try {
+            const response = await api.get('/orders/shipping/darb-assabil/cities-areas');
+            return response.data || {};
+        } catch (error) {
+            console.error('Error fetching Darb Assabil cities and areas:', error.response?.data || error.message);
+            return {
+                "طرابلس": ["سوق الجمعة", "تاجوراء", "جنزور", "حي الأندلس", "بن عاشور", "عين زارة", "السراج", "غوط الشعال", "أبو سليم", "صلاح الدين"],
+                "بنغازي": ["الفويهات", "الكيش", "الصابري", "سيدي حسين", "الحدائق", "الماجوري", "الليثي", "طابلينو", "الهواري"],
+                "مصراتة": ["وسط المدينة", "قصر أحمد", "السكت", "الزروق", "الغيران", "طمينة", "يدر", "المحجوب"],
+                "الزاوية": ["وسط المدينة", "الزاوية الجنوبية", "الزاوية الغربية", "جوددائم", "الحرشة"],
+                "زليتن": ["وسط المدينة", "البازة", "الجمعة", "المنارة", "الساحل"],
+                "الخمس": ["وسط المدينة", "سوق الخميس", "كعبار", "سيلين", "لبدة"],
+            };
+        }
+    },
+
+    /**
+     * إنشاء أو إعادة إرسال بوليصة الشحن لشركة درب السبيل لطلب محدد
+     * @param {number} orderId
+     * @param {object} shipmentData - { service, city, area, address, paymentBy, notes }
+     */
+    createDarbShipment: async (orderId, shipmentData) => {
+        try {
+            const response = await api.post(`/orders/${orderId}/shipping/darb-assabil/create-shipment`, shipmentData);
+            return response.data;
+        } catch (error) {
+            console.error('Error creating Darb Assabil shipment:', error.response?.data || error.message);
+            throw error.response?.data?.detail || 'تعذّر إرسال الشحنة لشركة درب السبيل.';
         }
     },
 };
