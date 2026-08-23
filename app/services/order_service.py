@@ -1,22 +1,14 @@
 from decimal import Decimal
 import traceback
-from app.core.websocket_manager import manager
-from app.services.audit_service import create_system_audit_log
-from typing import Optional
-from sqlalchemy import func, case, and_
-from sqlalchemy import or_, and_, func
-from app.models.inventory import InventoryMovement
+from typing import Optional, List, Dict, Tuple
+from sqlalchemy import func, case, and_, or_, String, Integer, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, joinedload, selectinload
 from fastapi.responses import StreamingResponse
 import asyncio
-from sqlalchemy.orm import Session
-from sqlalchemy import func, case, and_, or_
-from app.core.websocket_manager import ConnectionManager
-import asyncio
-from sqlalchemy.orm import joinedload
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from app.models.inventory import Product, ProductVariant, ProductColor, Size, Catalog
+from app.core.websocket_manager import manager, ConnectionManager
+from app.services.audit_service import create_system_audit_log
+from app.models.inventory import InventoryMovement, Product, ProductVariant, ProductColor, Size, Catalog
 from app.models.order import Order, OrderItem, OrderAction
 from app.models.user import User
 import json
@@ -108,7 +100,9 @@ def create_new_order_logic(db: Session, order_data: OrderCreate, user_id: int):
                 variant_id=variant.id,
                 product_id=product.id,
                 quantity=item.quantity,
-                price_at_order=current_price
+                price_at_order=current_price,
+                allow_inspection=getattr(item, 'allow_inspection', False),
+                allow_try_on=getattr(item, 'allow_try_on', False),
             ))
 
 
@@ -470,8 +464,8 @@ def process_qr_scan_logic(
         prod_name = "منتج"
         if order_item.product and getattr(order_item.product, "name", None):
             prod_name = order_item.product.name
-        elif order_item.variant and order_item.variant.product and getattr(order_item.variant.product, "name", None):
-            prod_name = order_item.variant.product.name
+        elif order_item.variant and order_item.variant.color and getattr(order_item.variant.color, "product", None):
+            prod_name = order_item.variant.color.product.name
 
         color_text = order_item.variant.color.color_name if (order_item.variant and order_item.variant.color) else ""
         size_text = order_item.variant.size.name if (order_item.variant and order_item.variant.size) else ""
@@ -532,10 +526,10 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
 
     record_return_to_stock(db, variant_id=variant.id, user_id=user_id, quantity=1, notes=note)
     q_after = variant.quantity_available
-
-    prod_name = variant.product.name if variant.product else "المنتج"
-    c_name = variant.color.color_name if variant.color else ""
-    s_name = variant.size.name if variant.size else ""
+    prod_obj = db.query(Product).filter(Product.id == variant.product_id).first()
+    prod_name = prod_obj.name if prod_obj else "المنتج"
+    c_name = variant.color.color_name if (variant.color and hasattr(variant.color, 'color_name')) else ""
+    s_name = variant.size.name if (variant.size and hasattr(variant.size, 'name')) else ""
     v_desc = f"{c_name} - {s_name}".strip(" -")
     v_label = f"{prod_name} ({v_desc})" if v_desc else prod_name
 
@@ -573,9 +567,10 @@ def process_damage_logic(db: Session, qr_code: str, user_id: int, note: str = "�
     record_damage_entry(db, variant.id, user_id, 1, "QR Scan Damage", note)
     q_after = variant.quantity_available
 
-    prod_name = variant.product.name if variant.product else "المنتج"
-    c_name = variant.color.color_name if variant.color else ""
-    s_name = variant.size.name if variant.size else ""
+    prod_obj = db.query(Product).filter(Product.id == variant.product_id).first()
+    prod_name = prod_obj.name if prod_obj else "المنتج"
+    c_name = variant.color.color_name if (variant.color and hasattr(variant.color, 'color_name')) else ""
+    s_name = variant.size.name if (variant.size and hasattr(variant.size, 'name')) else ""
     v_desc = f"{c_name} - {s_name}".strip(" -")
     v_label = f"{prod_name} ({v_desc})" if v_desc else prod_name
 
@@ -654,8 +649,8 @@ def create_darb_shipment_for_order_logic(db: Session, order_id: int, shipment_da
                 "title": p_title,
                 "quantity": item.quantity,
                 "amount": float(item.price_at_order),
-                "currency": "LYD",
-                "isChargeable": True
+                "currency": "lyd",
+                "isChargeable": True,
             })
 
     gender_text = f"نوع التوصيل: {shipment_data.delivery_gender}" if shipment_data.delivery_gender else ""
@@ -754,6 +749,13 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
 
     if not db_order:
         raise HTTPException(status_code=404, detail="الطلب غير موجود أو تم حذفه مسبقاً")
+
+    # منع إلغاء الطلب إذا كان في حالة تم الإسناد للتوصيل
+    if db_order.status in ('shipped', 'تم اسناده للتوصيل', 'جاري الشحن', 'delivered', 'تم التوصيل'):
+        raise HTTPException(
+            status_code=400,
+            detail="لا يمكن إلغاء الطلب لأنه في حالة 'تم الإسناد للتوصيل' بالفعل"
+        )
 
     try:
         affected_product_ids = set()

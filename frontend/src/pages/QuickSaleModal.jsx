@@ -7,6 +7,8 @@ import { orderApi } from '../api/orderApi';
 import { toast } from 'react-hot-toast';
 import { Html5Qrcode } from 'html5-qrcode';
 import ProductPicker from '../components/products/ProductPicker';
+import { saveOfflineAction } from '../utils/idbStorage';
+import { isNetworkError } from '../utils/netErrors';
 
 // دالة نغمة المسح المباشر الفوري عند التقاط الكود أمام الكاميرا
 const playScanBeep = () => {
@@ -43,10 +45,14 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
   const [cameraError, setCameraError] = useState('');
   const [cameraLoading, setCameraLoading] = useState(false);
   const [lastScanned, setLastScanned] = useState(null);
+  const [scanCooldown, setScanCooldown] = useState(false);
+  const [lastScannedFeedback, setLastScannedFeedback] = useState('');
 
   const barcodeInputRef = useRef(null);
   const html5QrCodeRef = useRef(null);
   const lastScanTimeRef = useRef(0);
+  const isProcessingScanRef = useRef(false);
+  const scanCooldownRef = useRef(false);
 
   // تصفية وتجميع المتغيرات المتاحة مع بيانات المنتجات الأب
   const allVariantsList = useRef([]);
@@ -166,10 +172,13 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
     if (matched) {
       playScanBeep();
       setLastScanned(matched);
+      setLastScannedFeedback(`تمت إضافة: ${matched.product_name || 'المنتج'}`);
       handleAddVariant(matched, 1);
       setTimeout(() => setLastScanned(null), 1000);
     } else {
-      toast.error(`الكود الممسوح (${code}) غير مسجل بالأصناف المتاحة`);
+      const notFoundMsg = `الكود الممسوح (${code}) غير مسجل بالأصناف المتاحة`;
+      setLastScannedFeedback(notFoundMsg);
+      toast.error(notFoundMsg);
     }
   }, [handleAddVariant]);
 
@@ -196,18 +205,30 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
       const html5QrCode = new Html5Qrcode("quick-sale-camera-reader");
       html5QrCodeRef.current = html5QrCode;
 
-      const cameraConfig = { fps: 12, qrbox: { width: 220, height: 220 } };
+      const cameraConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
 
       await html5QrCode.start(
         { facingMode: "environment" },
         cameraConfig,
         (decodedText) => {
+          if (!decodedText || isProcessingScanRef.current || scanCooldownRef.current) return;
           const now = Date.now();
-          // خافض تسارع (Throttle): منع التكرار المفرط لنفس الكود خلال 1.2 ثانية
-          if (now - lastScanTimeRef.current > 1200) {
-            lastScanTimeRef.current = now;
-            handleProcessCode(decodedText);
-          }
+          if (now - lastScanTimeRef.current < 1800) return;
+
+          lastScanTimeRef.current = now;
+          isProcessingScanRef.current = true;
+          scanCooldownRef.current = true;
+          setScanCooldown(true);
+          setLastScannedFeedback('جاري معالجة الكود...');
+
+          handleProcessCode(decodedText);
+
+          setTimeout(() => {
+            isProcessingScanRef.current = false;
+            scanCooldownRef.current = false;
+            setScanCooldown(false);
+            setLastScannedFeedback('');
+          }, 1600);
         },
         () => {
           // parse error on frame - normal behaviour
@@ -235,6 +256,10 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
       }
       html5QrCodeRef.current = null;
     }
+    isProcessingScanRef.current = false;
+    scanCooldownRef.current = false;
+    setScanCooldown(false);
+    setLastScannedFeedback('');
     setIsCameraActive(false);
   }, []);
 
@@ -300,24 +325,61 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
       return;
     }
 
-    setIsSubmitting(true);
-    try {
-      const payload = {
-        customer_name: customerName.trim(),
-        customer_phone: customerPhone.trim() || null,
-        items: selectedItems.map(item => ({
-          variant_id: item.variant_id,
-          quantity: item.quantity
-        }))
-      };
+    const payload = {
+      customer_name: customerName.trim(),
+      customer_phone: customerPhone.trim() || null,
+      items: selectedItems.map(item => ({
+        variant_id: item.variant_id,
+        quantity: item.quantity
+      }))
+    };
 
+    setIsSubmitting(true);
+
+    // دعم الأوفلاين: حفظ البيع السريع محلياً وإظهار شاشة نجاح وهمية
+    if (!navigator.onLine) {
+      const saved = await saveOfflineAction(
+        'QUICK_SALE',
+        payload,
+        `بيع سريع لـ ${payload.customer_name} (${selectedItems.length} صنف)`
+      );
+      setIsSubmitting(false);
+      if (!saved) {
+        toast.error('تعذّر حفظ البيع محلياً! حاول مرة أخرى 📡');
+        return;
+      }
+      // عرض شاشة نجاح محلية دون رقم فاتورة حقيقي
+      setCompletedOrder({ offline: true, customer_name: payload.customer_name });
+      setStep(3);
+      toast.success('أوفلاين: تم حفظ البيع محلياً! سيُزامن تلقائياً عند الاتصال 📡', { duration: 5000 });
+      if (onSaleComplete) onSaleComplete();
+      return;
+    }
+
+    try {
       const result = await orderApi.quickSale(payload);
       setCompletedOrder(result);
       setStep(3);
       toast.success('تمت عملية البيع ونقل المنتجات إلى المباع فوراً! 🎉');
       if (onSaleComplete) onSaleComplete();
     } catch (err) {
-      toast.error(typeof err === 'string' ? err : (err.message || 'فشلت عملية البيع'));
+      if (isNetworkError(err)) {
+        const saved = await saveOfflineAction(
+          'QUICK_SALE',
+          payload,
+          `بيع سريع لـ ${payload.customer_name} (${selectedItems.length} صنف)`
+        );
+        if (saved) {
+          setCompletedOrder({ offline: true, customer_name: payload.customer_name });
+          setStep(3);
+          toast.success('أوفلاين: تم حفظ البيع محلياً! سيُزامن عند الاتصال 📡', { duration: 5000 });
+          if (onSaleComplete) onSaleComplete();
+        } else {
+          toast.error('انقطع الاتصال وتعذّر الحفظ محلياً! أعد المحاولة.');
+        }
+      } else {
+        toast.error(typeof err === 'string' ? err : (err.message || 'فشلت عملية البيع'));
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -474,38 +536,55 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                 </div>
 
                 {/* عنصر بث الكاميرا الحقيقي المباشر */}
-                <div className="relative aspect-video w-full bg-black rounded-xl overflow-hidden flex items-center justify-center border border-slate-800">
+                <div className="relative aspect-video w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-800 shadow-inner group">
                   <div id="quick-sale-camera-reader" className="w-full h-full object-cover"></div>
 
                   {cameraLoading && (
-                    <div className="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center gap-2 text-white">
-                      <Loader2 className="h-7 w-7 animate-spin text-red-500" />
-                      <span className="text-xs font-bold">جاري فتح الكاميرا المباشرة...</span>
+                    <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center gap-2 text-white z-10">
+                      <Loader2 className="h-6 w-6 animate-spin text-[#800000]" />
+                      <span className="text-xs font-bold text-slate-300">جاري فتح الكاميرا...</span>
                     </div>
                   )}
 
                   {cameraError && (
-                    <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white p-4 text-center">
-                      <Camera className="h-8 w-8 text-red-500" />
-                      <p className="text-xs text-slate-300 leading-relaxed max-w-xs">{cameraError}</p>
+                    <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white p-4 text-center z-10">
+                      <Camera className="h-7 w-7 text-[#800000]" />
                       <button
                         type="button"
                         onClick={startCameraScanner}
-                        className="mt-2 bg-[#800000] hover:bg-[#660000] text-white px-3 py-1.5 rounded-lg text-xs font-bold"
+                        className="mt-1 px-4 py-2 bg-[#800000] hover:bg-[#990000] text-white rounded-xl text-xs font-bold transition-all shadow-md active:scale-95"
                       >
-                        إعادة المحاولة
+                        إعادة تشغيل الكاميرا
                       </button>
                     </div>
                   )}
 
-                  {/* فلاش أخضر تنبيهي فور المسح */}
-                  {lastScanned && (
-                    <div className="absolute inset-0 bg-emerald-500/30 border-4 border-emerald-500 flex items-center justify-center animate-pulse z-30">
-                      <div className="bg-emerald-600 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-2xl flex items-center gap-2">
-                        <CheckCircle2 className="h-5 w-5" />
-                        تم التقاط الكود: {lastScanned.product_name}!
+                  {!cameraLoading && !cameraError && (
+                    <>
+                      {/* إطار المسح الليزري الأنيق والمبسط */}
+                      <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+                        <div className="relative w-40 h-40 sm:w-48 sm:h-48 border border-white/15 rounded-2xl">
+                          <div className="absolute -top-1 -left-1 w-5 h-5 border-t-2 border-l-2 border-emerald-400 rounded-tl-lg"></div>
+                          <div className="absolute -top-1 -right-1 w-5 h-5 border-t-2 border-r-2 border-emerald-400 rounded-tr-lg"></div>
+                          <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-2 border-l-2 border-emerald-400 rounded-bl-lg"></div>
+                          <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-2 border-r-2 border-emerald-400 rounded-br-lg"></div>
+                          
+                          <div className="absolute inset-x-2 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse top-1/2 -translate-y-1/2"></div>
+                        </div>
                       </div>
-                    </div>
+
+                      {/* وميض نجاح أنيق وسلس بدون نصوص مكدسة */}
+                      {scanCooldown && (
+                        <div className="absolute inset-0 bg-emerald-950/70 backdrop-blur-[2px] flex items-center justify-center z-30 animate-in fade-in duration-200">
+                          <div className="bg-emerald-500/20 border border-emerald-400/50 backdrop-blur-md px-4 py-2 rounded-2xl flex items-center gap-2 text-emerald-300 shadow-xl scale-105 transition-all">
+                            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                            <span className="text-xs font-black truncate max-w-[200px]">
+                              {lastScannedFeedback || (lastScanned ? `تم التقاط: ${lastScanned.product_name}` : 'تم المسح بنجاح')}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -672,10 +751,17 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
           {step === 3 && completedOrder && (
             <div className="space-y-4">
               <div className="text-center space-y-2">
-                <div className="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow">
+                <div className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto shadow ${completedOrder.offline ? 'bg-amber-100 text-amber-600' : 'bg-emerald-100 text-emerald-600'}`}>
                   <CheckCircle2 className="h-8 w-8" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900">تمت عملية البيع بنجاح 🎉</h3>
+                <h3 className="text-lg font-bold text-slate-900">
+                  {completedOrder.offline ? 'تم حفظ البيع محلياً 📡' : 'تمت عملية البيع بنجاح 🎉'}
+                </h3>
+                {completedOrder.offline && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 mx-4">
+                    أنت في وضع الأوفلاين — سيُزامن البيع مع السيرفر تلقائياً عند عودة الاتصال
+                  </p>
+                )}
               </div>
 
               {/* الفاتورة المعروضة على الشاشة */}
@@ -687,7 +773,9 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                   </div>
                   <div className="text-left">
                     <p className="text-[11px] text-slate-300">رقم الفاتورة</p>
-                    <p className="font-mono font-bold text-base">#{completedOrder.order_id}</p>
+                    <p className="font-mono font-bold text-base">
+                      {completedOrder.offline ? 'محفوظ محلياً' : `#${completedOrder.order_id}`}
+                    </p>
                   </div>
                 </div>
 
@@ -705,7 +793,7 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                   <div>
                     <span className="text-slate-400 block">التاريخ</span>
                     <span className="font-bold text-slate-800">
-                      {new Date().toLocaleDateString('ar-LY')}
+                      {new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                     </span>
                   </div>
                   <div className="text-left">
@@ -754,14 +842,16 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
               </div>
 
               <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
-                <button
-                  onClick={handleDownloadInvoice}
-                  disabled={isDownloading}
-                  className="bg-[#800000] hover:bg-[#660000] text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 disabled:opacity-60 active:scale-95"
-                >
-                  {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
-                  تنزيل الفاتورة PDF
-                </button>
+                {!completedOrder?.offline && (
+                  <button
+                    onClick={handleDownloadInvoice}
+                    disabled={isDownloading}
+                    className="bg-[#800000] hover:bg-[#660000] text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 disabled:opacity-60 active:scale-95"
+                  >
+                    {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+                    تنزيل الفاتورة PDF
+                  </button>
+                )}
                 <button
                   onClick={resetForNewSale}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95"

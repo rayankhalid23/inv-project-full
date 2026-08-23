@@ -137,7 +137,7 @@ export default function StockMovementsPage() {
           damageReason:      item.damage_reason    || null,
           notes:             item.notes            || 'لا توجد ملاحظات إضافية',
           createdAt:         item.created_at
-            ? new Date(item.created_at).toLocaleString('ar-SA', { dateStyle: 'short', timeStyle: 'short' })
+            ? new Date(item.created_at).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' })
             : 'N/A',
           productImage: item.product_image || pObj.main_image || cObj.color_image || null,
         };

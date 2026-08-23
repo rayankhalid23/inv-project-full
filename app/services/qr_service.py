@@ -1,38 +1,40 @@
-import os
 import io
+import os
 import arabic_reshaper
 from bidi.algorithm import get_display
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import mm
+
+from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing
-from reportlab.graphics import renderPDF
+from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
+
 from sqlalchemy.orm import Session, joinedload
 
-# استيراد الموديلات
-from app.models.inventory import Product, ProductVariant, ProductColor, Size
+from app.models.inventory import Product, ProductColor, ProductVariant, Size
 
-# إعداد المسارات والخطوط
+# إعداد المسار المباشر لملف الخط الموجود لديك
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_PATH = os.path.join(BASE_DIR, "static", "fonts", "Amiri-Regular.ttf")
 
-try:
+# تسجيل الخط المتوفر فقط بدون أي تراجع لـ Helvetica
+if os.path.exists(FONT_PATH):
     pdfmetrics.registerFont(TTFont('ArabicFont', FONT_PATH))
     ARABIC_FONT = "ArabicFont"
-except Exception:
-    ARABIC_FONT = "Helvetica"
+else:
+    raise FileNotFoundError(f"ملف الخط غير موجود في المسار المطلوب: {FONT_PATH}")
+
 
 class QRGeneratorService:
-    LABEL_SIZE = (50 * mm, 60 * mm) 
+    LABEL_SIZE = (60 * mm, 90 * mm) 
 
     @staticmethod
     def _format_arabic(text):
         """تنسيق النص ليدعم العربية والاتجاه من اليمين لليسار ككتلة واحدة"""
         if not text or text == "N/A": 
             return "N/A"
-        # إعادة التشكيل ثم تطبيق خوارزمية BiDi
         reshaped_text = arabic_reshaper.reshape(str(text))
         return get_display(reshaped_text)
 
@@ -43,44 +45,48 @@ class QRGeneratorService:
         # جلب البيانات
         product_obj = variant.color.product if (variant.color and variant.color.product) else None
         
-        # 1. إعداد البيانات الخام (بدون تنسيق هنا)
         raw_p_name = getattr(product_obj, 'name', 'N/A')
         raw_p_code = str(getattr(product_obj, 'code', 'N/A'))
         raw_c_name = variant.color.color_name if variant.color else "N/A"
         raw_s_name = variant.size.name if variant.size else "N/A"
 
-        # 2. رسم QR Code
+        # 1. رسم QR Code بحجمه الكامل وموقعه المحدد
         qr_content = f"VAR:{variant.id}|SKU:{raw_p_code}"
         qr_code = qr.QrCodeWidget(qr_content, barLevel='H')
         bounds = qr_code.getBounds()
         qr_w, qr_h = bounds[2] - bounds[0], bounds[3] - bounds[1]
         
-        d = Drawing(35*mm, 35*mm, transform=[35*mm/qr_w, 0, 0, 35*mm/qr_h, 0, 0])
+        qr_size = 50 * mm
+        qr_x = (w - qr_size) / 2
+        qr_y = h - 63 * mm 
+        
+        d = Drawing(qr_size, qr_size, transform=[qr_size/qr_w, 0, 0, qr_size/qr_h, 0, 0])
         d.add(qr_code)
-        renderPDF.draw(d, c, (w - 35*mm)/2, h - 38*mm)
+        renderPDF.draw(d, c, qr_x, qr_y)
 
-        # 3. اسم المنتج (تنسيق كسطر مستقل)
-        c.setFont(ARABIC_FONT, 10)
-        c.drawCentredString(w/2, h - 42*mm, cls._format_arabic(raw_p_name))
+        # 2. اسم المنتج (خط بحجم 13pt لتسهيل القراءة)
+        c.setFont(ARABIC_FONT, 13)
+        c.drawCentredString(w / 2, h - 62 * mm, cls._format_arabic(raw_p_name))
         
-        c.setLineWidth(0.2)
-        c.line(5*mm, h - 44*mm, w - 5*mm, h - 44*mm)
+        # 3. خط فاصل سميك وواضح (سمك 0.6)
+        c.setLineWidth(0.6)
+        c.line(4 * mm, h - 65 * mm, w - 4 * mm, h - 65 * mm)
 
-        # 4. التفاصيل (اللقطة الجذريّة: ندمج السطر ثم نفرمته كاملاً)
-        c.setFont(ARABIC_FONT, 8)
-        right_margin = w - 5*mm
+        # 4. التفاصيل (خط بحجم 10.5pt متناسق مع تباعد 5mm)
+        c.setFont(ARABIC_FONT, 13)
+        right_margin = w - 4 * mm
         
-        # سطر اللون: دمج (اللون + القيمة) ثم المعالجة لضمان بقاء النقطتين في مكانهما
+        # سطر اللون
         color_line = cls._format_arabic(f"اللون: {raw_c_name}")
-        c.drawRightString(right_margin, h - 48*mm, color_line)
+        c.drawRightString(right_margin, h - 70 * mm, color_line)
 
         # سطر المقاس
         size_line = cls._format_arabic(f"المقاس: {raw_s_name}")
-        c.drawRightString(right_margin, h - 52*mm, size_line)
+        c.drawRightString(right_margin, h - 76 * mm, size_line)
 
         # سطر الكود
         code_line = cls._format_arabic(f"الكود: {raw_p_code}")
-        c.drawRightString(right_margin, h - 56*mm, code_line)
+        c.drawRightString(right_margin, h - 82 * mm, code_line)
 
     @classmethod
     def generate_pdf_response(cls, variants):

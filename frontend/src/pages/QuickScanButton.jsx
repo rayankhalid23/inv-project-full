@@ -24,6 +24,7 @@ const playScanBeep = () => {
     gain.connect(ctx.destination);
     osc.start();
     osc.stop(ctx.currentTime + 0.15);
+    osc.onended = () => ctx.close();
   } catch (e) {}
 };
 
@@ -63,6 +64,10 @@ export default function QuickScanPage({ isOpen, onClose }) {
 
   const html5QrCodeRef = useRef(null);
   const lastScanTimeRef = useRef(0);
+  const isProcessingScanRef = useRef(false);
+  const scanCooldownRef = useRef(false);
+  const [scanCooldown, setScanCooldown] = useState(false);
+  const [lastScannedFeedback, setLastScannedFeedback] = useState('');
 
   // لوحة البيع المدمجة + مرجع للنوع الحالي.
   // نستخدم ref للنوع لأن processScannedCode تُمرَّر لكاميرا Html5Qrcode مرة
@@ -101,6 +106,10 @@ export default function QuickScanPage({ isOpen, onClose }) {
       } catch (e) {}
       html5QrCodeRef.current = null;
     }
+    isProcessingScanRef.current = false;
+    scanCooldownRef.current = false;
+    setScanCooldown(false);
+    setLastScannedFeedback('');
     setCameraStatus('idle');
   }, []);
 
@@ -122,6 +131,7 @@ export default function QuickScanPage({ isOpen, onClose }) {
       if (v && v.variant_id && scanTypeRef.current === 'sale') {
         salePanelRef.current?.addResolvedVariant(v);
         setBarcode('');
+        setLastScannedFeedback(`تمت إضافة: ${v.product_name || 'منتج'} بالسلة`);
         return;
       }
 
@@ -136,13 +146,17 @@ export default function QuickScanPage({ isOpen, onClose }) {
           // نمرّر القيمة المخزّنة فعلاً ليطابقها الخادم عند التنفيذ
           qr_code: v.qr_code || cleanBarcode
         });
+        setLastScannedFeedback(`تم التعرف على: ${v.product_name}`);
         stopCamera();
         setStep('confirm');
       } else {
         setError(`لم يتم العثور على منتج للكود: ${cleanBarcode}`);
+        setLastScannedFeedback(`لم يتم العثور على الصنف: ${cleanBarcode}`);
       }
     } catch (err) {
-      setError(typeof err === 'string' ? err : (err.response?.data?.detail || 'خطأ أثناء البحث عن المنتج.'));
+      const errMsg = typeof err === 'string' ? err : (err.response?.data?.detail || 'خطأ أثناء البحث عن المنتج.');
+      setError(errMsg);
+      setLastScannedFeedback(errMsg);
     }
   }, [stopCamera]);
 
@@ -159,14 +173,28 @@ export default function QuickScanPage({ isOpen, onClose }) {
 
       await html5QrCode.start(
         { facingMode: "environment" },
-        { fps: 12, qrbox: { width: 220, height: 220 } },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
         (decodedText) => {
+          if (!decodedText || isProcessingScanRef.current || scanCooldownRef.current) return;
           const now = Date.now();
-          if (now - lastScanTimeRef.current > 1500) {
-            lastScanTimeRef.current = now;
-            playScanBeep();
-            processScannedCode(decodedText);
-          }
+          if (now - lastScanTimeRef.current < 1800) return;
+
+          lastScanTimeRef.current = now;
+          isProcessingScanRef.current = true;
+          scanCooldownRef.current = true;
+          setScanCooldown(true);
+          setLastScannedFeedback('جاري معالجة الكود...');
+
+          playScanBeep();
+          processScannedCode(decodedText).finally(() => {
+            // فاصل زمني هادئ يمنع التذبذب وتكرار المسح
+            setTimeout(() => {
+              isProcessingScanRef.current = false;
+              scanCooldownRef.current = false;
+              setScanCooldown(false);
+              setLastScannedFeedback('');
+            }, 1600);
+          });
         },
         () => {}
       );
@@ -350,37 +378,55 @@ export default function QuickScanPage({ isOpen, onClose }) {
    * فيبقى تعريفه في مكان واحد بلا تكرار.
    */
   const cameraBox = (
-    <div className="relative h-48 sm:h-56 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-900 shadow-inner">
+    <div className="relative h-48 sm:h-56 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-800 shadow-inner group">
       <div id="quick-scan-camera-reader" className="w-full h-full object-cover"></div>
 
       {cameraStatus !== 'active' && (
-        <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white/80 p-4 text-center z-10">
+        <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3 text-white z-10 p-4">
           {cameraStatus === 'loading' ? (
-            <>
-              <RefreshCw className="w-8 h-8 animate-spin text-[#800000]" />
-              <span className="text-xs font-bold text-slate-200">جاري فتح الكاميرا...</span>
-            </>
+            <div className="flex flex-col items-center gap-2">
+              <RefreshCw className="w-6 h-6 animate-spin text-[#800000]" />
+              <span className="text-xs font-bold text-slate-300">جاري فتح الكاميرا...</span>
+            </div>
           ) : (
-            <>
-              <Camera className="w-8 h-8 text-[#800000] mb-1" />
-              <p className="text-[11px] text-slate-300 font-medium px-2 leading-relaxed max-w-xs">
-                {cameraErrorMsg || 'اضغط لتفعيل الكاميرا ومنح الإذن.'}
-              </p>
-              <button
-                type="button"
-                onClick={startCamera}
-                className="mt-1 px-4 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
-              >
-                <Camera className="w-4 h-4" />
-                <span>تفعيل الكاميرا 📷</span>
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={startCamera}
+              className="px-5 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
+            >
+              <Camera className="w-4 h-4" />
+              <span>تشغيل الكاميرا</span>
+            </button>
           )}
         </div>
       )}
 
       {cameraStatus === 'active' && (
-        <div className="absolute inset-x-4 h-0.5 bg-[#800000] shadow-lg shadow-[#800000]/80 animate-bounce top-1/2 rounded-full z-20 pointer-events-none" />
+        <>
+          {/* إطار المسح الليزري الأنيق والمبسط */}
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+            <div className="relative w-44 h-44 sm:w-48 sm:h-48 border border-white/15 rounded-2xl">
+              <div className="absolute -top-1 -left-1 w-5 h-5 border-t-2 border-l-2 border-emerald-400 rounded-tl-lg"></div>
+              <div className="absolute -top-1 -right-1 w-5 h-5 border-t-2 border-r-2 border-emerald-400 rounded-tr-lg"></div>
+              <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-2 border-l-2 border-emerald-400 rounded-bl-lg"></div>
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-2 border-r-2 border-emerald-400 rounded-br-lg"></div>
+              
+              <div className="absolute inset-x-2 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse top-1/2 -translate-y-1/2"></div>
+            </div>
+          </div>
+
+          {/* وميض نجاح أنيق وسلس بدون نصوص مكدسة */}
+          {scanCooldown && (
+            <div className="absolute inset-0 bg-emerald-950/70 backdrop-blur-[2px] flex items-center justify-center z-30 animate-in fade-in duration-200">
+              <div className="bg-emerald-500/20 border border-emerald-400/50 backdrop-blur-md px-4 py-2 rounded-2xl flex items-center gap-2 text-emerald-300 shadow-xl scale-105 transition-all">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                <span className="text-xs font-black truncate max-w-[200px]">
+                  {lastScannedFeedback || 'تم المسح بنجاح'}
+                </span>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

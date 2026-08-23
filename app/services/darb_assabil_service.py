@@ -4,10 +4,6 @@ import json
 import logging
 import requests
 from typing import Dict, Any, List, Optional, Tuple
-from dotenv import load_dotenv
-
-# تحميل متغيرات البيئة فورياً
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -86,23 +82,29 @@ LIBYA_CITIES_AND_AREAS: Dict[str, List[str]] = {
 # باقات الخدمة الافتراضية لشركة درب السبيل
 DEFAULT_SERVICES = [
     {
-        "id": "67f19a776dabff22987169e9",
-        "name": "توصيل عادي (Standard)",
-        "description": "توصيل خلال 24-48 ساعة داخل المدينة والمدن المجاورة",
-        "price_note": "حسب وجهة التسليم"
+        "id": "6783c612dcf305c9e775c987",
+        "_id": "6783c612dcf305c9e775c987",
+        "name": "توصيل رجالي",
+        "description": "توصيل بمندوب رجالي — مناسب للمنتجات العامة",
+        "is_default": True,
+        "gender": "male",
     },
     {
-        "id": "67f19a776dabff22987169e9",
-        "name": "توصيل سريع (Express)",
-        "description": "توصيل في نفس اليوم للطلبات العاجلة",
-        "price_note": "أولوية تسليم"
+        "id": "67c84fbc9ed6c0d5c5bb1d2b",
+        "_id": "67c84fbc9ed6c0d5c5bb1d2b",
+        "name": "توصيل نسائي",
+        "description": "توصيل بمندوبة نسائية — مناسب للمنتجات النسائية",
+        "is_default": False,
+        "gender": "female",
     },
     {
-        "id": "67f19a776dabff22987169e9",
-        "name": "شحن بين المدن (Intercity)",
-        "description": "شحن وتوصيل بين مختلف المدن الليبية",
-        "price_note": "حسب المسافة والمدينة"
-    }
+        "id": "67ed8ed1f406d9671db58d8b",
+        "_id": "67ed8ed1f406d9671db58d8b",
+        "name": "استلام قيمة مالية",
+        "description": "استلام مبلغ مالي فقط بدون منتج",
+        "is_default": False,
+        "gender": None,
+    },
 ]
 
 
@@ -125,25 +127,20 @@ class DarbAssabilService:
 
     @property
     def api_key(self) -> str:
-        key = os.getenv("DARB_ASSABIL_API_KEY", "").strip()
-        if not key:
-            load_dotenv(override=True)
-            key = os.getenv("DARB_ASSABIL_API_KEY", "").strip()
-        return key
+        return os.getenv("DARB_ASSABIL_API_KEY", "").strip()
 
     @property
     def account_id(self) -> str:
-        acc = os.getenv("DARB_ASSABIL_ACCOUNT_ID", "67f19a776dabff22987169e9").strip()
-        if not acc:
-            load_dotenv(override=True)
-            acc = os.getenv("DARB_ASSABIL_ACCOUNT_ID", "67f19a776dabff22987169e9").strip()
-        return acc
+        return os.getenv("DARB_ASSABIL_ACCOUNT_ID", "67f19a776dabff22987169e9").strip()
 
     def _get_headers(self) -> Dict[str, str]:
         key = self.api_key
+        # التوثيق يستوجب: Authorization: apikey <key>
+        # نضيف البادئة إن لم تكن موجودة لتجنّب رفض الخادم للطلبات
+        auth_value = key if key.lower().startswith("apikey ") else f"apikey {key}"
         return {
             "Content-Type": "application/json",
-            "Authorization": key,
+            "Authorization": auth_value,
             "X-API-VERSION": "1.0.0",
             "X-ACCOUNT-ID": self.account_id,
         }
@@ -287,6 +284,10 @@ class DarbAssabilService:
                     if c_phone == formatted_phone or c_phone.endswith(formatted_phone[-9:]):
                         logger.info(f"Found existing Darb Assabil contact: {contact.get('_id')}")
                         return str(contact.get("_id"))
+            else:
+                logger.warning(
+                    f"[DARB ASSABIL] GET /api/contacts أعاد {res.status_code}: {res.text[:400]}"
+                )
         except Exception as e:
             logger.warning(f"Error checking existing contacts: {e}")
 
@@ -333,41 +334,54 @@ class DarbAssabilService:
         # 1. الحصول على RECEIVER_CONTACT_ID
         contact_id = self.create_contact_or_get_id(customer_phone, customer_name)
         if not contact_id:
+            # contacts.create محجوبة على مستوى الحساب (غالباً 402 من درب السبيل)
+            # نُكمل بـ account_id كـ placeholder حتى تُفعَّل الصلاحية من مزود الخدمة
+            logger.warning(
+                f"[DARB ASSABIL] فشل جلب/إنشاء جهة الاتصال للزبون '{customer_name}' ({customer_phone}). "
+                f"الفول-باك: استخدام account_id={self.account_id} كـ contact placeholder. "
+                "راجع صلاحية contacts.create مع درب السبيل."
+            )
             contact_id = self.account_id
 
-        # 2. إعداد المنتجات
+        # 2. إعداد المنتجات (الحقول المسموحة: title, quantity, amount, currency, isChargeable, allowInspection, allowTesting)
         formatted_products = []
         for p in order_data.get("products", []):
-            formatted_products.append({
+            product_entry = {
                 "title": str(p.get("title") or "منتج"),
                 "quantity": int(p.get("quantity", 1)),
+                "allowInspection": True,
+                "allowTesting": True,
                 "amount": float(p.get("amount", 0)),
-                "currency": str(p.get("currency", "LYD")),
-                "isChargeable": True,
-            })
+                "currency": str(p.get("currency", "lyd")).lower(),
+                "isChargeable": bool(p.get("isChargeable", True)),
+            }
+            formatted_products.append(product_entry)
 
         if not formatted_products:
             formatted_products.append({
                 "title": f"طلب رقم #{order_data.get('order_id', '')}",
                 "quantity": 1,
+                "allowInspection": True,
+                "allowTesting": True,
                 "amount": float(order_data.get("total_amount", 0)),
-                "currency": "LYD",
+                "currency": "lyd",
                 "isChargeable": True,
             })
 
-        # 3. معرف الباقة
+        # 3. معرف الباقة — fallback للخدمة الرجالية (ID حقيقي من درب السبيل)
         service_id = order_data.get("service")
         if not service_id or len(str(service_id)) != 24:
-            service_id = self.account_id
+            service_id = DEFAULT_SERVICES[0]["id"]
 
-        # 4. تجهيز payload الشحنة الرسمي المطابق لمواصفات درب السبيل
+        # 4. تجهيز payload الشحنة الرسمي المطابق بدقة لمواصفات درب السبيل (الحقول المسموحة فقط)
         payload = {
             "service": str(service_id),
             "contacts": [str(contact_id)],
             "paymentBy": str(order_data.get("paymentBy") or "receiver"),
+            "allowSplitting": True,
             "to": {
-                "countryCode": "LBY",
-                "city": str(order_data.get("city") or "Tripoli"),
+                "countryCode": str(order_data.get("countryCode") or "lby").lower(),
+                "city": str(order_data.get("city") or "طرابلس"),
                 "area": str(order_data.get("area") or "وسط المدينة"),
                 "address": str(order_data.get("address") or ""),
             },
@@ -375,7 +389,12 @@ class DarbAssabilService:
             "notes": str(order_data.get("notes") or ""),
         }
 
-        # 5. إرسال الطلب لـ API درب السبيل (تجربة /api/local/shipments أولاً ثم /api/orders)
+        # 5. طباعة وتسجيل الـ payload كاملاً بصيغة JSON قبل الإرسال مباشرة
+        payload_json_str = json.dumps(payload, ensure_ascii=False, indent=2)
+        print(f"\n[DARB ASSABIL OUTGOING PAYLOAD TO {self.base_url}]:\n{payload_json_str}\n")
+        logger.info(f"[DARB ASSABIL OUTGOING PAYLOAD]: {payload_json_str}")
+
+        # 6. إرسال الطلب لـ API درب السبيل (تجربة /api/local/shipments أولاً ثم /api/orders)
         headers = self._get_headers()
         endpoints = ["/api/local/shipments", "/api/orders"]
         last_error = ""
@@ -393,7 +412,7 @@ class DarbAssabilService:
                     data = res_json.get("data", {})
                     tracking_number = data.get("reference") or data.get("trackingNumber") or data.get("_id")
                     shipment_id = data.get("_id") or str(data.get("id", ""))
-                    
+
                     return {
                         "success": True,
                         "tracking_number": str(tracking_number) if tracking_number else None,
@@ -404,6 +423,10 @@ class DarbAssabilService:
                 else:
                     last_status = res.status_code
                     last_error = res.text
+                    # تسجيل الاستجابة الكاملة (status + body) لسهولة التشخيص
+                    logger.warning(
+                        f"[DARB ASSABIL] {ep} أعاد {res.status_code}: {res.text[:800]}"
+                    )
                     try:
                         res_json = res.json()
                         msgs = res_json.get("messages", [])

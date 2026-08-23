@@ -3,6 +3,8 @@ import { MoreVertical, Package, Copy, Check, Download, Edit2, Trash2, Tag, Eye, 
 import ProductFormDialog from "./ProductFormDialog";
 import { catalogApi } from "../../../api/catalogApi";
 import { mediaUrl, onImageError } from "../../../utils/media";
+import { saveOfflineAction } from "../../../utils/idbStorage";
+import { isNetworkError } from "../../../utils/netErrors";
 
 const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, canManage: passedCanManage }) => {
   const [copied, setCopied] = useState(false);
@@ -58,6 +60,18 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, c
     setSuccessMessage(null);
     setShowConfirm(false); // إخفاء نافذة التأكيد فور البدء
 
+    if (!navigator.onLine) {
+      await saveOfflineAction(
+        'DELETE_PRODUCT',
+        { id: product.id },
+        `حذف المنتج: ${product.name}`
+      );
+      setSuccessMessage(`أوفلاين: تم تسجيل حذف "${product.name}" محلياً وسيُحذف من السيرفر عند الاتصال 📡`);
+      if (onDelete) onDelete(product.id);
+      setTimeout(() => setSuccessMessage(null), 3500);
+      return;
+    }
+
     try {
       setIsDeleting(true);
       
@@ -74,6 +88,18 @@ const ProductCard = ({ product, onEdit, onDelete, onDownloadQR, onEditSuccess, c
       setTimeout(() => setSuccessMessage(null), 3000);
 
     } catch (error) {
+      if (isNetworkError(error)) {
+        await saveOfflineAction(
+          'DELETE_PRODUCT',
+          { id: product.id },
+          `حذف المنتج: ${product.name}`
+        );
+        setSuccessMessage(`انقطع الاتصال: تم الحفظ محلياً وسيُحذف من السيرفر عند الاتصال 📡`);
+        if (onDelete) onDelete(product.id);
+        setIsDeleting(false);
+        setTimeout(() => setSuccessMessage(null), 3500);
+        return;
+      }
       setIsDeleting(false); 
       const msg = error.response?.data?.detail || "عذراً، فشل حذف المنتج من النظام";
       setErrorMessage(msg);

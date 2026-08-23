@@ -11,6 +11,7 @@ import {
 import { toast as hotToast } from 'react-hot-toast';
 import { catalogApi as fallbackCatalogApi } from "../../../api/catalogApi";
 import { mediaUrl, IMAGE_FALLBACK, onImageError } from "../../../utils/media";
+import { isNetworkError } from "../../../utils/netErrors";
 
 // --- Schema & Helpers ---
 const productSchema = z.object({
@@ -422,8 +423,10 @@ if (data.variants && data.variants.length > 0) {
       finalMessage = errorData.message;
     }
   } 
-  // 4. إذا لم يكن هناك استجابة من السيرفر (خطأ شبكة مثلاً)
-  else if (e.message) {
+  // 4. خطأ شبكة (أوفلاين أو مهلة) — إضافة/تعديل المنتجات يتطلب اتصالاً
+  else if (isNetworkError(e)) {
+    finalMessage = 'لا يوجد اتصال بالإنترنت. إضافة وتعديل المنتجات تتطلب اتصالاً نشطاً — يُرجى المحاولة لاحقاً.';
+  } else if (e.message) {
     finalMessage = e.message;
   }
       // إرسال الرسالة إلى الـ Toast الموجود في أعلى الملف الرئيسي ProductsPage

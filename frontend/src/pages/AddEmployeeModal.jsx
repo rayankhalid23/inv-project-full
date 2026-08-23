@@ -3,8 +3,9 @@ import {
   X, UserPlus, Phone, Lock, Shield, 
   Loader2, CheckCircle2, Pencil 
 } from 'lucide-react';
-import { toast } from 'react-hot-toast';
 import { createEmployeeApi, updateEmployeeApi } from '../api/userApi';
+import { saveOfflineAction } from '../utils/idbStorage';
+import { isNetworkError } from '../utils/netErrors';
 
 const AddEmployeeModal = ({ isOpen, onClose, onRefresh, initialData = null }) => {
   // 1. تحديد وضعية المودال (تعديل أم إضافة)
@@ -54,6 +55,25 @@ const AddEmployeeModal = ({ isOpen, onClose, onRefresh, initialData = null }) =>
     e.preventDefault();
     setLoading(true);
 
+    if (!navigator.onLine) {
+      if (!isEditMode && !formData.password) {
+        toast.error("كلمة المرور مطلوبة للموظف الجديد");
+        setLoading(false);
+        return;
+      }
+      const type = isEditMode ? 'UPDATE_EMPLOYEE' : 'CREATE_EMPLOYEE';
+      const payload = isEditMode 
+        ? { id: initialData.id, data: { ...formData, role_id: parseInt(formData.role_id) } }
+        : { ...formData, role_id: parseInt(formData.role_id) };
+      const desc = isEditMode ? `تعديل الموظف: ${formData.name}` : `إضافة موظف جديد: ${formData.name}`;
+      await saveOfflineAction(type, payload, desc);
+      toast.success(isEditMode ? `أوفلاين: تم حفظ تعديل ${formData.name} محلياً! سيُرفع عند الاتصال 📡` : `أوفلاين: تم حفظ الموظف ${formData.name} محلياً! سيُرفع عند الاتصال 📡`);
+      onRefresh();
+      onClose();
+      setLoading(false);
+      return;
+    }
+
     try {
       if (isEditMode) {
         // --- وضع التعديل ---
@@ -74,6 +94,18 @@ const AddEmployeeModal = ({ isOpen, onClose, onRefresh, initialData = null }) =>
       onRefresh();
       onClose();
     } catch (error) {
+      if (isNetworkError(error)) {
+        const type = isEditMode ? 'UPDATE_EMPLOYEE' : 'CREATE_EMPLOYEE';
+        const payload = isEditMode 
+          ? { id: initialData.id, data: { ...formData, role_id: parseInt(formData.role_id) } }
+          : { ...formData, role_id: parseInt(formData.role_id) };
+        const desc = isEditMode ? `تعديل الموظف: ${formData.name}` : `إضافة موظف جديد: ${formData.name}`;
+        await saveOfflineAction(type, payload, desc);
+        toast.success("انقطع الاتصال: تم الحفظ محلياً وسيُزامن تلقائياً 📡");
+        onRefresh();
+        onClose();
+        return;
+      }
         console.error("Full Error Object:", error); // لمساعدتك في المراقبة في الـ Console
   
         // 1. استخراج الرسالة الأساسية

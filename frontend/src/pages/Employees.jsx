@@ -12,6 +12,8 @@ import { cn } from '../lib/utils';
 import { deleteEmployeeApi,restoreEmployeeApi,updateEmployeeApi } from '../api/userApi';
 import EmployeeDetailsModal from './EmployeeDetailsModal';
 import AddEmployeeModal from './AddEmployeeModal';
+import { saveOfflineAction } from '../utils/idbStorage';
+import { isNetworkError } from '../utils/netErrors';
 
 
 const API_BASE_URL = window.location.origin;
@@ -86,7 +88,7 @@ const Employees = () => {
     } finally {
       setLoading(false);
     }
-  }, [searchQuery, filterRole, activeTab, activeTab]);
+  }, [searchQuery, filterRole, activeTab]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -117,6 +119,16 @@ const Employees = () => {
     const displayName = typeof userNameOrRestore === 'string' ? userNameOrRestore : "هذا الموظف";
   
     if (!isRestore && !window.confirm(`هل أنت متأكد من نقل الموظف "${displayName}" إلى سلة المحذوفات؟`)) return;
+
+    if (!navigator.onLine) {
+      const type = isRestore ? 'RESTORE_EMPLOYEE' : 'DELETE_EMPLOYEE';
+      const desc = isRestore ? `استعادة الموظف #${userId} (${displayName})` : `حذف الموظف #${userId} (${displayName})`;
+      await saveOfflineAction(type, { id: userId }, desc);
+      setEmployees(prev => prev.filter(emp => emp.id !== userId));
+      setTotalCount(prev => Math.max(0, prev - 1));
+      toast.success(isRestore ? "أوفلاين: تم تسجيل استعادة الموظف محلياً! سيُزامن عند الاتصال 📡" : "أوفلاين: تم تسجيل حذف الموظف محلياً! سيُزامن عند الاتصال 📡");
+      return;
+    }
   
     try {
       if (isRestore) {
@@ -135,10 +147,19 @@ const Employees = () => {
         toast.success("تم نقل الموظف إلى السلة");
       }
       
-      // تحديث العداد الإجمالي (اختياري)
-      setTotalCount(prev => isRestore ? prev + 1 : prev - 1);
+      // تحديث العداد الإجمالي — كلا الحالتين تُزيل عنصراً من القائمة الحالية
+      setTotalCount(prev => Math.max(0, prev - 1));
   
     } catch (error) {
+      if (isNetworkError(error)) {
+        const type = isRestore ? 'RESTORE_EMPLOYEE' : 'DELETE_EMPLOYEE';
+        const desc = isRestore ? `استعادة الموظف #${userId} (${displayName})` : `حذف الموظف #${userId} (${displayName})`;
+        await saveOfflineAction(type, { id: userId }, desc);
+        setEmployees(prev => prev.filter(emp => emp.id !== userId));
+        setTotalCount(prev => Math.max(0, prev - 1));
+        toast.success("انقطع الاتصال: تم الحفظ محلياً وسيُزامن تلقائياً 📡");
+        return;
+      }
       console.error("Operation error:", error.response?.data);
       toast.error(error.response?.data?.detail || "فشلت العملية، تأكد من الصلاحيات");
     }

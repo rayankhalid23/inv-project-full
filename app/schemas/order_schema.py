@@ -8,6 +8,8 @@ from datetime import datetime
 class OrderItemCreate(BaseModel):
     variant_id: int
     quantity: int
+    allow_inspection: bool = False
+    allow_try_on: bool = False
 
 class OrderCreate(BaseModel):
     customer_name: str

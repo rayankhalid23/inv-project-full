@@ -55,8 +55,7 @@ def create_product(
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2]))
 ):
-    disk_image_path = None  # المسار الفعلي على الهارد ديسك (للسيرفر)
-    db_image_path = None    # المسار الذي سيخزن في القاعدة (للمتصفح)
+    db_image_path = None
   
     # تحققات السلامة (Validation)
     if not name or name.strip().lower() == "string":
@@ -66,13 +65,7 @@ def create_product(
         if db.query(Product).filter(Product.name == name, Product.deleted_at == None).first():
             raise HTTPException(status_code=400, detail="هذا الاسم موجود مسبقاً")
         
-        # إنشاء المنتج مع كود تلقائي
-        max_id = db.query(func.max(Product.id)).scalar()
-        next_id = (max_id or 0) + 1
-        product_code = f"PROD-{next_id:05d}"
-
         # حفظ الصورة
-        image_path = None
         if image_file and image_file.filename:
             try:
                 # خط المعالجة الموحّد: تصغير + WEBP + مسار قانوني واحد.
@@ -82,17 +75,18 @@ def create_product(
             except Exception as e:
                 raise HTTPException(status_code=500, detail="حدث خطأ أثناء حفظ صورة المنتج")
 
-
         new_product = Product(
             name=name, catalog_id=catalog_id, selling_price=selling_price,
             cost_price=cost_price, min_stock_threshold=min_stock_threshold,
-            description=description, code=product_code, main_image=db_image_path,
-            created_by=current_user.id
+            description=description, code=f"PROD-TEMP-{uuid.uuid4().hex[:8]}",
+            main_image=db_image_path, created_by=current_user.id
         )
         db.add(new_product)
         db.flush()
-        
-        
+        # الكود يُبنى من ID الفعلي بعد الـ flush لضمان التفرد دون race condition
+        product_code = f"PROD-{new_product.id:05d}"
+        new_product.code = product_code
+
         # 5. تسجيل العملية في سجل الرقابة (Audit Log)
         create_system_audit_log(
           db=db,
@@ -113,9 +107,7 @@ def create_product(
         raise he
     except Exception as e:
         db.rollback()
-        # حذف الصورة إذا تم رفعها وفشلت عملية قاعدة البيانات
-        if image_path and os.path.exists(image_path):
-            os.remove(image_path)
+        delete_old_image(db_image_path)
         raise HTTPException(status_code=500, detail=f"خطأ غير متوقع: {str(e)}")
 
 

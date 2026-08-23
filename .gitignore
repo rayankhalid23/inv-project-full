@@ -1,24 +1,41 @@
-<<<<<<< HEAD
-# Python
+# ===== Python =====
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# ===== البيئة الافتراضية =====
 venv/
 .venv/
 env/
 
-# Environment variables
+# ===== متغيرات البيئة (أسرار!) =====
 .env
 
-# Static files (Optional: keep if you want to save product images)
-# static/products/*
-static/temp/*
+# ===== قاعدة البيانات المحلية =====
+*.db
+*.sqlite3
 
-# IDEs
+# ===== الملفات المؤقتة =====
+static/temp/*
+*.log
+
+# ===== الواجهة الأمامية =====
+frontend/node_modules/
+frontend/dist/
+frontend/dev-dist/
+
+# ===== IDEs =====
 .vscode/
 .idea/
-=======
-venv/
-.env
-__pycache__/
->>>>>>> db10729100131f023fa952060f6a63a4697d62ac
+*.swp
+*.swo
+
+# ===== نظام التشغيل =====
+.DS_Store
+Thumbs.db
+
+# ===== Claude Code =====
+.claude/

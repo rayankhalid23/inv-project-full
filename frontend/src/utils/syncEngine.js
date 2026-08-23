@@ -1,7 +1,7 @@
 /**
  * =====================================================================
- * BELLAGIO PWA - Background Auto-Sync Engine (Production Ready)
- * المحرك التلقائي لمزامنة بيانات IndexedDB مع سيرفر بايثون (FastAPI) بصمت
+ * BELLAGIO PWA - Universal Background Auto-Sync Engine (Production Ready)
+ * المحرك التلقائي الشامل لمزامنة كافة عمليات التطبيق مع الخادم بصمت ودقة
  * =====================================================================
  */
 
@@ -12,7 +12,7 @@ import { API_TIMEOUT_MS } from './netErrors';
 let isSyncingActive = false;
 
 /**
- * دالة مزامنة العمليات المخزنة محلياً وإرسالها إلى خادم بايثون
+ * دالة مزامنة كافة العمليات المخزنة محلياً وإرسالها إلى خادم بايثون (FastAPI)
  * @param {function} onProgressCallback - دالة اختيارية لمتابعة تقدم الرفع
  */
 export const runAutoSync = async (onProgressCallback) => {
@@ -35,8 +35,6 @@ export const runAutoSync = async (onProgressCallback) => {
   console.log(`[SyncEngine] بدء مزامنة ${actions.length} عملية مخزنة في IndexedDB...`);
 
   const token = localStorage.getItem('token');
-  // مهلة زمنية إلزامية: بدونها يمكن لعملية واحدة معلّقة أن توقف طابور
-  // المزامنة بالكامل إلى ما لا نهاية على شبكة ضعيفة أو بوابة أسيرة.
   const reqConfig = {
     timeout: API_TIMEOUT_MS,
     headers: {
@@ -49,95 +47,156 @@ export const runAutoSync = async (onProgressCallback) => {
   let failedCount = 0;
 
   try {
-  for (const item of actions) {
-    try {
-      if (onProgressCallback) {
-        onProgressCallback(`جاري رفع: ${item.description || item.type}`);
-      }
+    for (const item of actions) {
+      try {
+        if (onProgressCallback) {
+          onProgressCallback(`جاري مزامنة: ${item.description || item.type}`);
+        }
 
-      let response = null;
-      const qr = encodeURIComponent(item.payload?.qr_code ?? '');
-      const note = encodeURIComponent(item.payload?.note || '');
+        let response = null;
+        const qr = encodeURIComponent(item.payload?.qr_code ?? '');
+        const note = encodeURIComponent(item.payload?.note || '');
 
-      // 1. إرسال الطلب حسب نوع العملية
-      if (item.type === 'CREATE_ORDER') {
-        // المسار الصحيح هو /orders/create — كان /orders/ يرد 405 دائماً
-        // فتُحذف كل طلبات الأوفلاين باعتبارها "مدخلات غير صالحة".
-        response = await axios.post('/orders/create', item.payload, reqConfig);
-      } else if (item.type === 'DIRECT_SALE') {
-        // رقم الزبون اختياري — يُرسل فقط إن كان قد أُدخل وقت البيع الأوفلاين
-        const phone = item.payload?.customer_phone
-          ? `&customer_phone=${encodeURIComponent(item.payload.customer_phone)}`
-          : '';
-        response = await axios.post(`/inventory/direct-sale-by-qr?qr_code=${qr}&note=${note}${phone}`, null, reqConfig);
-      } else if (item.type === 'SCAN_RETURN') {
-        response = await axios.post(`/orders/return-item-by-qr?qr_code=${qr}&note=${note}`, null, reqConfig);
-      } else if (item.type === 'SCAN_DAMAGE') {
-        response = await axios.post(`/orders/mark-as-damaged?qr_code=${qr}&note=${note}`, null, reqConfig);
-      } else if (item.type === 'UPDATE_ORDER') {
-        // المسار الصحيح هو /orders/{id}/update
-        response = await axios.put(`/orders/${item.payload.id}/update`, item.payload.data, reqConfig);
-      } else if (item.type === 'ADD_STOCK') {
-        response = await axios.post('/inventory/add-stock', item.payload, reqConfig);
-      } else {
-        // نوع غير معروف: لا يمكن رفعه أبداً، وتركه يعني تعليق العدّاد للأبد
-        console.warn(`[SyncEngine] نوع عملية غير معروف (${item.type}) — سيُحذف من الطابور:`, item.id);
-        await removePendingAction(item.id);
+        switch (item.type) {
+          // ━━━━━ 1. المبيعات والطلبات ━━━━━
+          case 'CREATE_ORDER':
+            response = await axios.post('/orders/create', item.payload, reqConfig);
+            break;
+
+          case 'QUICK_SALE':
+            response = await axios.post('/orders/quick-sale', item.payload, reqConfig);
+            break;
+
+          case 'DIRECT_SALE': {
+            const phone = item.payload?.customer_phone
+              ? `&customer_phone=${encodeURIComponent(item.payload.customer_phone)}`
+              : '';
+            response = await axios.post(`/inventory/direct-sale-by-qr?qr_code=${qr}&note=${note}${phone}`, null, reqConfig);
+            break;
+          }
+
+          case 'SCAN_RETURN':
+            response = await axios.post(`/orders/return-item-by-qr?qr_code=${qr}&note=${note}`, null, reqConfig);
+            break;
+
+          case 'SCAN_DAMAGE':
+            response = await axios.post(`/orders/mark-as-damaged?qr_code=${qr}&note=${note}`, null, reqConfig);
+            break;
+
+          case 'UPDATE_ORDER':
+            response = await axios.put(`/orders/${item.payload.id}/update`, item.payload.data, reqConfig);
+            break;
+
+          case 'DELETE_ORDER':
+            response = await axios.delete(`/orders/${item.payload.id}/delete`, reqConfig);
+            break;
+
+          case 'ASSIGN_DELIVERY':
+            response = await axios.post(`/orders/${item.payload.id}/assign-delivery`, item.payload.data, reqConfig);
+            break;
+
+          case 'SEND_DARB_SHIPMENT': {
+            const orderId = item.payload?.order_id;
+            const shipmentData = item.payload?.shipment_data;
+            response = await axios.post(`/orders/${orderId}/shipping/darb-assabil/create-shipment`, shipmentData, reqConfig);
+            break;
+          }
+
+          // ━━━━━ 2. المخزون والمنتجات ━━━━━
+          case 'ADD_STOCK':
+            response = await axios.post('/inventory/add-stock', item.payload, reqConfig);
+            break;
+
+          case 'CREATE_CATALOG':
+            response = await axios.post('/catalogs/catalogs/', item.payload, reqConfig);
+            break;
+
+          case 'UPDATE_CATALOG':
+            response = await axios.put(`/catalogs/catalogs/${item.payload.id}`, { name: item.payload.name }, reqConfig);
+            break;
+
+          case 'TOGGLE_CATALOG_STATUS':
+            response = await axios.patch(`/catalogs/catalogs/${item.payload.id}/toggle`, {}, reqConfig);
+            break;
+
+          case 'DELETE_PRODUCT':
+            response = await axios.delete(`/variants/product/${item.payload.id}`, reqConfig);
+            break;
+
+          case 'UPDATE_VARIANT_PARTIAL':
+            response = await axios.patch(`/variants/${item.payload.id}`, item.payload.data, reqConfig);
+            break;
+
+          // ━━━━━ 3. الموظفين والمستخدمين ━━━━━
+          case 'CREATE_EMPLOYEE':
+            response = await axios.post('/users/', item.payload, reqConfig);
+            break;
+
+          case 'UPDATE_EMPLOYEE':
+          case 'UPDATE_PROFILE':
+            response = await axios.patch(`/users/${item.payload.id}`, item.payload.data, reqConfig);
+            break;
+
+          case 'DELETE_EMPLOYEE':
+            response = await axios.delete(`/users/${item.payload.id}`, reqConfig);
+            break;
+
+          case 'RESTORE_EMPLOYEE':
+            response = await axios.post(`/users/${item.payload.id}/restore`, {}, reqConfig);
+            break;
+
+          default:
+            console.warn(`[SyncEngine] نوع عملية غير معروف (${item.type}) — سيُحذف لتفادي تعليق الطابور:`, item.id);
+            await removePendingAction(item.id);
+            failedCount++;
+            continue;
+        }
+
+        // عند نجاح الرفع (200, 201, 204)، يتم حذف العملية من IndexedDB
+        if (response && (response.status >= 200 && response.status < 300)) {
+          await removePendingAction(item.id);
+          successCount++;
+          console.log(`[SyncEngine] تمت مزامنة العملية (${item.type}) #${item.id} بنجاح ✅`);
+        }
+      } catch (error) {
+        console.error(`[SyncEngine] فشلت مزامنة العملية #${item.id}:`, error);
         failedCount++;
-        continue;
-      }
 
-      // 2. عند نجاح الرفع، يتم حذف العملية من IndexedDB
-      if (response && (response.status === 200 || response.status === 201)) {
-        await removePendingAction(item.id);
-        successCount++;
-        console.log(`[SyncEngine] تمت مزامنة العملية ${item.id} بنجاح ✅`);
-      }
-    } catch (error) {
-      console.error(`[SyncEngine] فشلت مزامنة العملية ${item.id}:`, error);
-      failedCount++;
+        const status = error.response?.status;
 
-      const status = error.response?.status;
+        // 401/403: الجلسة منتهية — نحتفظ بالعمليات ونوقف المحرك
+        if (status === 401 || status === 403) {
+          console.warn('[SyncEngine] الجلسة منتهية — إيقاف المزامنة لحين تسجيل الدخول مجدداً.');
+          return {
+            status: 'auth_required',
+            total: actions.length,
+            successCount,
+            failedCount,
+            authRequired: true,
+          };
+        }
 
-      // 401/403: التوكن منتهي أو الصلاحية مفقودة — العملية نفسها سليمة تماماً.
-      // حذفها هنا يعني فقدان بيعة حقيقية لمجرد أن الجلسة انتهت أثناء الانقطاع.
-      // نُبقيها في الطابور ونوقف المزامنة فوراً لأن بقية العمليات ستفشل بنفس السبب.
-      if (status === 401 || status === 403) {
-        console.warn('[SyncEngine] الجلسة منتهية — إيقاف المزامنة مع الاحتفاظ بكل العمليات المعلقة.');
-        return {
-          status: 'auth_required',
-          total: actions.length,
-          successCount,
-          failedCount,
-          authRequired: true,
-        };
-      }
-
-      // قائمة بيضاء صارمة: لا نحذف عملية إلا إذا كانت بياناتها مرفوضة فعلاً
-      // ولن تُقبل مهما أُعيدت المحاولة.
-      //   400/422 = بيانات غير صالحة   |   409 = مسجّلة مسبقاً (تكرار)
-      // أي شيء آخر (404، 405، 5xx، أخطاء الشبكة) قد يكون خطأً برمجياً أو
-      // عطلاً مؤقتاً يُصلَح بتحديث لاحق — وحذف العملية حينها يعني فقدان
-      // بيعة حقيقية. لذلك تبقى في الطابور دائماً.
-      const UNRECOVERABLE = [400, 409, 422];
-      if (UNRECOVERABLE.includes(status)) {
-        console.warn(`[SyncEngine] حذف عملية مرفوضة نهائياً (HTTP ${status}):`, item.id, item.description);
-        await removePendingAction(item.id);
-      } else {
-        console.warn(`[SyncEngine] إبقاء العملية للمحاولة لاحقاً (HTTP ${status ?? 'network'}):`, item.id, item.description);
+        // 404: العنصر غير موجود بالسيرفر (مثلاً حُذف مسبقاً من مستخدم آخر)
+        // 409: تعارض/مكرر (تم تسجيلها بالفعل مسبقاً)
+        // 400/422: بيانات غير صالحة نهائياً
+        // في هذه الحالات نحذف العملية من الطابور حتى لا تعلق للأبد
+        const UNRECOVERABLE_STATUSES = [400, 404, 409, 422];
+        if (UNRECOVERABLE_STATUSES.includes(status)) {
+          console.warn(`[SyncEngine] تسوية العملية نهائياً وتفريغها من الطابور (HTTP ${status}):`, item.id, item.description);
+          await removePendingAction(item.id);
+        } else {
+          console.warn(`[SyncEngine] إبقاء العملية للمحاولة لاحقاً (HTTP ${status ?? 'network'}):`, item.id, item.description);
+        }
       }
     }
-  }
 
-  return {
-    status: 'completed',
-    total: actions.length,
-    successCount,
-    failedCount
-  };
+    return {
+      status: 'completed',
+      total: actions.length,
+      successCount,
+      failedCount
+    };
   } finally {
-    // ضروري: لو خرجت الدالة بأي طريقة (return أو استثناء غير متوقع) وبقيت
-    // هذه الراية true، لتعطّلت المزامنة نهائياً لبقية عمر الصفحة.
     isSyncingActive = false;
   }
 };

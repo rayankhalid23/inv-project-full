@@ -1,0 +1,43 @@
+# ======================================================
+# systemd — خدمة بيلادجيو للإنتاج
+# ضع هذا الملف في: /etc/systemd/system/bellagio.service
+# ثم:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable bellagio
+#   sudo systemctl start bellagio
+# ======================================================
+
+[Unit]
+Description=Bellagio Inventory Management System
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=bellagio
+Group=bellagio
+WorkingDirectory=/opt/bellagio
+
+# تحميل متغيرات البيئة من ملف .env
+EnvironmentFile=/opt/bellagio/.env
+
+# تشغيل uvicorn مع عدة عمليات للإنتاج
+ExecStart=/opt/bellagio/venv/bin/python main.py
+
+# إعادة التشغيل التلقائي عند أي خطأ
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# حدود الموارد
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# السجلات
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bellagio
+
+[Install]
+WantedBy=multi-user.target

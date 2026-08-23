@@ -71,13 +71,14 @@ export const OfflineProvider = ({ children }) => {
     const isIosDevice = /iphone|ipad|ipod/.test(userAgent);
     setIsIOS(isIosDevice);
 
-    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
-    const wasInstalledBefore = localStorage.getItem('pwa_installed') === 'true';
-    setIsAppInstalled(Boolean(isStandalone) || wasInstalledBefore);
+    const isStandalone = Boolean(
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.navigator.standalone ||
+      document.referrer.includes('android-app://')
+    );
+    setIsAppInstalled(isStandalone);
 
     const handleBeforeInstallPrompt = (e) => {
-      // لا نعرض زر التثبيت إذا كان المستخدم ثبّت التطبيق من قبل
-      if (localStorage.getItem('pwa_installed') === 'true') return;
       e.preventDefault();
       setDeferredInstallPrompt(e);
     };
@@ -85,7 +86,6 @@ export const OfflineProvider = ({ children }) => {
     const handleAppInstalled = () => {
       setIsAppInstalled(true);
       setDeferredInstallPrompt(null);
-      localStorage.setItem('pwa_installed', 'true');
       toast.success('مبارك! تم تثبيت تطبيق بيلادجيو بنجاح 🎉');
     };
 
@@ -118,8 +118,6 @@ export const OfflineProvider = ({ children }) => {
 
   // 2. تسجيل الـ Service Worker (يُولَّد عبر Workbox) مع كشف التحديثات
   useEffect(() => {
-    if (import.meta.env.DEV) return;
-
     let cancelled = false;
 
     // استيراد ديناميكي حتى لا ينكسر البناء إن لم تتوفر الوحدة الافتراضية
@@ -128,6 +126,7 @@ export const OfflineProvider = ({ children }) => {
         if (cancelled) return;
 
         const updateSW = registerSW({
+          immediate: true,
           onNeedRefresh() {
             // نسخة جديدة جاهزة — لا نُحدّث تلقائياً حتى لا نقاطع عملية بيع جارية
             setUpdateAvailable(true);

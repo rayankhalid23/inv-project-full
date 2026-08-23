@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { catalogApi } from "../../../api/catalogApi";
 import ProductCard from "./ProductCard"; 
+import { saveOfflineAction } from "../../../utils/idbStorage";
+import { isNetworkError } from "../../../utils/netErrors"; 
 
 
 
@@ -272,22 +274,78 @@ const CatalogsPage = ({
       return;
     }
     setActionLoading(true);
+
+    const isAdd = modalMode === 'add';
+    const trimmedName = catalogName.trim();
+
+    if (!navigator.onLine) {
+      const type = isAdd ? 'CREATE_CATALOG' : 'UPDATE_CATALOG';
+      const payload = isAdd ? { name: trimmedName } : { id: selectedCatalog.id, name: trimmedName };
+      const desc = isAdd ? `إضافة كتالوج: ${trimmedName}` : `تعديل كتالوج: ${trimmedName}`;
+      await saveOfflineAction(type, payload, desc);
+      setSuccessMsg(isAdd ? "أوفلاين: تم حفظ الكتالوج محلياً! سيُرفع عند الاتصال 📡" : "أوفلاين: تم حفظ التعديل محلياً! سيُرفع عند الاتصال 📡");
+      onRefresh(statusFilter);
+      setTimeout(() => { setIsModalOpen(false); resetModal(); }, 1000);
+      setActionLoading(false);
+      return;
+    }
+
     try {
-      if (modalMode === 'add') {
-        await catalogApi.createCatalog(catalogName);
+      if (isAdd) {
+        await catalogApi.createCatalog(trimmedName);
         setSuccessMsg("تمت الإضافة بنجاح!");
       } else {
-        await catalogApi.updateCatalog(selectedCatalog.id, catalogName);
+        await catalogApi.updateCatalog(selectedCatalog.id, trimmedName);
         setSuccessMsg("تم التحديث بنجاح!");
       }
       onRefresh(statusFilter);
       setTimeout(() => { setIsModalOpen(false); resetModal(); }, 1000);
       setTimeout(() => { setSuccessMsg(''); }, 3000);
     } catch (error) {
+      if (isNetworkError(error)) {
+        const type = isAdd ? 'CREATE_CATALOG' : 'UPDATE_CATALOG';
+        const payload = isAdd ? { name: trimmedName } : { id: selectedCatalog.id, name: trimmedName };
+        const desc = isAdd ? `إضافة كتالوج: ${trimmedName}` : `تعديل كتالوج: ${trimmedName}`;
+        await saveOfflineAction(type, payload, desc);
+        setSuccessMsg("انقطع الاتصال: تم الحفظ محلياً وسيُزامن تلقائياً 📡");
+        onRefresh(statusFilter);
+        setTimeout(() => { setIsModalOpen(false); resetModal(); }, 1000);
+        return;
+      }
       if (error.response?.status === 422) setErrors(error.response.data.errors);
       else if (error.response?.status === 409) setErrors({ name: ["هذا الاسم موجود بالفعل"] });
       else setErrors({ general: "حدث خطأ غير متوقع في النظام" });
     } finally { setActionLoading(false); }
+  };
+
+  const handleToggleStatus = async (catalog) => {
+    setActiveMenu(null);
+    if (!navigator.onLine) {
+      await saveOfflineAction(
+        'TOGGLE_CATALOG_STATUS',
+        { id: catalog.id },
+        `تغيير حالة كتالوج: ${catalog.name}`
+      );
+      setSuccessMsg("أوفلاين: تم حفظ تغيير الحالة محلياً! سيُزامن عند الاتصال 📡");
+      onRefresh(statusFilter);
+      return;
+    }
+    try {
+      await catalogApi.toggleCatalogStatus(catalog.id);
+      onRefresh(statusFilter);
+    } catch (err) {
+      if (isNetworkError(err)) {
+        await saveOfflineAction(
+          'TOGGLE_CATALOG_STATUS',
+          { id: catalog.id },
+          `تغيير حالة كتالوج: ${catalog.name}`
+        );
+        setSuccessMsg("انقطع الاتصال: تم الحفظ محلياً وسيُزامن تلقائياً 📡");
+        onRefresh(statusFilter);
+      } else {
+        setErrors({ general: "فشل تغيير حالة الكتالوج" });
+      }
+    }
   };
   // تأثير ذكي لمراقبة رسالة النجاح وتدميرها تلقائياً بعد 3 ثوانٍ مهما حدث
 useEffect(() => {
@@ -515,7 +573,7 @@ useEffect(() => {
                       <button onClick={(e) => { e.stopPropagation(); setSelectedCatalog(catalog); setCatalogName(catalog.name); setModalMode('edit'); setIsModalOpen(true); setActiveMenu(null); }} className="w-full flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-slate-600 hover:bg-slate-50 rounded-t-xl sm:rounded-t-2xl">
                         <Edit2 size={14} className="text-blue-500 sm:w-4 sm:h-4" /> تعديل الاسم
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); catalogApi.toggleCatalogStatus(catalog.id).then(() => onRefresh(statusFilter)); setActiveMenu(null); }} className="w-full flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-slate-600 hover:bg-slate-50 rounded-b-xl sm:rounded-b-2xl border-t border-slate-50">
+                      <button onClick={(e) => { e.stopPropagation(); handleToggleStatus(catalog); }} className="w-full flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 sm:py-3 text-xs sm:text-sm text-slate-600 hover:bg-slate-50 rounded-b-xl sm:rounded-b-2xl border-t border-slate-50">
                         <Power size={14} className={catalog.is_active ? "text-red-500" : "text-emerald-500" } />
                         {catalog.is_active ? 'الغاء التنشيط' : 'تنشيط'}
                       </button>

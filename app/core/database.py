@@ -74,6 +74,34 @@ def init_db():
                 except Exception:
                     # العمود موجود مسبقاً، تجاهل
                     pass
+
+        # بذر الرتب والمستخدم الافتراضي عند أول تشغيل للسيرفر
+        from app.models.role import Role
+        from app.models.user import User
+        from app.core.security import get_password_hash
+
+        with SessionLocal() as db:
+            existing_roles = {r.name: r for r in db.query(Role).all()}
+            for role_name in ["Admin", "Manager", "Employee"]:
+                if role_name not in existing_roles:
+                    new_role = Role(name=role_name)
+                    db.add(new_role)
+                    db.flush()
+                    existing_roles[role_name] = new_role
+            
+            # إذا كان جدول المستخدمين فارغاً تماماً (أول رفع للسيرفر)، إنشاء حساب مدير افتراضي
+            if db.query(User).count() == 0 and "Admin" in existing_roles:
+                admin_role = existing_roles["Admin"]
+                default_admin = User(
+                    name="المدير العام",
+                    phone="0912345678",
+                    password_hash=get_password_hash("admin123"),
+                    role_id=admin_role.id,
+                    is_active=True
+                )
+                db.add(default_admin)
+            
+            db.commit()
     except SQLAlchemyError as e:
         print(f"DATABASE ERROR: Table creation failed: {e}")
 

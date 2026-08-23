@@ -81,7 +81,7 @@ export const orderApi = {
     /**
      * إنشاء طلب مبيعات جديد
      * يتوافق مع: POST /orders/create
-     * @param {object} orderData - { customer_name, customer_phones, address, social_media_source?, notes?, items: [{variant_id, quantity}] }
+     * @param {object} orderData - { customer_name, customer_phones, address, social_media_source?, notes?, items: [{variant_id, quantity}], shipping_provider?, darb_service_id?, darb_city?, darb_area?, darb_payment_by?, delivery_gender? }
      */
     createOrder: async (orderData) => {
         try {
@@ -97,6 +97,12 @@ export const orderApi = {
                 social_media_source: orderData.social_media_source || null,
                 notes: orderData.notes || null,
                 items: orderData.items, // [{variant_id: int, quantity: int}]
+                shipping_provider: orderData.shipping_provider || 'custom',
+                darb_service_id: orderData.darb_service_id || null,
+                darb_city: orderData.darb_city || null,
+                darb_area: orderData.darb_area || null,
+                darb_payment_by: orderData.darb_payment_by || 'receiver',
+                delivery_gender: orderData.delivery_gender || 'رجالي',
             };
 
             const response = await api.post('/orders/create', payload);
@@ -161,6 +167,12 @@ export const orderApi = {
                     created_by_name:          d.personnel?.created_by,
                     inventory_employee_name:   d.personnel?.inventory_employee,
                     delivery_man_name:         d.personnel?.delivery_man,
+                    // بيانات الشحن والتتبع
+                    shipping_provider: d.shipping_provider || d.shipping?.provider || 'custom',
+                    tracking_number:   d.tracking_number || d.shipping?.tracking_number || null,
+                    shipment_id:       d.shipment_id || d.shipping?.shipment_id || null,
+                    delivery_info:     d.delivery_info || d.shipping?.delivery_info || null,
+                    actions:           d.actions || [],
                     // ملخص الأرقام
                     total_price:            d.summary?.total_price,
                     total_ordered_qty:       d.summary?.total_ordered_qty,
@@ -186,6 +198,11 @@ export const orderApi = {
                 ...d,
                 id:     d.id ?? d.order_id,
                 status: mapStatusToArabic(d.status),
+                shipping_provider: d.shipping_provider || 'custom',
+                tracking_number: d.tracking_number || null,
+                shipment_id: d.shipment_id || null,
+                delivery_info: d.delivery_info || null,
+                actions: d.actions || [],
             };
         } catch (error) {
             console.error(`Error fetching order ${orderId} details:`, error.response?.data || error.message);

@@ -75,3 +75,31 @@ body {
   scrollbar-width: thin;
   scrollbar-color: #e2e8f0 transparent;
 }
+
+/* ============================================================
+   تحسين وتنعيم مظهر قارئ الكاميرا (Html5Qrcode)
+   ============================================================ */
+#quick-scan-camera-reader,
+#order-camera-reader,
+#quick-sale-camera-reader {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+#quick-scan-camera-reader video,
+#order-camera-reader video,
+#quick-sale-camera-reader video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 1rem !important;
+}
+
+#quick-scan-camera-reader img,
+#order-camera-reader img,
+#quick-sale-camera-reader img {
+  display: none !important;
+}

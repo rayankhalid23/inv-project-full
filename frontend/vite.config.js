@@ -1,21 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import basicSsl from '@vitejs/plugin-basic-ssl'
 import { VitePWA } from 'vite-plugin-pwa'
-
-// المسارات التي يخدمها الـ API في الخلفية (FastAPI)
-const API_PREFIXES = [
-  '/auth', '/users', '/catalogs', '/sizes', '/colors',
-  '/products', '/variants', '/inventory', '/orders', '/analytics',
-]
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    basicSsl(),
     VitePWA({
       // نعرض للمستخدم زر "تحديث" بدل إعادة التحميل المفاجئة أثناء العمل
       registerType: 'prompt',
@@ -23,15 +15,16 @@ export default defineConfig({
       manifest: false,
       injectRegister: null, // التسجيل يتم يدوياً داخل OfflineContext
       workbox: {
-        // يشمل ملفات JS/CSS المُولّدة بأسمائها المُجزّأة (hashed) — وهو ما كان
-        // مستحيلاً مع قائمة precache مكتوبة يدوياً، فكان أول فتح بدون نت قد يفشل.
+        // يشمل ملفات JS/CSS المُولّدة بأسمائها المُجزّأة (hashed)
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff,woff2}'],
         navigateFallback: '/index.html',
-        // لا نُرجع index.html لمسارات الـ API أو الملفات المرفوعة
+        // لا نُرجع index.html للملفات المرفوعة ومسارات التوثيق أو API الصريحة
         navigateFallbackDenylist: [
           /^\/api\//,
           /^\/static\//,
-          new RegExp(`^(${API_PREFIXES.join('|')})/`),
+          /^\/docs/,
+          /^\/redoc/,
+          /^\/openapi\.json/,
         ],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
@@ -39,11 +32,6 @@ export default defineConfig({
         runtimeCaching: [
           {
             // بيانات الـ API: الشبكة أولاً مع مهلة قصيرة ثم الكاش.
-            // networkTimeoutSeconds هو ما يمنع تعليق الشاشة على شبكة ضعيفة.
-            //
-            // مهم: هذه الدالة تُحوَّل إلى نص وتُحقن داخل ملف الـ Service Worker،
-            // لذا يجب ألا تشير إلى أي متغير خارجي (closure) وإلا رمت
-            // ReferenceError داخل الـ SW ولم تعمل القاعدة إطلاقاً.
             urlPattern: ({ url, request }) =>
               request.method === 'GET' &&
               /^\/(auth|users|catalogs|sizes|colors|products|variants|inventory|orders|analytics)(\/|$)/.test(url.pathname),
@@ -76,7 +64,10 @@ export default defineConfig({
         ],
       },
       devOptions: {
-        enabled: false, // لا نُفعّل الـ SW أثناء التطوير حتى لا يُخفي التعديلات
+        enabled: true,
+        type: 'module',
+        suppressWarnings: true,
+        navigateFallback: '/index.html',
       },
     }),
   ],
@@ -87,8 +78,6 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [
-            // ملاحظة: recharts و html5-qrcode و sweetalert2 مذكورة في package.json
-            // لكنها غير مستوردة في أي ملف، لذا لا مجموعات لها هنا.
             { name: 'react-vendor', test: /node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/ },
             { name: 'motion', test: /node_modules[\\/](framer-motion|motion-dom|motion-utils)[\\/]/ },
             { name: 'forms', test: /node_modules[\\/](react-hook-form|@hookform|zod)[\\/]/ },

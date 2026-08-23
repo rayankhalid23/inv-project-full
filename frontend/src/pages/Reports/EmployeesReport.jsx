@@ -382,7 +382,7 @@ export default function EmployeesReport({ period }) {
         </div>
         <div className="mt-2 flex items-baseline gap-1 truncate">
           <span className={`text-base sm:text-2xl font-black font-mono tracking-tight ${selectedColor.text}`}>
-            {typeof value === 'number' ? value.toLocaleString() : value}
+            {typeof value === 'number' ? value.toLocaleString('en-US') : value}
           </span>
           <span className="text-[9px] font-bold text-slate-400 shrink-0">{unit}</span>
         </div>

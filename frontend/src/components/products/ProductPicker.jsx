@@ -163,6 +163,10 @@ export default function ProductPicker({
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => filterProducts(products, query), [products, query]);
 
+  const displayProducts = useMemo(() => {
+    return query ? filtered.slice(0, 60) : filtered.slice(0, 35);
+  }, [filtered, query]);
+
   return (
     <div className="space-y-2 border border-slate-200 rounded-xl p-2 bg-white">
       <div className="relative">
@@ -191,7 +195,7 @@ export default function ProductPicker({
         ) : filtered.length === 0 ? (
           <div className="text-center py-4 text-xs text-slate-400">لا توجد نتائج مطابقة لبحثك</div>
         ) : (
-          filtered.map((product) => (
+          displayProducts.map((product) => (
             <ProductSelector
               key={product.id}
               product={product}

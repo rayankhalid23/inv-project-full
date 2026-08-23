@@ -38,51 +38,64 @@ const CatalogProductsView = ({ catalog, canManage, onBack, onEditProduct, onAddP
   return (
     <div className="animate-in slide-in-from-left duration-300">
       {/* Header */}
-      <div className="mb-8 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <button onClick={onBack} className="p-2.5 bg-white border rounded-xl text-slate-600 hover:bg-slate-50 shadow-sm transition-all">
-            <ArrowRight className="w-5 h-5" />
-          </button>
-          <div className="text-right">
-            <h1 className="text-xl font-black text-slate-900">{catalog?.name || ' الكتالوج'}</h1>
-            <p className="text-slate-400 text-[10px] font-bold">إدارة المنتجات في هذا القسم</p>
+      <div className="mb-8 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={onBack} className="p-2.5 bg-white border rounded-xl text-slate-600 hover:bg-slate-50 shadow-sm transition-all">
+              <ArrowRight className="w-5 h-5" />
+            </button>
+            <div className="text-right">
+              <h1 className="text-xl font-black text-slate-900">{catalog?.name || ' الكتالوج'}</h1>
+              <p className="text-slate-400 text-[10px] font-bold">إدارة المنتجات في هذا القسم</p>
+            </div>
           </div>
+          {/* زر إضافة منتج — مخصص للمسؤول والمدير فقط */}
+          {canManage && onAddProduct && (
+            <button
+              onClick={onAddProduct}
+              className="flex items-center gap-2 px-4 py-2.5 bg-[#800000] text-white rounded-xl font-bold text-xs shadow-md hover:bg-[#600000] transition-all active:scale-95"
+            >
+              <Plus className="w-4 h-4" /> إضافة منتج
+            </button>
+          )}
         </div>
-        {/* زر إضافة منتج — مخصص للمسؤول والمدير فقط */}
-        {canManage && onAddProduct && (
-          <button
-            onClick={onAddProduct}
-            className="flex items-center gap-2 px-4 py-2.5 bg-[#800000] text-white rounded-xl font-bold text-xs shadow-md hover:bg-[#600000] transition-all active:scale-95"
-          >
-            <Plus className="w-4 h-4" /> إضافة منتج
-          </button>
-        )}
+        {/* حقل البحث داخل الكتالوج */}
+        <div className="relative group max-w-sm">
+          <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-[#800000] transition-colors w-4 h-4" />
+          <input
+            type="text"
+            placeholder="بحث داخل الكتالوج..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pr-9 pl-4 py-2.5 bg-white border border-slate-100 rounded-2xl focus:border-[#80000030] shadow-sm outline-none text-xs font-bold transition-all text-slate-700 placeholder-slate-400"
+          />
+        </div>
       </div>
 
       {/* قائمة المنتجات */}
-      {loading ? (
-        <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>
-      ) : products.length > 0 ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {products
-            .filter(p => p && p.name && p.name.toLowerCase().includes(searchTerm.toLowerCase()))
-            .map(p => (
-              <ProductCard 
-                key={p.id} 
+      {(() => {
+        if (loading) return <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 animate-spin text-indigo-600" /></div>;
+        const filtered = products.filter(p => p && p.name && p.name.toLowerCase().includes(searchTerm.toLowerCase()));
+        if (filtered.length === 0) return (
+          <div className="flex flex-col items-center py-20 text-slate-300">
+            <AlertCircle size={40} strokeWidth={1} />
+            <p className="mt-4 font-bold text-sm">{searchTerm ? 'لا توجد منتجات تطابق البحث' : 'لا توجد منتجات'}</p>
+          </div>
+        );
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {filtered.map(p => (
+              <ProductCard
+                key={p.id}
                 product={p}
                 canManage={canManage}
                 onEdit={canManage ? onEditProduct : undefined}
-                onDownloadQR={onDownloadQR} 
+                onDownloadQR={onDownloadQR}
               />
-            ))
-          }
-        </div>
-      ) : (
-        <div className="flex flex-col items-center py-20 text-slate-300">
-            <AlertCircle size={40} strokeWidth={1} />
-            <p className="mt-4 font-bold text-sm">لا توجد منتجات</p>
-        </div>
-      )}
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 };

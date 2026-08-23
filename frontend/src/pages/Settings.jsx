@@ -9,6 +9,8 @@ import { updateProfile } from '../api/userApi';
 import { orderApi } from '../api/orderApi';
 import { toast } from 'react-hot-toast';
 import { Trash2, Database, AlertTriangle } from 'lucide-react';
+import { saveOfflineAction } from '../utils/idbStorage';
+import { isNetworkError } from '../utils/netErrors';
 
 
 const Settings = () => {
@@ -129,19 +131,31 @@ const Settings = () => {
   const handleSave = async () => {
     if (!validateForm()) return;
 
+    const payload = {
+      name: profileData.name,
+      phone: profileData.phone,
+    };
+
+    if (profileData.password.trim() !== '') {
+      payload.password = profileData.password;
+    }
+
+    if (!navigator.onLine) {
+      await saveOfflineAction(
+        'UPDATE_PROFILE',
+        { id: user.id, data: payload },
+        `تحديث الملف الشخصي: ${payload.name}`
+      );
+      updateUserData({ ...user, name: payload.name, phone: payload.phone });
+      toast.success("أوفلاين: تم حفظ تعديلاتك محلياً! ستُزامن مع السيرفر عند الاتصال 📡");
+      setProfileData(prev => ({ ...prev, password: '', confirmPassword: '' }));
+      return;
+    }
+
     const toastId = toast.loading("جاري حفظ التعديلات...");
     setIsSaving(true);
 
     try {
-      const payload = {
-        name: profileData.name,
-        phone: profileData.phone,
-      };
-
-      if (profileData.password.trim() !== '') {
-        payload.password = profileData.password;
-      }
-
       const response = await updateProfile(user.id, payload);
 
       if (response.status === "success") {
@@ -150,6 +164,17 @@ const Settings = () => {
         setProfileData(prev => ({ ...prev, password: '', confirmPassword: '' }));
       }
     } catch (error) {
+      if (isNetworkError(error)) {
+        await saveOfflineAction(
+          'UPDATE_PROFILE',
+          { id: user.id, data: payload },
+          `تحديث الملف الشخصي: ${payload.name}`
+        );
+        updateUserData({ ...user, name: payload.name, phone: payload.phone });
+        toast.success("انقطع الاتصال: تم الحفظ محلياً وسيُزامن تلقائياً 📡", { id: toastId });
+        setProfileData(prev => ({ ...prev, password: '', confirmPassword: '' }));
+        return;
+      }
       const errorMessage = error.response?.data?.detail || "";
       
       // التعديل الجوهري هنا: منطق أكثر مرونة ليشمل رسالة "محجوز لموظف آخر"

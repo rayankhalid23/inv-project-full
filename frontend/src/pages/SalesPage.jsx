@@ -18,6 +18,7 @@ import { fetchEmployeesApi } from '../api/userApi';
 import { saveOfflineAction } from '../utils/idbStorage';
 import { isNetworkError } from '../utils/netErrors';
 import ProductPicker from '../components/products/ProductPicker';
+import { FALLBACK_DARB_SERVICES, FALLBACK_DARB_CITIES } from '../constants/darbAssabilFallback';
 
 const playScanBeep = (isSuccess = true) => {
   try {
@@ -122,8 +123,13 @@ export default function SalesPage() {
   // ---- States كاميرا ماسح التجهيز السريع للطلب ----
   const [scannerCameraStatus, setScannerCameraStatus] = useState('idle'); // idle | loading | active | error
   const [scannerCameraError, setScannerCameraError]   = useState('');
+  const [scannerCooldown, setScannerCooldown]         = useState(false);
+  const [scannerFeedback, setScannerFeedback]         = useState('');
   const orderScannerRef        = useRef(null);
   const orderLastScanTimeRef   = useRef(0);
+  const isProcessingScanRef    = useRef(false);
+  const scannerCooldownRef     = useRef(false);
+  const selectedOrderIdRef     = useRef(null);
 
   // ---- States إنشاء الطلب ----
   const [newOrderForm, setNewOrderForm] = useState({
@@ -152,7 +158,7 @@ export default function SalesPage() {
   const [darbDetailedAddress, setDarbDetailedAddress]     = useState('');
 
   // States مرحلة إسناد التوصيل
-  const [deliveryAssignMethod, setDeliveryAssignMethod]   = useState('darb_assabil'); // 'darb_assabil' | 'local'
+  const [deliveryAssignMethod, setDeliveryAssignMethod]   = useState('local'); // 'darb_assabil' | 'local'
   const [localDriverName, setLocalDriverName]             = useState('');
   const [isDarbModalOpen, setIsDarbModalOpen]             = useState(false);
   const [isSendingDarb, setIsSendingDarb]                 = useState(false);
@@ -161,42 +167,52 @@ export default function SalesPage() {
   const loadDarbDataIfNeeded = useCallback(async (force = false) => {
     if (!force && darbServices.length > 0 && Object.keys(darbCitiesAreas).length > 0) return;
     setLoadingDarbData(true);
-    try {
-      const [services, cities] = await Promise.all([
-        orderApi.getDarbServices(),
-        orderApi.getDarbCitiesAndAreas()
-      ]);
-      const safeServices = Array.isArray(services) && services.length > 0 ? services : [
-        { id: '67f19a776dabff22987169e9', name: 'توصيل عادي (Standard)', description: 'التوصيل خلال 24-48 ساعة', is_default: true },
-        { id: '67f19a776dabff22987169e9', name: 'توصيل سريع (Express)', description: 'التوصيل في نفس اليوم' },
-        { id: '67f19a776dabff22987169e9', name: 'شحن بين المدن (Intercity)', description: 'شحن لجميع المدن' },
-      ];
-      setDarbServices(safeServices);
-      if (safeServices.length > 0) {
-        const defaultSrv = safeServices.find(s => s.is_default) || safeServices[0];
-        setSelectedDarbService(defaultSrv.id || defaultSrv._id || '67f19a776dabff22987169e9');
+
+    let fetchedServices = null;
+    let fetchedCities   = null;
+
+    // محاولة الجلب من الـ API — إذا فشل نستخدم البيانات الاحتياطية مباشرة
+    if (navigator.onLine) {
+      try {
+        const [s, c] = await Promise.all([
+          orderApi.getDarbServices(),
+          orderApi.getDarbCitiesAndAreas(),
+        ]);
+        fetchedServices = s;
+        fetchedCities   = c;
+      } catch (err) {
+        console.warn('[Darb] API fetch failed, falling back to local constants:', err?.message);
       }
-      const safeCities = (cities && Object.keys(cities).length > 0) ? cities : {
-        "طرابلس": ["سوق الجمعة", "تاجوراء", "جنزور", "حي الأندلس", "بن عاشور", "عين زارة", "السراج", "غوط الشعال", "أبو سليم", "صلاح الدين"],
-        "بنغازي": ["الفويهات", "الكيش", "الصابري", "سيدي حسين", "الحدائق", "الماجوري", "الليثي", "طابلينو", "الهواري"],
-        "مصراتة": ["وسط المدينة", "قصر أحمد", "السكت", "الزروق", "الغيران", "طمينة", "يدر", "المحجوب"],
-        "الزاوية": ["وسط المدينة", "الزاوية الجنوبية", "الزاوية الغربية", "جوددائم", "الحرشة"],
-        "زليتن": ["وسط المدينة", "البازة", "الجمعة", "المنارة", "الساحل"],
-        "الخمس": ["وسط المدينة", "سوق الخميس", "كعبار", "سيلين", "لبدة"],
-      };
-      setDarbCitiesAreas(safeCities);
-      const cityKeys = Object.keys(safeCities);
-      if (cityKeys.length > 0) {
-        const initialCity = cityKeys.includes('طرابلس') ? 'طرابلس' : cityKeys[0];
-        setSelectedDarbCity(initialCity);
-        const areas = safeCities[initialCity] || [];
-        if (areas.length > 0) setSelectedDarbArea(areas[0]);
-      }
-    } catch (err) {
-      console.error('Failed to load Darb Assabil data:', err);
-    } finally {
-      setLoadingDarbData(false);
     }
+
+    // ---- الخدمات ----
+    const safeServices =
+      Array.isArray(fetchedServices) && fetchedServices.length > 0
+        ? fetchedServices
+        : FALLBACK_DARB_SERVICES;
+
+    setDarbServices(safeServices);
+    const defaultSrv = safeServices.find(s => s.is_default) || safeServices[0];
+    if (defaultSrv) {
+      setSelectedDarbService(defaultSrv.id || defaultSrv._id || '67f19a776dabff22987169e9');
+    }
+
+    // ---- المدن والمناطق ----
+    const safeCities =
+      fetchedCities && Object.keys(fetchedCities).length > 0
+        ? fetchedCities
+        : FALLBACK_DARB_CITIES;
+
+    setDarbCitiesAreas(safeCities);
+    const cityKeys   = Object.keys(safeCities);
+    const initialCity = cityKeys.includes('طرابلس') ? 'طرابلس' : cityKeys[0];
+    if (initialCity) {
+      setSelectedDarbCity(initialCity);
+      const areas = safeCities[initialCity] || [];
+      if (areas.length > 0) setSelectedDarbArea(areas[0]);
+    }
+
+    setLoadingDarbData(false);
   }, [darbServices.length, darbCitiesAreas]);
 
   const handleDarbCityChange = (newCity) => {
@@ -254,8 +270,40 @@ export default function SalesPage() {
   const [carrierName, setCarrierName]   = useState('');
 
   const [editForm, setEditForm] = useState({
-    customer_name: '', customer_phones: '', address: '', notes: '',
+    customer_name: '', customer_phones: [''], address: '', social_media_source: '', notes: '',
   });
+  const [editShippingProvider, setEditShippingProvider]       = useState('darb_assabil');
+  const [editDarbCity, setEditDarbCity]                       = useState('طرابلس');
+  const [editDarbArea, setEditDarbArea]                       = useState('');
+  const [editDarbDetailedAddress, setEditDarbDetailedAddress] = useState('');
+  const [editDarbService, setEditDarbService]                 = useState('67f19a776dabff22987169e9');
+  const [editDarbPaymentBy, setEditDarbPaymentBy]             = useState('receiver');
+  const [editSelectedVariants, setEditSelectedVariants]       = useState([]);
+  const [editShowProductsSection, setEditShowProductsSection] = useState(false);
+
+  const handleEditDarbCityChange = (newCity) => {
+    setEditDarbCity(newCity);
+    const areas = darbCitiesAreas[newCity] || [];
+    if (areas.length > 0) {
+      setEditDarbArea(areas[0]);
+    } else {
+      setEditDarbArea('');
+    }
+  };
+
+  const availableAreasForEditCity = useMemo(() => {
+    return darbCitiesAreas[editDarbCity] || [];
+  }, [darbCitiesAreas, editDarbCity]);
+
+  const handleEditPhoneChange = (index, value) => {
+    const updated = [...editForm.customer_phones];
+    updated[index] = value;
+    setEditForm(p => ({ ...p, customer_phones: updated }));
+  };
+  const addEditPhoneField = () =>
+    setEditForm(p => ({ ...p, customer_phones: [...p.customer_phones, ''] }));
+  const removeEditPhoneField = (index) =>
+    setEditForm(p => ({ ...p, customer_phones: p.customer_phones.filter((_, i) => i !== index) }));
 
 // 2. 🔥 دالة واحدة موحدة وذكية لإطلاق التنبيهات (تمنع التراكم وتدعم أخطاء السيرفر)
 const showToast = useCallback((message, type = 'success') => {
@@ -310,7 +358,7 @@ const handleScanProduct = async (barcodeValue) => {
     if (!silent) setIsLoading(true);
     else setIsRefreshing(true);
     try {
-      const data = await orderApi.getOrders({ limit: 100 });
+      const data = await orderApi.getOrders({ limit: 200 });
       setOrders(Array.isArray(data) ? data : []);
     } catch (err) {
       showToast(typeof err === 'string' ? err : 'فشل تحميل الطلبات', 'error');
@@ -359,6 +407,37 @@ const handleScanProduct = async (barcodeValue) => {
     fetchEmployeesList();
     loadDarbDataIfNeeded();
   }, [fetchOrders, fetchInventoryStats, fetchEmployeesList, loadDarbDataIfNeeded]);
+
+  // تحديث تلقائي للقائمة كل 45 ث — يبقي جميع المستخدمين العاملين في نفس الوقت متزامنين
+  useEffect(() => {
+    const id = setInterval(() => fetchOrders(true), 45_000);
+    return () => clearInterval(id);
+  }, [fetchOrders]);
+
+  // تحديث الطلب المفتوح تلقائياً إذا تغيّرت بياناته في الخادم أثناء عمل مستخدم آخر
+  useEffect(() => { selectedOrderIdRef.current = selectedOrder?.id ?? null; }, [selectedOrder]);
+  useEffect(() => {
+    const id = selectedOrderIdRef.current;
+    if (!id || orders.length === 0) return;
+    const fresh = orders.find(o => o.id === id);
+    if (!fresh) return;
+    // نحدث فقط الحقول القادمة من القائمة (status, tracking...) ونحافظ على
+    // بنود الطلب التفصيلية المحلية — القائمة لا تُعيد items فتطمسها بدون هذا الحل
+    setSelectedOrder(prev => {
+      if (!prev) return fresh;
+      return {
+        ...prev,
+        status:            fresh.status            ?? prev.status,
+        total_price:       fresh.total_price       ?? prev.total_price,
+        shipping_provider: fresh.shipping_provider ?? prev.shipping_provider,
+        tracking_number:   fresh.tracking_number   ?? prev.tracking_number,
+        shipment_id:       fresh.shipment_id       ?? prev.shipment_id,
+        delivery_info:     fresh.delivery_info     ?? prev.delivery_info,
+        // نحافظ على items التفصيلية ما لم تأتِ نسخة أحدث تحتوي عليها
+        items: (fresh.items && fresh.items.length > 0) ? fresh.items : prev.items,
+      };
+    });
+  }, [orders]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (isCreateOpen) {
@@ -447,6 +526,15 @@ const handleScanProduct = async (barcodeValue) => {
   // ========= مسح QR لتجهيز المنتج =========
   const handleBarcodeScan = async (barcodeValue) => {
     if (!selectedOrder || !barcodeValue || !barcodeValue.trim()) return;
+
+    // المسح يتطلب تحقق من السيرفر — لا يمكن تنفيذه بدون اتصال
+    if (!navigator.onLine) {
+      playScanBeep(false);
+      showToast('لا يمكن مسح وتجهيز المنتجات بدون اتصال بالإنترنت. تأكد من الاتصال أولاً 📡', 'error');
+      setScannerFeedback('لا يوجد اتصال بالإنترنت 📡');
+      return;
+    }
+
     const cleanCode = barcodeValue.trim();
     setIsScanning(true);
     try {
@@ -454,14 +542,16 @@ const handleScanProduct = async (barcodeValue) => {
       playScanBeep(true);
       const arabicStatus = mapStatusToArabic(result?.status) || selectedOrder.status;
       const targetVariantId = result?.variant_id;
-      showToast(result?.message || 'تم مسح وتجهيز الصنف بنجاح', 'success');
+      const successMsg = result?.message || 'تم مسح وتجهيز الصنف بنجاح';
+      showToast(successMsg, 'success');
+      setScannerFeedback(successMsg);
       setManualBarcode('');
 
       // تحديث شاشة تفاصيل الطلب وحالة القطع الممسوحة فوراً في الواجهة
       setSelectedOrder(prev => {
         if (!prev) return prev;
         const items = (prev.items || []).map(it => {
-          if (targetVariantId && it.variant_id !== targetVariantId) return it;
+          if (it.variant_id !== targetVariantId) return it;
           const total = it.quantity ?? it.qty ?? 0;
           const next = result?.picked_quantity ?? ((it.picked_quantity ?? 0) + 1);
           return { ...it, picked_quantity: total ? Math.min(next, total) : next };
@@ -481,8 +571,14 @@ const handleScanProduct = async (barcodeValue) => {
       setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: arabicStatus } : o));
     } catch (err) {
       playScanBeep(false);
-      const msg = typeof err === 'string' ? err : (err?.response?.data?.detail || err?.message || 'الكود الممسوح لا يطابق أي منتج غير مكتمل في هذا الطلب');
-      showToast(msg, 'error');
+      if (isNetworkError(err)) {
+        showToast('انقطع الاتصال أثناء المسح. تأكد من الاتصال وأعد المحاولة 📡', 'error');
+        setScannerFeedback('انقطع الاتصال أثناء المسح 📡');
+      } else {
+        const msg = typeof err === 'string' ? err : (err?.response?.data?.detail || err?.message || 'الكود الممسوح لا يطابق أي منتج غير مكتمل في هذا الطلب');
+        showToast(msg, 'error');
+        setScannerFeedback(msg);
+      }
     } finally {
       setIsScanning(false);
     }
@@ -491,6 +587,13 @@ const handleScanProduct = async (barcodeValue) => {
   // ========= مسح يدوي لتجهيز المنتج =========
   const handleManualScan = async (variantId) => {
     if (!selectedOrder || !variantId) return;
+
+    if (!navigator.onLine) {
+      playScanBeep(false);
+      showToast('لا يمكن التجهيز اليدوي بدون اتصال بالإنترنت 📡', 'error');
+      return;
+    }
+
     setIsScanning(true);
     try {
       const result = await orderApi.scanOrderItemManual(selectedOrder.id, variantId);
@@ -520,8 +623,12 @@ const handleScanProduct = async (barcodeValue) => {
       setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: arabicStatus } : o));
     } catch (err) {
       playScanBeep(false);
-      const msg = typeof err === 'string' ? err : (err?.response?.data?.detail || err?.message || 'حدث خطأ أثناء التجهيز اليدوي');
-      showToast(msg, 'error');
+      if (isNetworkError(err)) {
+        showToast('انقطع الاتصال أثناء التجهيز. تأكد من الاتصال وأعد المحاولة 📡', 'error');
+      } else {
+        const msg = typeof err === 'string' ? err : (err?.response?.data?.detail || err?.message || 'حدث خطأ أثناء التجهيز اليدوي');
+        showToast(msg, 'error');
+      }
     } finally {
       setIsScanning(false);
     }
@@ -536,6 +643,10 @@ const handleScanProduct = async (barcodeValue) => {
       } catch (e) {}
       orderScannerRef.current = null;
     }
+    isProcessingScanRef.current = false;
+    scannerCooldownRef.current = false;
+    setScannerCooldown(false);
+    setScannerFeedback('');
     setScannerCameraStatus('idle');
   }, []);
 
@@ -548,13 +659,27 @@ const handleScanProduct = async (barcodeValue) => {
       orderScannerRef.current = html5QrCode;
       await html5QrCode.start(
         { facingMode: 'environment' },
-        { fps: 14, qrbox: { width: 220, height: 220 } },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
         (decodedText) => {
+          if (!decodedText || isProcessingScanRef.current || scannerCooldownRef.current) return;
           const now = Date.now();
-          if (now - orderLastScanTimeRef.current > 1200) {
-            orderLastScanTimeRef.current = now;
-            handleBarcodeScan(decodedText);
-          }
+          if (now - orderLastScanTimeRef.current < 1800) return;
+
+          orderLastScanTimeRef.current = now;
+          isProcessingScanRef.current = true;
+          scannerCooldownRef.current = true;
+          setScannerCooldown(true);
+          setScannerFeedback('جاري معالجة الصنف...');
+
+          handleBarcodeScan(decodedText).finally(() => {
+            // فاصل زمني سلس (Cooldown) يمنع التذبذب والمسح المتكرر المفرط
+            setTimeout(() => {
+              isProcessingScanRef.current = false;
+              scannerCooldownRef.current = false;
+              setScannerCooldown(false);
+              setScannerFeedback('');
+            }, 1600);
+          });
         },
         () => {}
       );
@@ -608,25 +733,25 @@ const handleScanProduct = async (barcodeValue) => {
     }
 
     setIsSaving(true);
+
+    // 5. بناء الـ Payload الموحد — خارج try/catch حتى يبقى متاحاً في catch block
+    const finalAddress = `${selectedDarbCity} - ${selectedDarbArea || 'وسط المدينة'} - ${detailedAddr}`;
+    const payload = {
+      customer_name:       newOrderForm.customer_name.trim(),
+      customer_phones:     cleanedPhones,
+      address:             finalAddress,
+      social_media_source: newOrderForm.social_media_source?.trim() || null,
+      notes:               newOrderForm.notes?.trim() || null,
+      items:               selectedVariants.map(v => ({ variant_id: v.variant_id, quantity: v.quantity, allow_inspection: v.allow_inspection ?? false, allow_try_on: v.allow_try_on ?? false })),
+      shipping_provider:   'darb_assabil',
+      darb_service_id:     selectedDarbService,
+      darb_city:           selectedDarbCity,
+      darb_area:           selectedDarbArea || 'وسط المدينة',
+      darb_payment_by:     selectedDarbPaymentBy || 'receiver',
+      delivery_gender:     deliveryGender || 'رجالي',
+    };
+
     try {
-      // 5. بناء الـ Payload الموحد والمعتمد على معيار درب السبيل
-      const finalAddress = `${selectedDarbCity} - ${selectedDarbArea || 'وسط المدينة'} - ${detailedAddr}`;
-
-      const payload = {
-        customer_name:       newOrderForm.customer_name.trim(),
-        customer_phones:     cleanedPhones,
-        address:             finalAddress,
-        social_media_source: newOrderForm.social_media_source?.trim() || null,
-        notes:               newOrderForm.notes?.trim() || null,
-        items:               selectedVariants.map(v => ({ variant_id: v.variant_id, quantity: v.quantity })),
-        shipping_provider:   'darb_assabil',
-        darb_service_id:     selectedDarbService,
-        darb_city:           selectedDarbCity,
-        darb_area:           selectedDarbArea || 'وسط المدينة',
-        darb_payment_by:     selectedDarbPaymentBy || 'receiver',
-        delivery_gender:     deliveryGender || 'رجالي',
-      };
-
       if (!navigator.onLine) {
         // دعم الأوفلاين: حفظ الطلب محلياً عند انقطاع النت
         const tempId = Math.floor(1000 + Math.random() * 9000);
@@ -669,14 +794,8 @@ const handleScanProduct = async (barcodeValue) => {
       }
     } catch (err) {
       if (isNetworkError(err)) {
-        const savedOffline = await saveOfflineAction('CREATE_ORDER', {
-          customer_name: newOrderForm.customer_name.trim(),
-          customer_phones: cleanedPhones,
-          address: newOrderForm.address.trim(),
-          social_media_source: newOrderForm.social_media_source?.trim() || null,
-          notes: newOrderForm.notes?.trim() || null,
-          items: selectedVariants.map(v => ({ variant_id: v.variant_id, quantity: v.quantity })),
-        }, `إنشاء طلب لـ ${newOrderForm.customer_name}`);
+        // payload مبني خارج try ويحتوي على العنوان الصحيح (المدينة + المنطقة + التفاصيل)
+        const savedOffline = await saveOfflineAction('CREATE_ORDER', payload, `إنشاء طلب لـ ${payload.customer_name}`);
 
         if (!savedOffline) {
           showToast('تعذّر حفظ الطلب محلياً! لا تغلق الصفحة وحاول مرة أخرى.', 'error');
@@ -699,18 +818,51 @@ const handleScanProduct = async (barcodeValue) => {
   const handleSendSelectedOrderToDarbDirectly = async (e) => {
     if (e) e.preventDefault();
     if (!selectedOrder) return;
-    
+
+    const shipmentData = {
+      service: selectedDarbService || '67f19a776dabff22987169e9',
+      city: selectedDarbCity || 'طرابلس',
+      area: selectedDarbArea || 'وسط المدينة',
+      address: darbDetailedAddress.trim() || selectedOrder.address,
+      paymentBy: selectedDarbPaymentBy || 'receiver',
+      delivery_gender: deliveryGender || 'رجالي',
+      notes: selectedOrder.notes
+    };
+
+    // دعم الأوفلاين الكامل: حفظ العملية محلياً وتحديث الواجهة فوراً
+    if (!navigator.onLine) {
+      const saved = await saveOfflineAction(
+        'SEND_DARB_SHIPMENT',
+        { order_id: selectedOrder.id, shipment_data: shipmentData },
+        `إرسال شحنة درب السبيل للطلب #${selectedOrder.id}`
+      );
+      if (!saved) {
+        showToast('تعذر حفظ العملية محلياً! حاول مرة أخرى 📡', 'error');
+        return;
+      }
+
+      setSelectedOrder(prev => ({
+        ...prev,
+        shipping_provider: 'darb_assabil',
+        status: 'تم اسناده للتوصيل',
+        delivery_man_name: 'درب السبيل (بانتظار المزامنة ⏳)'
+      }));
+
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? {
+        ...o,
+        shipping_provider: 'darb_assabil',
+        status: 'تم اسناده للتوصيل',
+        delivery_man_name: 'درب السبيل (بانتظار المزامنة ⏳)'
+      } : o));
+
+      setIsDarbModalOpen(false);
+      showToast('أوفلاين: تم حفظ شحنة درب السبيل محلياً! سيتم إرسالها تلقائياً عند الاتصال بالإنترنت 📡', 'warning', 6000);
+      return;
+    }
+
     setIsSendingDarb(true);
     try {
-      const res = await orderApi.createDarbShipment(selectedOrder.id, {
-        service: selectedDarbService || '67f19a776dabff22987169e9',
-        city: selectedDarbCity || 'طرابلس',
-        area: selectedDarbArea || 'وسط المدينة',
-        address: darbDetailedAddress.trim() || selectedOrder.address,
-        paymentBy: selectedDarbPaymentBy || 'receiver',
-        delivery_gender: deliveryGender || 'رجالي',
-        notes: selectedOrder.notes
-      });
+      const res = await orderApi.createDarbShipment(selectedOrder.id, shipmentData);
 
       const updatedTracking = res.tracking_number;
       const updatedShipmentId = res.shipment_id;
@@ -738,6 +890,28 @@ const handleScanProduct = async (barcodeValue) => {
 
       setIsDarbModalOpen(false);
     } catch (err) {
+      if (isNetworkError(err)) {
+        await saveOfflineAction(
+          'SEND_DARB_SHIPMENT',
+          { order_id: selectedOrder.id, shipment_data: shipmentData },
+          `إرسال شحنة درب السبيل للطلب #${selectedOrder.id}`
+        );
+        setSelectedOrder(prev => ({
+          ...prev,
+          shipping_provider: 'darb_assabil',
+          status: 'تم اسناده للتوصيل',
+          delivery_man_name: 'درب السبيل (بانتظار المزامنة ⏳)'
+        }));
+        setOrders(prev => prev.map(o => o.id === selectedOrder.id ? {
+          ...o,
+          shipping_provider: 'darb_assabil',
+          status: 'تم اسناده للتوصيل',
+          delivery_man_name: 'درب السبيل (بانتظار المزامنة ⏳)'
+        } : o));
+        setIsDarbModalOpen(false);
+        showToast('انقطع الاتصال: تم حفظ إسناد الشحنة لدرب السبيل محلياً وسيتم إرسالها تلقائياً 📡', 'warning', 6000);
+        return;
+      }
       showToast(typeof err === 'string' ? err : 'تعذر إرسال الشحنة لشركة درب السبيل', 'error');
     } finally {
       setIsSendingDarb(false);
@@ -776,7 +950,7 @@ const addVariantToOrder = useCallback((variant, colorName, productName, sizeName
     showToast(`تمت زيادة كمية الصنف المختار`, 'success');
   } else {
     // 3. إضافة الصنف وتخزين كمية المخزون الفعلي معه للتحكم اللاحق في السلة
-    setSelectedVariants(prev => [...prev, { variant_id: variant.id, quantity: 1, label, stock: availableStock }]);
+    setSelectedVariants(prev => [...prev, { variant_id: variant.id, quantity: 1, label, stock: availableStock, allow_inspection: false, allow_try_on: false }]);
     
     showToast(`تم إضافة الصنف للطلب بنجاح`, 'success');
   }
@@ -785,6 +959,12 @@ const addVariantToOrder = useCallback((variant, colorName, productName, sizeName
 
 const removeVariant = (variantId) => {
   setSelectedVariants(prev => prev.filter(v => v.variant_id !== variantId));
+};
+
+const toggleVariantPermission = (variantId, field) => {
+  setSelectedVariants(prev => prev.map(v =>
+    v.variant_id === variantId ? { ...v, [field]: !v[field] } : v
+  ));
 };
 
 const updateVariantQty = (variantId, qty) => {
@@ -800,21 +980,97 @@ const updateVariantQty = (variantId, qty) => {
   setSelectedVariants(prev => prev.map(v => v.variant_id === variantId ? { ...v, quantity: n } : v));
 };
 
+// ========= دوال إدارة المنتجات داخل نافذة تعديل الطلب =========
+const addVariantToEditOrder = useCallback((variant, colorName, productName, sizeName) => {
+  const label = `${productName} - ${colorName} - ${sizeName}`;
+  const availableStock = variant.quantity_available !== undefined ? variant.quantity_available : 0;
+
+  const exists = editSelectedVariants.find(v => v.variant_id === variant.id);
+  if (exists) {
+    if (exists.quantity >= exists.stock) {
+      showToast(`وصلت للحد الأقصى المتاح في المخزون (${exists.stock} قطع).`, 'error');
+      return;
+    }
+    setEditSelectedVariants(prev => prev.map(v =>
+      v.variant_id === variant.id ? { ...v, quantity: v.quantity + 1 } : v
+    ));
+    showToast(`تمت زيادة كمية الصنف`, 'success');
+  } else {
+    if (availableStock <= 0) {
+      showToast(`عذراً، الصنف (${label}) غير متوفر في المخزون حالياً!`, 'error');
+      return;
+    }
+    const itemPrice = Number(variant.selling_price ?? variant.price ?? 0);
+    setEditSelectedVariants(prev => [...prev, {
+      variant_id: variant.id,
+      quantity: 1,
+      label,
+      stock: availableStock,
+      price: itemPrice,
+      allow_inspection: false,
+      allow_try_on: false
+    }]);
+    showToast(`تمت إضافة الصنف للطلب بنجاح`, 'success');
+  }
+}, [editSelectedVariants, showToast]);
+
+const removeEditVariant = (variantId) => {
+  setEditSelectedVariants(prev => prev.filter(v => v.variant_id !== variantId));
+};
+
+const toggleEditVariantPermission = (variantId, field) => {
+  setEditSelectedVariants(prev => prev.map(v =>
+    v.variant_id === variantId ? { ...v, [field]: !v[field] } : v
+  ));
+};
+
+const updateEditVariantQty = (variantId, qty) => {
+  const n = parseInt(qty, 10);
+  if (n < 1) { removeEditVariant(variantId); return; }
+
+  const target = editSelectedVariants.find(v => v.variant_id === variantId);
+  if (target && n > target.stock) {
+    showToast(`المخزون لا يكفي! المتاح هو (${target.stock}) قطع فقط.`, 'error');
+    return;
+  }
+  setEditSelectedVariants(prev => prev.map(v => v.variant_id === variantId ? { ...v, quantity: n } : v));
+};
+
   // ========= حذف الطلب =========
   const handleDeleteOrder = async () => {
     if (!selectedOrder) return;
+
+    if (
+      selectedOrder.status === 'تم اسناده للتوصيل' ||
+      selectedOrder.status === 'جاري الشحن' ||
+      selectedOrder.status === 'shipped' ||
+      selectedOrder.status === 'تم التوصيل' ||
+      selectedOrder.status === 'delivered'
+    ) {
+      showToast('لا يمكن إلغاء الطلب بعد إسناده للتوصيل ⚠️', 'error');
+      return;
+    }
+
+    if (!navigator.onLine) {
+      showToast('لا يمكن إلغاء الطلب بدون اتصال بالإنترنت. يجب الاتصال أولاً لضمان إعادة الكميات للمخزون 📡', 'error');
+      return;
+    }
+
     if (!window.confirm(`هل أنت متأكد من إلغاء الطلب رقم #${selectedOrder.id}؟`)) return;
     setIsDeleting(true);
     try {
       await orderApi.deleteOrder(selectedOrder.id);
       setOrders(prev => prev.filter(o => o.id !== selectedOrder.id));
       setIsDetailOpen(false);
-      // ✅ إصلاح BUG-01: تصفير selectedOrder بعد الحذف لمنع أزرار أخرى تعمل على طلب محذوف
       setSelectedOrder(null);
       fetchInventoryStats();
       showToast('تم إلغاء الطلب وإعادة الكميات للمخزون', 'warning');
     } catch (err) {
-      showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء حذف الطلب', 'error');
+      if (isNetworkError(err)) {
+        showToast('انقطع الاتصال. لم يُحذف الطلب — أعد المحاولة عند عودة الاتصال 📡', 'error');
+      } else {
+        showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء حذف الطلب', 'error');
+      }
     } finally {
       setIsDeleting(false);
     }
@@ -827,16 +1083,54 @@ const updateVariantQty = (variantId, qty) => {
       showToast('يرجى إدخال اسم السائق أو المندوب', 'error');
       return;
     }
+
+    const driverName = localDriverName.trim();
     setIsAssigning(true);
+
+    // دعم الأوفلاين: حفظ التغيير محلياً وتحديث الواجهة فوراً
+    if (!navigator.onLine) {
+      const saved = await saveOfflineAction(
+        'UPDATE_ORDER',
+        { id: selectedOrder.id, data: { status: 'shipped', delivery_info: `توصيل خاص — ${driverName}` } },
+        `إسناد توصيل خاص للطلب #${selectedOrder.id} — ${driverName}`
+      );
+      setIsAssigning(false);
+      if (!saved) {
+        showToast('تعذّر حفظ الإسناد محلياً! حاول مرة أخرى 📡', 'error');
+        return;
+      }
+      setSelectedOrder(prev => ({ ...prev, delivery_man_name: driverName, status: 'تم اسناده للتوصيل', shipping_provider: 'local' }));
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, delivery_man_name: driverName, status: 'تم اسناده للتوصيل', shipping_provider: 'local' } : o));
+      showToast('أوفلاين: تم حفظ إسناد الطلب محلياً! سيُزامن تلقائياً عند الاتصال 📡', 'warning');
+      setLocalDriverName('');
+      return;
+    }
+
     try {
-      const updated = await orderApi.assignDelivery(selectedOrder.id, localDriverName.trim(), 'توصيل خاص');
+      const updated = await orderApi.assignDelivery(selectedOrder.id, driverName, 'توصيل خاص');
       const arabicStatus = mapStatusToArabic(updated.status) || 'تم اسناده للتوصيل';
-      setSelectedOrder(prev => ({ ...prev, delivery_man_name: localDriverName.trim(), status: arabicStatus, shipping_provider: 'local' }));
-      setOrders(prev => prev.map(o => o.id === (updated.id || selectedOrder.id) ? { ...o, delivery_man_name: localDriverName.trim(), status: arabicStatus, shipping_provider: 'local' } : o));
+      setSelectedOrder(prev => ({ ...prev, delivery_man_name: driverName, status: arabicStatus, shipping_provider: 'local' }));
+      setOrders(prev => prev.map(o => o.id === (updated.id || selectedOrder.id) ? { ...o, delivery_man_name: driverName, status: arabicStatus, shipping_provider: 'local' } : o));
       showToast('تم إسناد السائق وتحديث الحالة إلى "تم اسناده للتوصيل" بنجاح', 'success');
       setLocalDriverName('');
     } catch (err) {
-      showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء إسناد الشحن', 'error');
+      if (isNetworkError(err)) {
+        const saved = await saveOfflineAction(
+          'UPDATE_ORDER',
+          { id: selectedOrder.id, data: { status: 'shipped', delivery_info: `توصيل خاص — ${driverName}` } },
+          `إسناد توصيل خاص للطلب #${selectedOrder.id} — ${driverName}`
+        );
+        if (saved) {
+          setSelectedOrder(prev => ({ ...prev, delivery_man_name: driverName, status: 'تم اسناده للتوصيل', shipping_provider: 'local' }));
+          setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, delivery_man_name: driverName, status: 'تم اسناده للتوصيل', shipping_provider: 'local' } : o));
+          showToast('أوفلاين: تم حفظ إسناد الطلب محلياً! سيُزامن عند الاتصال 📡', 'warning');
+          setLocalDriverName('');
+        } else {
+          showToast('انقطع الاتصال وتعذّر الحفظ محلياً! أعد المحاولة.', 'error');
+        }
+      } else {
+        showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء إسناد الشحن', 'error');
+      }
     } finally {
       setIsAssigning(false);
     }
@@ -861,49 +1155,182 @@ const updateVariantQty = (variantId, qty) => {
   // ========= تعديل بيانات الطلب =========
   const handleOpenEdit = () => {
     if (!selectedOrder) return;
+
+    fetchAvailableProducts();
+    loadDarbDataIfNeeded();
+
+    const phones = Array.isArray(selectedOrder.customer_phones) && selectedOrder.customer_phones.length > 0
+      ? [...selectedOrder.customer_phones]
+      : selectedOrder.customer_phones
+        ? [selectedOrder.customer_phones]
+        : [''];
+
+    let city = selectedDarbCity || 'طرابلس';
+    let area = selectedDarbArea || '';
+    let detailed = selectedOrder.address || '';
+
+    if (selectedOrder.address && selectedOrder.address.includes(' - ')) {
+      const parts = selectedOrder.address.split(' - ');
+      if (parts.length >= 2) {
+        city = parts[0].trim();
+        area = parts[1].trim();
+        detailed = parts.slice(2).join(' - ').trim() || parts[1].trim();
+      }
+    }
+
+    setEditDarbCity(city);
+    setEditDarbArea(area);
+    setEditDarbDetailedAddress(detailed);
+    setEditShippingProvider(selectedOrder.shipping_provider || 'darb_assabil');
+    setEditDarbService(selectedOrder.darb_service_id || selectedDarbService || '67f19a776dabff22987169e9');
+    setEditDarbPaymentBy(selectedOrder.darb_payment_by || selectedDarbPaymentBy || 'receiver');
+
     setEditForm({
-      customer_name:   selectedOrder.customer_name || '',
-      // ✅ إصلاح BUG-02: احتفظ بكل أرقام الهاتف بدلاً من الرقم الأول فقط
-      customer_phones: Array.isArray(selectedOrder.customer_phones)
-        ? selectedOrder.customer_phones.join(', ')
-        : selectedOrder.customer_phones || '',
-      address: selectedOrder.address || '',
-      notes:   selectedOrder.notes   || '',
+      customer_name:       selectedOrder.customer_name       || '',
+      customer_phones:     phones,
+      address:             selectedOrder.address              || '',
+      social_media_source: selectedOrder.social_media_source || '',
+      notes:               selectedOrder.notes               || '',
     });
+
+    const existingVariants = (selectedOrder.items || [])
+      .filter(it => it.deleted_at == null)
+      .map(it => {
+        const v = it.variant || {};
+        const prod = it.product || {};
+        const colorName = v.color?.color_name || it.color_name || '';
+        const sizeName = v.size?.name || it.size || '';
+        const prodName = prod.name || it.product_name || 'منتج';
+        const label = `${prodName} ${colorName ? `(${colorName} - ${sizeName})` : ''}`.trim();
+        const availableQty = (v.quantity_available ?? 0) + (it.quantity || 1);
+
+        return {
+          variant_id: it.variant_id || v.id,
+          quantity: it.quantity || 1,
+          label: label,
+          stock: availableQty,
+          price: Number(it.price_at_order || v.selling_price || 0),
+          allow_inspection: !!it.allow_inspection,
+          allow_try_on: !!it.allow_try_on,
+        };
+      });
+
+    setEditSelectedVariants(existingVariants);
+    setEditShowProductsSection(false);
     setIsEditOpen(true);
   };
 
   const handleSaveEdit = async (e) => {
     e.preventDefault();
+
+    const cleanedPhones = Array.isArray(editForm.customer_phones)
+      ? editForm.customer_phones.map(p => p.trim()).filter(Boolean)
+      : editForm.customer_phones ? [editForm.customer_phones.trim()] : [];
+
+    if (!editForm.customer_name.trim() || cleanedPhones.length === 0) {
+      showToast('يرجى إدخال اسم العميل ورقم هاتف واحد على الأقل', 'error');
+      return;
+    }
+
+    if (editSelectedVariants.length === 0) {
+      showToast('يرجى إضافة منتج واحد على الأقل للطلب', 'error');
+      return;
+    }
+
     setIsSaving(true);
-    try {
-      const payload = {
-        customer_name:   editForm.customer_name.trim(),
-        // تحويل النص المفصول بفاصلة إلى مصفوفة أرقام
-        customer_phones: editForm.customer_phones.trim()
-          ? editForm.customer_phones.split(',').map(p => p.trim()).filter(Boolean)
-          : undefined,
-        address: editForm.address.trim(),
-        notes:   editForm.notes.trim() || null,
-      };
-      await orderApi.updateOrder(selectedOrder.id, payload);
+
+    const finalAddress = (editShippingProvider === 'darb_assabil' && editDarbCity)
+      ? `${editDarbCity} - ${editDarbArea || 'وسط المدينة'} - ${editDarbDetailedAddress || editForm.address}`.trim()
+      : (editForm.address.trim() || editDarbDetailedAddress.trim());
+
+    const payload = {
+      customer_name:       editForm.customer_name.trim(),
+      customer_phones:     cleanedPhones,
+      address:             finalAddress,
+      social_media_source: editForm.social_media_source?.trim() || null,
+      notes:               editForm.notes?.trim() || null,
+      shipping_provider:   editShippingProvider,
+      darb_city:           editDarbCity || null,
+      darb_area:           editDarbArea || null,
+      darb_service_id:     editDarbService || null,
+      darb_payment_by:     editDarbPaymentBy || 'receiver',
+      items: editSelectedVariants.map(v => ({
+        variant_id:       v.variant_id,
+        quantity:         v.quantity,
+        allow_inspection: !!v.allow_inspection,
+        allow_try_on:     !!v.allow_try_on
+      }))
+    };
+
+    // تطبيق التحديث على الواجهة فوراً (optimistic update)
+    const applyLocalEdit = (updatedOrderData = null) => {
       setSelectedOrder(prev => ({
         ...prev,
-        customer_name:   payload.customer_name,
-        customer_phones: payload.customer_phones || prev.customer_phones,
-        address: payload.address,
-        notes:   payload.notes,
+        customer_name:       payload.customer_name,
+        customer_phones:     payload.customer_phones,
+        address:             payload.address,
+        social_media_source: payload.social_media_source,
+        notes:               payload.notes,
+        total_price:         updatedOrderData?.total_price || prev.total_price,
+        items: updatedOrderData?.items || prev.items,
       }));
-      // ✅ إصلاح BUG-11: تحديث جميع الحقول في قائمة الطلبات وليس الاسم فقط
       setOrders(prev => prev.map(o =>
         o.id === selectedOrder.id
-          ? { ...o, customer_name: payload.customer_name, address: payload.address, notes: payload.notes }
+          ? {
+              ...o,
+              customer_name: payload.customer_name,
+              address:       payload.address,
+              notes:         payload.notes,
+              total_price:   updatedOrderData?.total_price || o.total_price
+            }
           : o
       ));
       setIsEditOpen(false);
-      showToast('تم تحديث بيانات الطلب بنجاح');
+    };
+
+    // دعم الأوفلاين: حفظ التعديل محلياً وتحديث الواجهة فوراً
+    if (!navigator.onLine) {
+      const saved = await saveOfflineAction(
+        'UPDATE_ORDER',
+        { id: selectedOrder.id, data: payload },
+        `تعديل بيانات الطلب #${selectedOrder.id}`
+      );
+      setIsSaving(false);
+      if (!saved) {
+        showToast('تعذّر حفظ التعديل محلياً! حاول مرة أخرى 📡', 'error');
+        return;
+      }
+      applyLocalEdit();
+      showToast('أوفلاين: تم حفظ التعديل محلياً! سيُزامن تلقائياً عند الاتصال 📡', 'warning');
+      return;
+    }
+
+    try {
+      const updated = await orderApi.updateOrder(selectedOrder.id, payload);
+      try {
+        const freshDetails = await orderApi.getOrderDetails(selectedOrder.id);
+        applyLocalEdit(freshDetails);
+      } catch (e) {
+        applyLocalEdit(updated);
+      }
+      fetchInventoryStats();
+      showToast('تم تحديث بيانات الطلب والمنتجات بنجاح ✅');
     } catch (err) {
-      showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء التعديل', 'error');
+      if (isNetworkError(err)) {
+        const saved = await saveOfflineAction(
+          'UPDATE_ORDER',
+          { id: selectedOrder.id, data: payload },
+          `تعديل بيانات الطلب #${selectedOrder.id}`
+        );
+        if (saved) {
+          applyLocalEdit();
+          showToast('أوفلاين: تم حفظ التعديل محلياً! سيُزامن عند الاتصال 📡', 'warning');
+        } else {
+          showToast('انقطع الاتصال وتعذّر الحفظ محلياً! أعد المحاولة.', 'error');
+        }
+      } else {
+        showToast(typeof err === 'string' ? err : 'حدث خطأ أثناء التعديل', 'error');
+      }
     } finally {
       setIsSaving(false);
     }
@@ -998,62 +1425,63 @@ const updateVariantQty = (variantId, qty) => {
           </div>
         </div>
 
-   {/* ===== إحصائيات الطلبيات والحالات اليومية المتزامنة فورياً ===== */}
-   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+   {/* ===== إحصائيات الطلبيات والحالات اليومية المتزامنة فورياً (2 أعمدة و 2 صفوف على الهاتف) ===== */}
+   <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4 mb-6">
           {[
             { 
               label: 'طلبات معلقة', 
               value: statsData.pendingOrders, 
               bg: 'bg-amber-50', 
               text: 'text-amber-600', 
-              border: 'border-amber-200', 
-              icon: <Clock className="h-5 w-5" /> 
+              border: 'border-amber-200/80', 
+              icon: <Clock className="h-4 w-4 sm:h-5 sm:w-5" /> 
             },
             { 
               label: 'قيد التجهيز', 
               value: statsData.processingOrders, 
               bg: 'bg-blue-50', 
               text: 'text-blue-600', 
-              border: 'border-blue-200', 
-              icon: <PackageOpen className="h-5 w-5" /> 
+              border: 'border-blue-200/80', 
+              icon: <PackageOpen className="h-4 w-4 sm:h-5 sm:w-5" /> 
             },
             { 
               label: 'تم التجهيز', 
               value: statsData.readyOrders, 
               bg: 'bg-emerald-50', 
               text: 'text-emerald-600', 
-              border: 'border-emerald-200', 
-              icon: <CheckCircle2 className="h-5 w-5" /> 
+              border: 'border-emerald-200/80', 
+              icon: <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" /> 
             },
             { 
               label: 'تم اسناده للتوصيل', 
               value: statsData.shippingOrders, 
               bg: 'bg-purple-50', 
               text: 'text-purple-600', 
-              border: 'border-purple-200', 
-              icon: <Truck className="h-5 w-5" /> 
+              border: 'border-purple-200/80', 
+              icon: <Truck className="h-4 w-4 sm:h-5 sm:w-5" /> 
             },
           ].map(({ label, value, bg, text, border, icon }) => (
             <div 
               key={label} 
-              className={`bg-white border ${border} p-4 rounded-xl shadow-sm hover:shadow-md transition-all flex items-center justify-between`}
+              className={`bg-white border ${border} p-3 sm:p-4 rounded-xl sm:rounded-2xl shadow-xs hover:shadow-md transition-all flex items-center justify-between gap-2`}
             >
-              <div className="space-y-1">
-                <span className="text-xs text-slate-500 font-medium block">{label}</span>
-                <span className={`text-2xl font-bold ${text} tracking-tight`}>
-                  {value} <span className="text-xs text-slate-400 font-normal">طلب</span>
-                </span>
+              <div className="space-y-0.5 sm:space-y-1 min-w-0">
+                <span className="text-[11px] sm:text-xs text-slate-500 font-semibold block truncate">{label}</span>
+                <div className={`text-lg sm:text-2xl font-black ${text} tracking-tight flex items-baseline gap-1`}>
+                  <span>{value}</span>
+                  <span className="text-[10px] sm:text-xs text-slate-400 font-normal">طلب</span>
+                </div>
               </div>
-              <div className={`h-9 w-9 rounded-lg ${bg} flex items-center justify-center ${text}`}>
+              <div className={`h-8 w-8 sm:h-10 sm:w-10 rounded-lg sm:rounded-xl ${bg} flex items-center justify-center shrink-0 ${text}`}>
                 {icon}
               </div>
             </div>
           ))}
         </div>
         {/* ===== البحث والفلترة ===== */}
-        <div className="space-y-3 bg-white p-4 rounded-xl border border-slate-200/80 shadow-sm">
+        <div className="space-y-3 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="flex flex-col md:flex-row gap-3">
-            <div className="relative rounded-md flex-1">
+            <div className="relative rounded-xl flex-1">
               <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
                 <Search className="h-4 w-4 text-slate-400" />
               </div>
@@ -1062,8 +1490,8 @@ const updateVariantQty = (variantId, qty) => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="block w-full pr-10 pl-3 py-2 border border-slate-300 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#6b1d2f] focus:border-[#6b1d2f] transition-all"
-                placeholder="ابحث بواسطة الاسم أو رقم الطلب أو رقم الهاتف..."
+                className="block w-full pr-10 pl-3 py-2.5 border border-slate-200 rounded-xl text-xs sm:text-sm bg-slate-50/70 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#800000]/10 focus:border-[#800000] transition-all placeholder:text-slate-400"
+                placeholder="ابحث بالاسم أو رقم الهاتف أو رقم الطلب..."
               />
               {searchQuery && (
                 <button onClick={() => setSearchQuery('')} className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 hover:text-slate-600">
@@ -1079,7 +1507,7 @@ const updateVariantQty = (variantId, qty) => {
               <select
                 value={filterEmployee}
                 onChange={(e) => setFilterEmployee(e.target.value)}
-                className="block w-full pr-10 pl-3 py-2 border border-slate-300 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#6b1d2f] focus:border-[#6b1d2f] transition-all"
+                className="block w-full pr-10 pl-3 py-2.5 border border-slate-200 rounded-xl text-xs sm:text-sm bg-slate-50/70 focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#800000]/10 focus:border-[#800000] transition-all text-slate-700 font-medium"
               >
                 <option value="الكل">كل الموظفين</option>
                 {employeesList.map(emp => (
@@ -1089,25 +1517,27 @@ const updateVariantQty = (variantId, qty) => {
             </div>
           </div>
 
-          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none items-center">
-            {['الكل', 'معلق', 'قيد التجهيز', 'تم التجهيز', 'تم اسناده للتوصيل'].map(tab => {
+          {/* شريط تبويبات الحالات مع مسافات واضحة وتصميم مريح على الهاتف والديسكتوب */}
+          <div className="flex gap-2 sm:gap-2.5 overflow-x-auto pb-1.5 pt-0.5 scrollbar-none items-center">
+            {['الكل', 'معلق', 'قيد التجهيز', 'تم التجهيز', 'تم اسناده للتوصيل', 'ملغي'].map(tab => {
               const isActive = activeFilter === tab;
               const count = filterCounts[tab] ?? 0;
               return (
                 <button
                   key={tab}
+                  type="button"
                   onClick={() => setActiveFilter(tab)}
-                  className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all border flex items-center gap-1.5 ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border flex items-center gap-2 shrink-0 select-none active:scale-95 ${
                     isActive
-                      ? 'bg-[#800000] text-white border-[#800000] shadow-sm'
-                      : 'bg-white border-slate-200 text-slate-600 hover:bg-[#800000]/5 hover:text-[#800000] hover:border-[#800000]/30'
+                      ? 'bg-[#800000] text-white border-[#800000] shadow-sm shadow-[#800000]/20'
+                      : 'bg-slate-50/70 border-slate-200 text-slate-600 hover:bg-white hover:text-[#800000] hover:border-[#800000]/30'
                   }`}
                 >
                   <span>{tab}</span>
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center transition-all ${
                     isActive 
                       ? 'bg-white/20 text-white' 
-                      : 'bg-slate-100 text-slate-500'
+                      : 'bg-white border border-slate-200 text-slate-600'
                   }`}>
                     {count}
                   </span>
@@ -1168,7 +1598,7 @@ const updateVariantQty = (variantId, qty) => {
                     </div>
                     {order.total_price != null && (
                       <span className="text-[11px] text-slate-400 font-medium">
-                        الإجمالي: <span className="font-bold text-slate-700">{Number(order.total_price).toLocaleString('ar-SA')} ر.س</span>
+                        الإجمالي: <span className="font-bold text-slate-700">{Number(order.total_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} د.ل</span>
                       </span>
                     )}
                   </div>
@@ -1179,7 +1609,7 @@ const updateVariantQty = (variantId, qty) => {
                     <StatusBadge status={order.status} />
                     {order.created_at && (
                       <span className="text-[10px] text-slate-400 font-medium">
-                        {new Date(order.created_at).toLocaleDateString('ar-SA', { year: 'numeric', month: 'short', day: 'numeric' })}
+                        {new Date(order.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                       </span>
                     )}
                   </div>
@@ -1359,31 +1789,20 @@ const updateVariantQty = (variantId, qty) => {
                         />
                       </div>
 
-                      {/* نوع التوصيل وباقة الخدمة وجهة الدفع */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                        {/* نوع التوصيل */}
+                      {/* باقة الخدمة وجهة دفع الشحن (درب السبيل) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        {/* باقة الخدمة الرسمية من درب السبيل */}
                         <div className="space-y-1">
                           <label className="text-[11px] font-bold text-slate-700 block">
-                            نوع التوصيل
-                          </label>
-                          <select
-                            value={deliveryGender}
-                            onChange={e => setDeliveryGender(e.target.value)}
-                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
-                          >
-                            <option value="رجالي">👨 توصيل رجالي</option>
-                            <option value="نسائي">👩 توصيل نسائي</option>
-                          </select>
-                        </div>
-
-                        {/* باقة الخدمة */}
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-bold text-slate-700 block">
-                            نوع باقة الخدمة
+                            نوع باقة الخدمة (درب السبيل) <span className="text-red-500">*</span>
                           </label>
                           <select
                             value={selectedDarbService}
-                            onChange={e => setSelectedDarbService(e.target.value)}
+                            onChange={e => {
+                              setSelectedDarbService(e.target.value);
+                              const srv = darbServices.find(s => s.id === e.target.value);
+                              if (srv) setDeliveryGender(srv.name.includes('نسائي') ? 'نسائي' : 'رجالي');
+                            }}
                             className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
                           >
                             {darbServices.map(srv => (
@@ -1397,12 +1816,12 @@ const updateVariantQty = (variantId, qty) => {
                         {/* جهة دفع الشحن */}
                         <div className="space-y-1">
                           <label className="text-[11px] font-bold text-slate-700 block">
-                            جهة دفع الشحن
+                            جهة دفع الشحن <span className="text-red-500">*</span>
                           </label>
                           <select
                             value={selectedDarbPaymentBy}
                             onChange={e => setSelectedDarbPaymentBy(e.target.value)}
-                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800"
+                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
                           >
                             <option value="receiver">المستلم (الزبون يدفع)</option>
                             <option value="sender">المرسل (المتجر يدفع)</option>
@@ -1482,33 +1901,65 @@ const updateVariantQty = (variantId, qty) => {
                       </span>
                     </div>
 
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
+                    <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
                       {selectedVariants.map(v => (
-                        <div key={v.variant_id} className="flex items-center justify-between gap-3 bg-white border border-slate-100 rounded-xl p-2.5 shadow-sm transition-all hover:border-slate-200">
-                          <span className="text-xs font-medium text-slate-700 flex-1 truncate">{v.label}</span>
-                          
-                          <div className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-100 rounded-lg p-0.5">
-                            <button type="button" onClick={() => updateVariantQty(v.variant_id, v.quantity - 1)}
-                              className="h-5.5 w-5.5 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-sm">
-                              <Minus className="h-2.5 w-2.5" />
-                            </button>
-                            
-                            <input
-                              type="number" min="1" value={v.quantity}
-                              onChange={e => updateVariantQty(v.variant_id, parseInt(e.target.value) || 1)}
-                              className="w-8 text-center text-xs bg-transparent font-bold text-slate-800 focus:outline-none"
-                            />
-                            
-                            <button type="button" onClick={() => updateVariantQty(v.variant_id, v.quantity + 1)}
-                              className="h-5.5 w-5.5 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-sm">
-                              <Plus className="h-2.5 w-2.5" />
+                        <div key={v.variant_id} className="bg-white border border-slate-100 rounded-xl shadow-sm transition-all hover:border-slate-200 overflow-hidden">
+                          {/* الصف الأول: اسم المنتج + أزرار الكمية */}
+                          <div className="flex items-center justify-between gap-3 p-2.5">
+                            <span className="text-xs font-medium text-slate-700 flex-1 truncate">{v.label}</span>
+
+                            <div className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-100 rounded-lg p-0.5">
+                              <button type="button" onClick={() => updateVariantQty(v.variant_id, v.quantity - 1)}
+                                className="h-5.5 w-5.5 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-sm">
+                                <Minus className="h-2.5 w-2.5" />
+                              </button>
+
+                              <input
+                                type="number" min="1" value={v.quantity}
+                                onChange={e => updateVariantQty(v.variant_id, parseInt(e.target.value) || 1)}
+                                className="w-8 text-center text-xs bg-transparent font-bold text-slate-800 focus:outline-none"
+                              />
+
+                              <button type="button" onClick={() => updateVariantQty(v.variant_id, v.quantity + 1)}
+                                className="h-5.5 w-5.5 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-sm">
+                                <Plus className="h-2.5 w-2.5" />
+                              </button>
+
+                              <div className="w-px h-4 bg-slate-200 mx-0.5" />
+
+                              <button type="button" onClick={() => removeVariant(v.variant_id)}
+                                className="h-5.5 w-5.5 rounded-md bg-red-50 flex items-center justify-center text-red-600 hover:bg-red-100 transition-colors">
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* الصف الثاني: صلاحيات الفتح والقياس */}
+                          <div className="flex items-center gap-2 px-2.5 pb-2 border-t border-slate-50 pt-1.5">
+                            <button
+                              type="button"
+                              onClick={() => toggleVariantPermission(v.variant_id, 'allow_inspection')}
+                              className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all ${
+                                v.allow_inspection
+                                  ? 'bg-amber-50 text-amber-700 border-amber-300 shadow-sm'
+                                  : 'bg-slate-50 text-slate-400 border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <span className={`w-2 h-2 rounded-full ${v.allow_inspection ? 'bg-amber-400' : 'bg-slate-300'}`} />
+                              يسمح الفتح
                             </button>
 
-                            <div className="w-px h-4 bg-slate-200 mx-0.5" />
-
-                            <button type="button" onClick={() => removeVariant(v.variant_id)}
-                              className="h-5.5 w-5.5 rounded-md bg-red-50 flex items-center justify-center text-red-600 hover:bg-red-100 transition-colors">
-                              <X className="h-2.5 w-2.5" />
+                            <button
+                              type="button"
+                              onClick={() => toggleVariantPermission(v.variant_id, 'allow_try_on')}
+                              className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all ${
+                                v.allow_try_on
+                                  ? 'bg-blue-50 text-blue-700 border-blue-300 shadow-sm'
+                                  : 'bg-slate-50 text-slate-400 border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <span className={`w-2 h-2 rounded-full ${v.allow_try_on ? 'bg-blue-400' : 'bg-slate-300'}`} />
+                              يسمح القياس
                             </button>
                           </div>
                         </div>
@@ -1669,19 +2120,18 @@ const updateVariantQty = (variantId, qty) => {
                           )}
                         </div>
 
-                        {/* زر إسناد لدرب السبيل إذا لم تكن مسندة بعد */}
                         {!selectedOrder.tracking_number && (
                           <button
                             type="button"
                             onClick={() => {
                               loadDarbDataIfNeeded();
-                              setDarbDetailedAddress(selectedOrder.address || '');
+                              setDarbDetailedAddress(selectedOrder?.address || '');
                               setIsDarbModalOpen(true);
                             }}
-                            className="flex items-center gap-1 bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all active:scale-95 shadow-sm"
+                            className="flex items-center gap-1 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all shadow-sm active:scale-95"
                           >
-                            <Zap className="h-3 w-3" />
-                            <span>إرسال الشحنة لدرب السبيل ⚡</span>
+                            <Zap className="h-3 w-3 text-amber-600" />
+                            <span>إرسال لدرب السبيل</span>
                           </button>
                         )}
                       </div>
@@ -1844,52 +2294,7 @@ const updateVariantQty = (variantId, qty) => {
 </div>
                 </div>
 
-                {/* حركات الطلب / سجل العمليات */}
-                {selectedOrder.actions && selectedOrder.actions.length > 0 && (
-                  <div className="mt-6 border border-slate-200 rounded-xl p-4 bg-white">
-                    <h3 className="text-sm font-bold text-slate-800 mb-3 flex items-center gap-2">
-                      <Clock className="h-4 w-4 text-[#800000]" />
-                      سجل حركات الطلب
-                    </h3>
-                    <div className="overflow-x-auto rounded-lg border border-slate-100">
-                      <table className="w-full text-xs text-right">
-                        <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                          <tr>
-                            <th className="px-3 py-2 font-bold whitespace-nowrap">الحركة</th>
-                            <th className="px-3 py-2 font-bold whitespace-nowrap">المسؤول</th>
-                            <th className="px-3 py-2 font-bold whitespace-nowrap text-left">الوقت</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {selectedOrder.actions.map((action, idx) => {
-                            let actionName = action.action_type;
-                            if (actionName === 'created') actionName = 'إنشاء الطلب';
-                            else if (actionName === 'item_scanned') actionName = 'مسح منتج';
-                            else if (actionName === 'delivery_assigned') actionName = 'إسناد الشحن';
-                            else if (actionName === 'status_updated') actionName = 'تحديث الحالة';
-                            
-                            return (
-                              <tr key={idx} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50">
-                                <td className="px-3 py-2 font-medium text-slate-800">{actionName}</td>
-                                <td className="px-3 py-2 text-slate-600">
-                                  <div className="flex items-center gap-1.5">
-                                    <div className="h-5 w-5 rounded bg-slate-100 flex items-center justify-center shrink-0">
-                                      <User className="h-3 w-3 text-slate-400" />
-                                    </div>
-                                    {action.user_name}
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2 text-slate-500 font-mono text-left" dir="ltr">
-                                  {action.created_at ? new Date(action.created_at).toLocaleString('ar-SA') : '-'}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+
 
                 {/* قسم إسناد الشحن والتوصيل الفوري عند اكتمال التجهيز */}
                 {(selectedOrder.status === 'تم التجهيز' || selectedOrder.status === 'prepared') && (
@@ -1908,14 +2313,14 @@ const updateVariantQty = (variantId, qty) => {
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
-                        onClick={() => setDeliveryAssignMethod('darb_assabil')}
+                        onClick={() => { loadDarbDataIfNeeded(); setDeliveryAssignMethod('darb_assabil'); }}
                         className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
                           deliveryAssignMethod === 'darb_assabil'
-                            ? 'bg-white border-amber-600 text-amber-900 shadow-sm ring-2 ring-amber-500/10'
+                            ? 'bg-white border-amber-400 text-amber-800 shadow-sm ring-2 ring-amber-400/20'
                             : 'bg-emerald-100/40 border-emerald-200 text-slate-700 hover:bg-white'
                         }`}
                       >
-                        <span className={`w-2.5 h-2.5 rounded-full border-2 ${deliveryAssignMethod === 'darb_assabil' ? 'border-amber-600 bg-amber-600' : 'border-slate-400'}`} />
+                        <span className={`w-2.5 h-2.5 rounded-full border-2 ${deliveryAssignMethod === 'darb_assabil' ? 'border-amber-500 bg-amber-500' : 'border-slate-400'}`} />
                         <span className="flex items-center gap-1">
                           <span>شركة درب السبيل</span>
                           <Zap className="h-3 w-3 text-amber-500" />
@@ -1977,10 +2382,12 @@ const updateVariantQty = (variantId, qty) => {
                           type="button"
                           onClick={handleSendSelectedOrderToDarbDirectly}
                           disabled={isSendingDarb}
-                          className="w-full bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-700 hover:to-amber-800 text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 shadow-md active:scale-95 disabled:opacity-50"
+                          className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md transition-all active:scale-95"
                         >
-                          {isSendingDarb ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4 text-amber-200" />}
-                          <span>إرسال الشحنة لشركة درب السبيل وتغيير الحالة فوراً 🚀</span>
+                          {isSendingDarb
+                            ? <><Loader2 className="h-4 w-4 animate-spin" /><span>جاري الإرسال...</span></>
+                            : <><Zap className="h-4 w-4" /><span>إرسال الشحنة لشركة درب السبيل 🚀</span></>
+                          }
                         </button>
                       </div>
                     )}
@@ -2017,26 +2424,34 @@ const updateVariantQty = (variantId, qty) => {
                   <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm">
                     <span className="font-bold text-slate-700">إجمالي الطلب:</span>
                     <span className="font-black text-[#800000] text-base font-mono" dir="ltr">
-                      {Number(selectedOrder.total_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} LYD
+                      {Number(selectedOrder.total_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} د.ل
                     </span>
                   </div>
                 )}
 
                 {/* الفوتر وأزرار التحكم: زر الإلغاء الموحد بالبرغندي والأيقونات التفاعلية */}
                 <div className="border-t border-slate-100 pt-4 flex items-center justify-between flex-wrap gap-2">
-                  <button
-                    onClick={handleDeleteOrder}
-                    disabled={isDeleting}
-                    className="text-xs text-[#800000] hover:text-[#660000] font-bold border border-[#800000]/30 hover:bg-[#800000]/5 px-3 py-2 rounded-lg transition-all flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                    إلغاء الطلب
-                  </button>
+                  {!(
+                    selectedOrder.status === 'تم اسناده للتوصيل' ||
+                    selectedOrder.status === 'جاري الشحن' ||
+                    selectedOrder.status === 'shipped' ||
+                    selectedOrder.status === 'تم التوصيل' ||
+                    selectedOrder.status === 'delivered'
+                  ) && (
+                    <button
+                      onClick={handleDeleteOrder}
+                      disabled={isDeleting}
+                      className="text-xs text-[#800000] hover:text-[#660000] font-bold border border-[#800000]/30 hover:bg-[#800000]/5 px-3 py-2 rounded-lg transition-all flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                      إلغاء الطلب
+                    </button>
+                  )}
 
                   <button
                     onClick={handleDownloadInvoice}
                     disabled={isDownloading}
-                    className="text-xs font-bold border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50 transition-all flex items-center gap-1 text-slate-600 disabled:opacity-50"
+                    className="text-xs font-bold border border-slate-300 px-3 py-2 rounded-lg hover:bg-slate-50 transition-all flex items-center gap-1 text-slate-600 disabled:opacity-50 mr-auto"
                   >
                     {isDownloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                     تحميل الفاتورة
@@ -2104,42 +2519,54 @@ const updateVariantQty = (variantId, qty) => {
               </div>
 
               {/* مربع الكاميرا الفعلي المباشر */}
-              <div className="relative h-48 sm:h-52 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-800 shadow-inner">
+              <div className="relative h-48 sm:h-52 w-full bg-black rounded-2xl overflow-hidden flex items-center justify-center border border-slate-800 shadow-inner group">
                 <div id="order-camera-reader" className="w-full h-full object-cover"></div>
 
                 {scannerCameraStatus !== 'active' && (
-                  <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-2 text-white/80 p-4 text-center z-10">
+                  <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3 text-white z-10 p-4">
                     {scannerCameraStatus === 'loading' ? (
-                      <>
-                        <RefreshCw className="w-7 h-7 animate-spin text-[#800000]" />
-                        <span className="text-xs font-bold text-slate-200">جاري فتح الكاميرا المباشرة...</span>
-                      </>
+                      <div className="flex flex-col items-center gap-2">
+                        <RefreshCw className="w-6 h-6 animate-spin text-[#800000]" />
+                        <span className="text-xs font-bold text-slate-300">جاري فتح الكاميرا...</span>
+                      </div>
                     ) : (
-                      <>
-                        <Camera className="w-7 h-7 text-[#800000] mb-0.5" />
-                        <p className="text-[11px] text-slate-300 font-medium px-2 leading-relaxed max-w-xs">
-                          {scannerCameraError || 'اضغط لتفعيل الكاميرا وقراءة الأكواد تلقائياً.'}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={startOrderScanner}
-                          className="mt-1 px-4 py-2 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95"
-                        >
-                          <Camera className="w-3.5 h-3.5" />
-                          <span>تفعيل الكاميرا 📷</span>
-                        </button>
-                      </>
+                      <button
+                        type="button"
+                        onClick={startOrderScanner}
+                        className="px-5 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
+                      >
+                        <Camera className="w-4 h-4" />
+                        <span>تشغيل الكاميرا</span>
+                      </button>
                     )}
                   </div>
                 )}
 
                 {scannerCameraStatus === 'active' && (
                   <>
-                    <div className="absolute inset-x-6 h-0.5 bg-red-500 shadow-lg shadow-red-500/80 animate-pulse top-1/2 rounded-full z-20 pointer-events-none" />
-                    <div className="absolute top-2 right-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold z-20 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                      <span>الكاميرا تعمل بنشاط</span>
+                    {/* إطار المسح الليزري الأنيق والمبسط */}
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+                      <div className="relative w-40 h-40 sm:w-48 sm:h-48 border border-white/15 rounded-2xl">
+                        <div className="absolute -top-1 -left-1 w-5 h-5 border-t-2 border-l-2 border-emerald-400 rounded-tl-lg"></div>
+                        <div className="absolute -top-1 -right-1 w-5 h-5 border-t-2 border-r-2 border-emerald-400 rounded-tr-lg"></div>
+                        <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-2 border-l-2 border-emerald-400 rounded-bl-lg"></div>
+                        <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-2 border-r-2 border-emerald-400 rounded-br-lg"></div>
+                        
+                        <div className="absolute inset-x-2 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse top-1/2 -translate-y-1/2"></div>
+                      </div>
                     </div>
+
+                    {/* وميض نجاح أنيق وسلس بدون نصوص مكدسة */}
+                    {scannerCooldown && (
+                      <div className="absolute inset-0 bg-emerald-950/70 backdrop-blur-[2px] flex items-center justify-center z-30 animate-in fade-in duration-200">
+                        <div className="bg-emerald-500/20 border border-emerald-400/50 backdrop-blur-md px-4 py-2 rounded-2xl flex items-center gap-2 text-emerald-300 shadow-xl scale-105 transition-all">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                          <span className="text-xs font-black truncate max-w-[200px]">
+                            {scannerFeedback || 'تم المسح بنجاح'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -2254,66 +2681,376 @@ const updateVariantQty = (variantId, qty) => {
 
 
       {/* ======================================================== */}
-      {/* نافذة تعديل بيانات الطلب                                  */}
+      {/* نافذة تعديل بيانات الطلب الشاملة (عميل + شحن + منتجات)   */}
       {/* ======================================================== */}
       {isEditOpen && selectedOrder && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[65] flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl flex flex-col max-h-[85vh]">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 rounded-t-2xl">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[65] flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-2xl w-full border border-slate-200 shadow-2xl flex flex-col max-h-[92vh]">
+
+            {/* رأس النافذة */}
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/70 rounded-t-2xl">
               <div className="flex items-center gap-2">
-                <Pencil className="h-4 w-4 text-[#6b1d2f]" />
-                <h2 className="text-sm font-bold text-slate-900">تعديل بيانات الطلب #{selectedOrder.id}</h2>
+                <div className="p-2 rounded-xl bg-[#800000]/10 text-[#800000]">
+                  <Pencil className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-sm sm:text-base font-bold text-slate-900">تعديل بيانات الطلب #{selectedOrder.id}</h2>
+                  <p className="text-[11px] text-slate-500 font-medium">تعديل بيانات العميل، تفاصيل التوصيل والمنتجات المطلوبة</p>
+                </div>
               </div>
-              <button onClick={() => setIsEditOpen(false)} className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100">
+              <button onClick={() => setIsEditOpen(false)} className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-400 hover:bg-slate-100 transition-colors">
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <form onSubmit={handleSaveEdit} className="p-5 space-y-3 overflow-y-auto flex-1 text-right">
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600 block">اسم العميل</label>
-                <input
-                  type="text" required
-                  value={editForm.customer_name}
-                  onChange={e => setEditForm(p => ({ ...p, customer_name: e.target.value }))}
-                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6b1d2f]"
-                />
+
+            <form onSubmit={handleSaveEdit} className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 text-right">
+
+              {/* 1. بيانات العميل الأساسية */}
+              <div className="space-y-3 bg-slate-50/50 p-3.5 rounded-2xl border border-slate-200/60">
+                <div className="flex items-center gap-2 border-b border-slate-200/50 pb-2">
+                  <User className="h-4 w-4 text-[#800000]" />
+                  <h3 className="text-xs font-bold text-slate-800">بيانات العميل الأساسية</h3>
+                </div>
+
+                {/* اسم العميل */}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-600 block">اسم العميل بالكامل <span className="text-red-500">*</span></label>
+                  <input
+                    type="text" required
+                    placeholder="أدخل الاسم الثلاثي أو الثنائي للعميل"
+                    value={editForm.customer_name}
+                    onChange={e => setEditForm(p => ({ ...p, customer_name: e.target.value }))}
+                    className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-white transition-all text-slate-800 font-medium"
+                  />
+                </div>
+
+                {/* أرقام التواصل */}
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-700 block">أرقام التواصل <span className="text-red-500">*</span></label>
+
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type="tel"
+                        required
+                        placeholder="09xxxxxxxx (الرقم الرئيسي)"
+                        value={editForm.customer_phones[0] || ''}
+                        onChange={e => handleEditPhoneChange(0, e.target.value)}
+                        className="w-full text-xs pl-3 pr-8 py-2.5 border border-slate-200 rounded-xl bg-white font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 transition-all"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold font-mono text-slate-400">01</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addEditPhoneField}
+                      className="h-10 w-10 flex items-center justify-center rounded-xl bg-[#800000] text-white hover:bg-[#600000] active:scale-95 shadow-sm transition-all shrink-0"
+                      title="إضافة رقم هاتف آخر"
+                    >
+                      <Plus className="h-4 w-4 stroke-[2.5]" />
+                    </button>
+                  </div>
+
+                  {editForm.customer_phones.slice(1).map((phone, index) => {
+                    const actualIndex = index + 1;
+                    return (
+                      <div key={actualIndex} className="flex items-center gap-2 animate-fadeIn pl-2 border-r-2 border-slate-200 mt-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="tel"
+                            placeholder={`رقم إضافي مساعد 0${actualIndex + 1}`}
+                            value={phone}
+                            onChange={e => handleEditPhoneChange(actualIndex, e.target.value)}
+                            className="w-full text-xs pl-3 pr-8 py-2.5 border border-slate-200 rounded-xl bg-white font-mono text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 transition-all"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold font-mono text-slate-300">0{actualIndex + 1}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeEditPhoneField(actualIndex)}
+                          className="h-9 w-9 flex items-center justify-center rounded-xl bg-red-50 text-red-500 hover:bg-red-100 transition-all active:scale-95 shrink-0"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600 block">رقم الهاتف</label>
-                <input
-                  type="tel"
-                  value={editForm.customer_phones}
-                  onChange={e => setEditForm(p => ({ ...p, customer_phones: e.target.value }))}
-                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6b1d2f]"
-                />
+
+              {/* 2. بيانات الشحن وعنوان التوصيل */}
+              <div className="space-y-3 bg-slate-50/50 p-3.5 rounded-2xl border border-slate-200/60">
+                <div className="flex items-center gap-2 border-b border-slate-200/50 pb-2">
+                  <Truck className="h-4 w-4 text-[#800000]" />
+                  <h3 className="text-xs font-bold text-slate-800">بيانات الشحن والتوصيل</h3>
+                </div>
+
+                {/* المدينة والمنطقة */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-700 block">
+                      المدينة <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={editDarbCity}
+                      onChange={e => handleEditDarbCityChange(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                    >
+                      {Object.keys(darbCitiesAreas).map(city => (
+                        <option key={city} value={city}>
+                          {city}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-700 block">
+                      المنطقة <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={editDarbArea}
+                      onChange={e => setEditDarbArea(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                    >
+                      {availableAreasForEditCity.map(area => (
+                        <option key={area} value={area}>
+                          {area}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* العنوان التفصيلي */}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                    <MapPin className="h-3.5 w-3.5 text-[#800000]" />
+                    العنوان التفصيلي (الشارع / أقرب نقطة دالة) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="مثال: بالقرب من جامع الصقع، عمارة 4"
+                    value={editDarbDetailedAddress}
+                    onChange={e => setEditDarbDetailedAddress(e.target.value)}
+                    className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                  />
+                </div>
+
+                {/* باقة الخدمة وجهة دفع الشحن */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-700 block">
+                      باقة الخدمة (درب السبيل)
+                    </label>
+                    <select
+                      value={editDarbService}
+                      onChange={e => setEditDarbService(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                    >
+                      {darbServices.map(srv => (
+                        <option key={srv.id} value={srv.id}>
+                          {srv.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-bold text-slate-700 block">
+                      جهة دفع الشحن
+                    </label>
+                    <select
+                      value={editDarbPaymentBy}
+                      onChange={e => setEditDarbPaymentBy(e.target.value)}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
+                    >
+                      <option value="receiver">المستلم (الزبون يدفع)</option>
+                      <option value="sender">المرسل (المتجر يدفع)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* السوشيال ميديا والملاحظات */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-slate-600 block">حساب السوشيال ميديا</label>
+                    <input
+                      type="text"
+                      placeholder="يوزر انستغرام أو فيسبوك"
+                      value={editForm.social_media_source}
+                      onChange={e => setEditForm(p => ({ ...p, social_media_source: e.target.value }))}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-white transition-all"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-slate-600 block">ملاحظات الطلب</label>
+                    <input
+                      type="text"
+                      placeholder="توقيت التسليم، ملاحظة للمندوب..."
+                      value={editForm.notes}
+                      onChange={e => setEditForm(p => ({ ...p, notes: e.target.value }))}
+                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/5 bg-white transition-all"
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600 block">عنوان التوصيل</label>
-                <input
-                  type="text" required
-                  value={editForm.address}
-                  onChange={e => setEditForm(p => ({ ...p, address: e.target.value }))}
-                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6b1d2f]"
-                />
+
+              {/* 3. المنتجات والكميات المطلوبة */}
+              <div className="space-y-2.5 border-t border-slate-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setEditShowProductsSection(!editShowProductsSection)}
+                  className="w-full flex items-center justify-between text-xs font-bold text-slate-700 py-1.5 px-2 hover:bg-slate-50 rounded-xl transition-colors border border-dashed border-slate-200"
+                >
+                  <span className="flex items-center gap-1.5 text-[#800000]">
+                    <Plus className="h-4 w-4" /> إضافة أصناف جديدة للطلب من الكتالوج
+                  </span>
+                  <span className="text-slate-400">
+                    {editShowProductsSection ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  </span>
+                </button>
+
+                {editShowProductsSection && (
+                  <div className="animate-fadeIn">
+                    {loadingProducts ? (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                        <span className="text-xs text-slate-400 mr-2">جاري تحميل المنتجات...</span>
+                      </div>
+                    ) : availableProducts.length === 0 ? (
+                      <div className="text-center py-4 text-xs text-slate-400">لا توجد منتجات متاحة في المخزن</div>
+                    ) : (
+                      <ProductPicker
+                        products={availableProducts}
+                        onAddVariant={addVariantToEditOrder}
+                      />
+                    )}
+                  </div>
+                )}
+
+                {/* قائمة المنتجات المحجوزة في الطلب */}
+                <div className="space-y-2 p-3 bg-slate-50/70 rounded-2xl border border-slate-200/60 shadow-xs">
+                  <div className="flex items-center justify-between border-b border-slate-200/50 pb-1.5 mb-1">
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Package className="h-4 w-4 text-[#800000]" />
+                      أصناف الطلب الحالية
+                    </span>
+                    <span className="bg-[#800000]/10 text-[#800000] text-[10px] px-2 py-0.5 rounded-full font-bold">
+                      {editSelectedVariants.length} أصناف
+                    </span>
+                  </div>
+
+                  {editSelectedVariants.length === 0 ? (
+                    <div className="text-center py-4 text-xs text-slate-400">
+                      لم يتم اختيار أي أصناف. يجب إضافة صنف واحد على الأقل.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+                      {editSelectedVariants.map(v => (
+                        <div key={v.variant_id} className="bg-white border border-slate-200/80 rounded-xl p-2.5 shadow-xs transition-all hover:border-slate-300">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-xs font-bold text-slate-800 flex-1 truncate">{v.label}</span>
+
+                            <div className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-200 rounded-lg p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => updateEditVariantQty(v.variant_id, v.quantity - 1)}
+                                className="h-6 w-6 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-xs"
+                              >
+                                <Minus className="h-3 w-3" />
+                              </button>
+
+                              <input
+                                type="number"
+                                min="1"
+                                value={v.quantity}
+                                onChange={e => updateEditVariantQty(v.variant_id, parseInt(e.target.value) || 1)}
+                                className="w-10 text-center font-bold text-xs bg-transparent focus:outline-none text-slate-800"
+                              />
+
+                              <button
+                                type="button"
+                                onClick={() => updateEditVariantQty(v.variant_id, v.quantity + 1)}
+                                className="h-6 w-6 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-xs"
+                              >
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => removeEditVariant(v.variant_id)}
+                              className="text-red-400 hover:text-red-600 p-1 rounded-md hover:bg-red-50 transition-colors shrink-0"
+                              title="حذف الصنف من الطلب"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          {/* خيارات المعاينة والقياس */}
+                          <div className="flex items-center gap-3 mt-2 pt-2 border-t border-slate-100 text-[10px]">
+                            <label className="flex items-center gap-1.5 cursor-pointer text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={!!v.allow_inspection}
+                                onChange={() => toggleEditVariantPermission(v.variant_id, 'allow_inspection')}
+                                className="rounded border-slate-300 text-[#800000] focus:ring-[#800000] h-3.5 w-3.5"
+                              />
+                              <span>سماح بالمعاينة</span>
+                            </label>
+
+                            <label className="flex items-center gap-1.5 cursor-pointer text-slate-600">
+                              <input
+                                type="checkbox"
+                                checked={!!v.allow_try_on}
+                                onChange={() => toggleEditVariantPermission(v.variant_id, 'allow_try_on')}
+                                className="rounded border-slate-300 text-[#800000] focus:ring-[#800000] h-3.5 w-3.5"
+                              />
+                              <span>سماح بالقياس</span>
+                            </label>
+
+                            {v.price > 0 && (
+                              <span className="mr-auto font-bold text-slate-700">
+                                {(v.price * v.quantity).toFixed(2)} د.ل
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* إجمالي قيمة الطلب التقديري */}
+                  {editSelectedVariants.length > 0 && (
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 text-xs font-bold text-slate-800">
+                      <span>إجمالي القطع: {editSelectedVariants.reduce((sum, v) => sum + v.quantity, 0)} قطعة</span>
+                      <span className="text-[#800000]">
+                        الإجمالي: {editSelectedVariants.reduce((sum, v) => sum + (v.price || 0) * v.quantity, 0).toFixed(2)} د.ل
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600 block">ملاحظات</label>
-                <textarea
-                  rows="2"
-                  value={editForm.notes}
-                  onChange={e => setEditForm(p => ({ ...p, notes: e.target.value }))}
-                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#6b1d2f] resize-none"
-                />
-              </div>
-              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
-                <button type="button" onClick={() => setIsEditOpen(false)} className="px-4 py-2 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50">
+
+              {/* أزرار الإجراء */}
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsEditOpen(false)}
+                  className="px-4 py-2.5 border border-slate-300 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-50 transition-all"
+                >
                   إلغاء
                 </button>
-                <button type="submit" disabled={isSaving}
-                  className="px-4 py-2 bg-[#6b1d2f] text-white rounded-lg text-xs font-semibold hover:bg-[#541624] ...">
-                  {isSaving ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> حفظ...</> : 'حفظ التغييرات'}
+                <button
+                  type="submit"
+                  disabled={isSaving || editSelectedVariants.length === 0}
+                  className="px-5 py-2.5 bg-[#800000] text-white rounded-xl text-xs font-bold hover:bg-[#660000] disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-all flex items-center gap-1.5 shadow-sm shadow-[#800000]/20"
+                >
+                  {isSaving ? <><Loader2 className="h-4 w-4 animate-spin" /> جاري الحفظ والتحديث...</> : 'حفظ التعديلات الشاملة ✓'}
                 </button>
               </div>
+
             </form>
           </div>
         </div>
@@ -2340,7 +3077,7 @@ const updateVariantQty = (variantId, qty) => {
               </button>
             </div>
 
-            <form onSubmit={handleSendExistingOrderToDarb} className="p-5 space-y-4 overflow-y-auto flex-1 text-right">
+            <form onSubmit={handleSendSelectedOrderToDarbDirectly} className="p-5 space-y-4 overflow-y-auto flex-1 text-right">
               {loadingDarbData ? (
                 <div className="flex flex-col items-center justify-center py-8 gap-2 text-xs text-slate-500">
                   <Loader2 className="h-6 w-6 animate-spin text-amber-600" />

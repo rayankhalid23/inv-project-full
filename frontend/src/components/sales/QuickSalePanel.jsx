@@ -8,6 +8,8 @@ import {
 import { toast } from 'react-hot-toast';
 import { orderApi } from '../../api/orderApi';
 import ProductPicker from '../products/ProductPicker';
+import { saveOfflineAction } from '../../utils/idbStorage';
+import { isNetworkError } from '../../utils/netErrors';
 
 /**
  * =====================================================================
@@ -146,16 +148,79 @@ const QuickSalePanel = forwardRef(function QuickSalePanel(
     setIsSubmitting(true);
     onBusyChange?.(true);
     try {
-      const result = await orderApi.quickSale({
+      const payload = {
         // الاسم اختياري — نضع بديلاً واضحاً حتى تبقى الفاتورة مفهومة
         customer_name: nameValue || 'زبون نقدي',
         customer_phone: phoneValue || null,
         items: items.map((i) => ({ variant_id: i.variant_id, quantity: i.quantity })),
-      });
+      };
+
+      if (!navigator.onLine) {
+        const saved = await saveOfflineAction(
+          'QUICK_SALE',
+          payload,
+          `بيع سريع لـ ${payload.customer_name} (${items.length} صنف)`
+        );
+        if (!saved) {
+          throw new Error('تعذّر حفظ العملية محلياً في المتصفح');
+        }
+        setInvoice({
+          order_id: 'OFFLINE-' + Math.floor(1000 + Math.random() * 9000),
+          customer_name: payload.customer_name,
+          phone: phoneValue,
+          total_price: total,
+          offline: true,
+          items: items.map(it => ({
+            product_name: it.product_name,
+            color_name: it.color_name,
+            size: it.size_name,
+            price_at_order: it.price,
+            quantity: it.quantity,
+          })),
+        });
+        toast.success('تم حفظ البيع محلياً! سيُرفع تلقائياً عند الاتصال بالإنترنت 📡', { duration: 5000 });
+        onSaleComplete?.();
+        return;
+      }
+
+      const result = await orderApi.quickSale(payload);
       setInvoice({ ...result, phone: phoneValue });
       toast.success('تمت عملية البيع بنجاح 🎉');
       onSaleComplete?.();
     } catch (err) {
+      if (isNetworkError(err)) {
+        try {
+          const payload = {
+            customer_name: nameValue || 'زبون نقدي',
+            customer_phone: phoneValue || null,
+            items: items.map((i) => ({ variant_id: i.variant_id, quantity: i.quantity })),
+          };
+          await saveOfflineAction(
+            'QUICK_SALE',
+            payload,
+            `بيع سريع لـ ${payload.customer_name} (${items.length} صنف)`
+          );
+          setInvoice({
+            order_id: 'OFFLINE-' + Math.floor(1000 + Math.random() * 9000),
+            customer_name: payload.customer_name,
+            phone: phoneValue,
+            total_price: total,
+            offline: true,
+            items: items.map(it => ({
+              product_name: it.product_name,
+              color_name: it.color_name,
+              size: it.size_name,
+              price_at_order: it.price,
+              quantity: it.quantity,
+            })),
+          });
+          toast.success('تم حفظ البيع محلياً (أوفلاين) وسيُزامن تلقائياً 📡', { duration: 5000 });
+          onSaleComplete?.();
+          return;
+        } catch (saveErr) {
+          console.error('Failed to save offline:', saveErr);
+        }
+      }
       const msg = typeof err === 'string' ? err : (err?.message || 'فشلت عملية البيع');
       setSubmitError(msg);          // تظهر داخل اللوحة ولا تختفي كالتنبيه العابر
       toast.error(msg);
@@ -166,6 +231,10 @@ const QuickSalePanel = forwardRef(function QuickSalePanel(
   };
 
   const downloadInvoice = async () => {
+    if (invoice?.offline) {
+      toast.error('الفاتورة غير متاحة للتحميل أوفلاين. ستتوفر تلقائياً بعد مزامنة الطلب مع السيرفر 📡');
+      return;
+    }
     if (!invoice?.order_id) return;
     setIsDownloading(true);
     try {

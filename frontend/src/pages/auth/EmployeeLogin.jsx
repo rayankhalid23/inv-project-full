@@ -61,7 +61,9 @@ const EmployeeLogin = () => {
       }
       
     } catch (err) {
-      const serverMessage = err.response?.data?.detail || err.message || "فشل الاتصال بالسيرفر";
+      const serverMessage = !navigator.onLine 
+        ? "أنت في وضع عدم الاتصال (أوفلاين). يتطلب تسجيل الدخول لأول مرة اتصالاً بالإنترنت."
+        : (err.response?.data?.detail || err.message || "فشل الاتصال بالسيرفر");
       setError(serverMessage);
     } finally {
       setLoading(false);

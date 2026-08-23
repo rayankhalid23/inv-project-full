@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DECIMAL, Enum, ForeignKey, JSON, TIMESTAMP, func, Index
+from sqlalchemy import Column, Integer, String, Text, DECIMAL, Boolean, Enum, ForeignKey, JSON, TIMESTAMP, func, Index
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
 
@@ -15,6 +15,8 @@ class OrderItem(BaseModel):
     quantity = Column(Integer, nullable=False)
     picked_quantity = Column(Integer, default=0)
     price_at_order = Column(DECIMAL(12, 2), nullable=False)
+    allow_inspection = Column(Boolean, default=False, nullable=False)
+    allow_try_on = Column(Boolean, default=False, nullable=False)
   
 
     order = relationship("Order", back_populates="items")

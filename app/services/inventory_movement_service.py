@@ -188,33 +188,40 @@ def resolve_variant_by_scan(db: Session, scanned: str, lock: bool = False):
         if v:
             return _finish(v)
 
-    # 2) تطابق تام مع القيمة المخزّنة
+    # 2) إذا كانت القيمة الممسوحة أو المدخلة رقماً فقط (مثل معرف الصنف: 3 أو 30)
+    if code.isdigit():
+        v = _q().filter(ProductVariant.id == int(code)).first()
+        if v:
+            return _finish(v)
+
+    # 3) تطابق تام مع القيمة المخزّنة في حقل qr_code
     v = _q().filter(ProductVariant.qr_code == code).first()
     if v:
         return _finish(v)
 
-    # 3) مطابقة باسم ملف الصورة (عندما تُمرَّر المسارات)
-    filename = code.replace("\\", "/").split("/")[-1]
-    if filename and filename != code:
-        v = _q().filter(ProductVariant.qr_code.like(f"%{filename}")).first()
-        if v:
-            return _finish(v)
-    if filename:
-        v = _q().filter(ProductVariant.qr_code.like(f"%{filename}%")).first()
+    # 4) كود المنتج المباشر (SKU)
+    m_sku = re.search(r"SKU:([^|]+)", code, re.IGNORECASE)
+    sku_val = m_sku.group(1).strip() if m_sku else code
+    if sku_val and not sku_val.isdigit():
+        v = (_q().join(ProductColor, ProductVariant.product_color_id == ProductColor.id)
+                 .join(Product, ProductColor.product_id == Product.id)
+                 .filter(Product.code == sku_val).first())
         if v:
             return _finish(v)
 
-    # 4) كود المنتج (SKU) — سواء جاء وحده أو ضمن نص الـ QR
-    sku = code
-    m2 = re.search(r"SKU:([^|]+)", code, re.IGNORECASE)
-    if m2:
-        sku = m2.group(1).strip()
-    if sku:
-        v = (_q().join(ProductColor, ProductVariant.product_color_id == ProductColor.id)
-                 .join(Product, ProductColor.product_id == Product.id)
-                 .filter(Product.code == sku).first())
-        if v:
-            return _finish(v)
+    # 5) مطابقة مسار صورة الـ QR أو اسم الملف (عندما يُمرّر مسار ملف أو qr_XX_...)
+    if "/" in code or "\\" in code or code.lower().endswith((".png", ".jpg", ".webp")) or code.startswith("qr_"):
+        filename = code.replace("\\", "/").split("/")[-1]
+        m_qr_id = re.search(r"qr_(\d+)_", filename, re.IGNORECASE)
+        if m_qr_id:
+            v = _q().filter(ProductVariant.id == int(m_qr_id.group(1))).first()
+            if v:
+                return _finish(v)
+        
+        if filename:
+            v = _q().filter(ProductVariant.qr_code.like(f"%/{filename}")).first()
+            if v:
+                return _finish(v)
 
     return None
 

@@ -112,7 +112,14 @@ if os.path.exists("frontend/dist"):
     @app.get("/sw.js", include_in_schema=False)
     def serve_sw():
         from fastapi.responses import FileResponse
-        return FileResponse("frontend/dist/sw.js", media_type="application/javascript")
+        return FileResponse(
+            "frontend/dist/sw.js",
+            media_type="application/javascript",
+            headers={
+                "Service-Worker-Allowed": "/",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+        )
 
     @app.get("/manifest.json", include_in_schema=False)
     def serve_manifest():
@@ -156,7 +163,11 @@ if os.path.exists("frontend/dist"):
         if full_path and os.path.isfile(candidate):
             return FileResponse(candidate)
 
-        return FileResponse("frontend/dist/index.html", media_type="text/html")
+        return FileResponse(
+            "frontend/dist/index.html",
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
 
 def recommended_workers() -> int:
