@@ -3,6 +3,7 @@ from sqlalchemy import and_, desc, func
 from datetime import datetime, timedelta
 from typing import Optional, List
 import asyncio
+import json
 from fastapi import HTTPException, status
 from app.models.inventory import InventoryMovement, ProductVariant, ProductColor, Product
 from app.models.user import User
@@ -439,7 +440,18 @@ def standardize_system_audit_log(item, user):
     variant_info = None
     target_name = ""
     
-    details = item.details or {}
+   raw_details = item.details or {}
+    if isinstance(raw_details, str):
+        try:
+            details = json.loads(raw_details)
+            if not isinstance(details, dict):
+                details = {"message": raw_details}
+        except Exception:
+            details = {"message": raw_details}
+    elif isinstance(raw_details, dict):
+        details = raw_details
+    else:
+        details = {}
     
     if item.action_target == 'product':
         product_info = {
