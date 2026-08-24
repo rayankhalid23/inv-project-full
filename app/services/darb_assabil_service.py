@@ -4,6 +4,10 @@ import json
 import logging
 import requests
 from typing import Dict, Any, List, Optional, Tuple
+from dotenv import load_dotenv  # <-- 1. إضافة هذا السطر
+
+# قراءة المتغيرات من ملف .env تلقائياً
+load_dotenv()                   # <-- 2. إضافة هذا السطر
 
 logger = logging.getLogger(__name__)
 
