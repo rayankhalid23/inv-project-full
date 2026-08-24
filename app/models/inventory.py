@@ -121,6 +121,9 @@ class ProductVariant(Base):
         Index('ix_variants_qr_code', 'qr_code'),
         Index('ix_variants_deleted_at', 'deleted_at'),
         Index('ix_variants_color_id', 'product_color_id'),
+        # الاسم صريح ليطابق ما تُنشئه الهجرة 004 واصطلاح بقية فهارس الجدول؛
+        # index=True على العمود كان يولّد ix_product_variants_variant_sku فيختلف المساران.
+        Index('ix_variants_variant_sku', 'variant_sku'),
         {'extend_existing': True},
     )
     id = Column(Integer, primary_key=True, index=True)
@@ -137,7 +140,8 @@ class ProductVariant(Base):
     min_stock_threshold = Column(Integer, default=0) 
     
     qr_code = Column(String(500), nullable=True)
-    
+    variant_sku = Column(String(50), nullable=True)  # e.g. "30.1.M"
+
     # حقول الوقت والتتبع (موجودة في الصورة)
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
@@ -232,7 +236,7 @@ class QRGeneratorService:
         size_name = getattr(variant.size, 'name', 'N/A')
 
         # 1. إنشاء الـ QR Code
-        qr_data = f"VAR:{variant.id}|SKU:{product_code}"
+        qr_data = getattr(variant, 'variant_sku', None) or f"VAR:{variant.id}|SKU:{product_code}"
         qr_code = qr.QrCodeWidget(qr_data, barLevel='H')
         bounds = qr_code.getBounds()
         qr_w = bounds[2] - bounds[0]

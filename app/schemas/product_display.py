@@ -57,6 +57,7 @@ class VariantDetailOut(BaseModel):
     size_name: str
     quantity_available: int
     qr_code: Optional[str]
+    variant_sku: Optional[str] = None
 
     class Config:
         from_attributes = True

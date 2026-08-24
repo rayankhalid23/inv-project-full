@@ -78,7 +78,10 @@ def create_product(
         new_product = Product(
             name=name, catalog_id=catalog_id, selling_price=selling_price,
             cost_price=cost_price, min_stock_threshold=min_stock_threshold,
-            description=description, code=f"PROD-TEMP-{uuid.uuid4().hex[:8]}",
+            # العمود NOT NULL في الموديل، والحقل اختياري في النموذج — بدون هذا
+            # التطبيع كان إنشاء منتج بلا وصف يرمي IntegrityError ويعيد 500.
+            description=(description or "").strip(),
+            code=f"PROD-TEMP-{uuid.uuid4().hex[:8]}",
             main_image=db_image_path, created_by=current_user.id
         )
         db.add(new_product)
@@ -534,7 +537,8 @@ def get_product_full_details(
                 "size_id": variant.size_id,
                 "size_name": variant.size.name if variant.size else "N/A",
                 "quantity_available": variant.quantity_available,
-                "qr_code": variant.qr_code
+                "qr_code": variant.qr_code,
+                "variant_sku": variant.variant_sku
             })
             
         processed_colors.append({

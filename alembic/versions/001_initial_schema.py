@@ -9,6 +9,11 @@ Create Date: 2026-01-01 00:00:00.000000
     alembic stamp head
 وإذا كان السيرفر جديداً نفّذ:
     alembic upgrade head
+
+قابلية الإفراغ (nullable) هنا مطابقة حرفياً لما تُنتجه الموديلات عبر
+Base.metadata.create_all، حتى تخرج القاعدتان متطابقتين مهما كان مسار الإنشاء.
+الأعمدة التي تبدو "يجب ألا تكون فارغة" لكنها nullable=True هنا تملك
+server_default فلا تُترك فارغة عملياً أبداً.
 """
 
 from typing import Sequence, Union
@@ -38,7 +43,7 @@ def upgrade() -> None:
         "users",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("phone", sa.String(20), nullable=False, unique=True),
+        sa.Column("phone", sa.String(20), nullable=False),
         sa.Column("password_hash", sa.String(255), nullable=False),
         sa.Column("role_id", sa.Integer(), sa.ForeignKey("roles.id"), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
@@ -48,7 +53,9 @@ def upgrade() -> None:
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
     )
-    op.create_index("ix_users_phone", "users", ["phone"])
+    # تفرّد الهاتف يأتي من هذا الفهرس وحده (unique=True + index=True في الموديل
+    # يُنتجان فهرساً واحداً فريداً، لا قيداً منفصلاً على العمود)
+    op.create_index("ix_users_phone", "users", ["phone"], unique=True)
 
     # ------------------------------------------------------------------ #
     # 3. catalogs
@@ -58,9 +65,9 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("created_by", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.TIMESTAMP(), nullable=False,
+        sa.Column("is_active", sa.Boolean(), nullable=True, server_default=sa.text("1")),
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.TIMESTAMP(), nullable=True,
                   server_default=sa.text("now()"),
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
@@ -74,9 +81,9 @@ def upgrade() -> None:
         "sizes",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(50), nullable=False),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default=sa.text("0")),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.TIMESTAMP(), nullable=False,
+        sa.Column("sort_order", sa.Integer(), nullable=True, server_default=sa.text("0")),
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.TIMESTAMP(), nullable=True,
                   server_default=sa.text("now()"),
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
@@ -103,8 +110,8 @@ def upgrade() -> None:
         sa.Column("total_damaged", sa.Integer(), nullable=True, server_default=sa.text("0")),
         sa.Column("total_returns", sa.Integer(), nullable=True, server_default=sa.text("0")),
         sa.Column("created_by", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.TIMESTAMP(), nullable=False,
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.TIMESTAMP(), nullable=True,
                   server_default=sa.text("now()"),
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
@@ -121,8 +128,8 @@ def upgrade() -> None:
                   sa.ForeignKey("products.id", ondelete="CASCADE"), nullable=False),
         sa.Column("color_name", sa.String(100), nullable=False),
         sa.Column("color_image", sa.String(255), nullable=True),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.TIMESTAMP(), nullable=False,
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.TIMESTAMP(), nullable=True,
                   server_default=sa.text("now()"),
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
@@ -145,8 +152,8 @@ def upgrade() -> None:
         sa.Column("min_stock_threshold", sa.Integer(), nullable=True, server_default=sa.text("0")),
         sa.Column("qr_code", sa.String(500), nullable=True),
         sa.Column("total_sold", sa.Integer(), nullable=True, server_default=sa.text("0")),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.TIMESTAMP(), nullable=False,
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.TIMESTAMP(), nullable=True,
                   server_default=sa.text("now()"),
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
@@ -176,7 +183,7 @@ def upgrade() -> None:
                   server_default=sa.text("'custom'")),
         sa.Column("tracking_number", sa.String(100), nullable=True),
         sa.Column("shipment_id", sa.String(100), nullable=True),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
         sa.Column("updated_at", sa.TIMESTAMP(), nullable=True, onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
     )
@@ -197,7 +204,7 @@ def upgrade() -> None:
         sa.Column("action_type", sa.String(100), nullable=True),
         sa.Column("details", sa.JSON(), nullable=True),
         sa.Column("ip_address", sa.String(45), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True,
                   server_default=sa.text("now()")),
     )
     op.create_index("ix_system_audit_logs_id", "system_audit_logs", ["id"])
@@ -218,7 +225,7 @@ def upgrade() -> None:
         sa.Column("related_order_id", sa.Integer(), sa.ForeignKey("orders.id"), nullable=True),
         sa.Column("damage_reason", sa.String(255), nullable=True),
         sa.Column("notes", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.DateTime(), nullable=True, server_default=sa.text("now()")),
     )
     op.create_index("ix_inventory_movements_id", "inventory_movements", ["id"])
 
@@ -241,6 +248,7 @@ def upgrade() -> None:
                   onupdate=sa.text("now()")),
         sa.Column("deleted_at", sa.TIMESTAMP(), nullable=True),
     )
+    op.create_index("ix_order_items_id", "order_items", ["id"])
 
     # ------------------------------------------------------------------ #
     # 12. order_actions  (extends BaseModel)
@@ -253,7 +261,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("action_type", sa.String(200), nullable=False),
         sa.Column("details", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.TIMESTAMP(), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.TIMESTAMP(), nullable=True, server_default=sa.text("now()")),
         sa.Column("updated_at", sa.TIMESTAMP(), nullable=False,
                   server_default=sa.text("now()"),
                   onupdate=sa.text("now()")),

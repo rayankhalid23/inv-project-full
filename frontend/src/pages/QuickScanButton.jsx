@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ShoppingCart, RotateCcw, AlertTriangle, Camera, RefreshCw, Lock, Phone, Zap } from 'lucide-react';
+import { X, ShoppingCart, RotateCcw, AlertTriangle, Camera, RefreshCw, Phone, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { Html5Qrcode } from 'html5-qrcode';
@@ -8,6 +8,7 @@ import { Html5Qrcode } from 'html5-qrcode';
 import { catalogApi } from '../api/catalogApi';
 import { orderApi } from '../api/orderApi';
 import QuickSalePanel from '../components/sales/QuickSalePanel';
+import ProductPicker from '../components/products/ProductPicker';
 import { saveOfflineAction } from '../utils/idbStorage';
 import { isNetworkError } from '../utils/netErrors';
 
@@ -76,14 +77,14 @@ export default function QuickScanPage({ isOpen, onClose }) {
   const scanTypeRef = useRef(scanType);
   useEffect(() => { scanTypeRef.current = scanType; }, [scanType]);
 
-  // تحميل المنتجات تلقائياً بمجرد اختيار تبويب "بيع" (مرة واحدة فقط)،
-  // فلا يحتاج المستخدم أي ضغطة إضافية للوصول لواجهة البيع.
+  // تحميل المنتجات تلقائياً بمجرد فتح اللوحة (مرة واحدة لكل فتح)،
+  // فتُستعمل نفس القائمة في البيع والرواجع والتوالف دون أي ضغطة إضافية.
   //
   // نستخدم ref للحارس لا state: لو وُضع مؤشر التحميل ضمن قائمة الاعتماديات
   // لأعاد تشغيل التأثير فور رفعه، فيُلغى الطلب الجاري ويبقى المؤشر معلّقاً.
   const saleProductsRequestedRef = useRef(false);
   useEffect(() => {
-    if (!isVisible || scanType !== 'sale') return;
+    if (!isVisible) return;
     if (saleProductsRequestedRef.current) return;
 
     saleProductsRequestedRef.current = true;
@@ -95,7 +96,40 @@ export default function QuickScanPage({ isOpen, onClose }) {
         toast.error('تعذّر تحميل قائمة المنتجات');
       })
       .finally(() => setLoadingQuickSale(false));
-  }, [isVisible, scanType]);
+  }, [isVisible]);
+
+  /** إعادة تحميل المنتجات بأحدث الكميات بعد عملية رواجع/تالف ناجحة */
+  const reloadProducts = useCallback(async () => {
+    try {
+      const products = await orderApi.getAllProductsWithVariants();
+      setQuickSaleProducts(products || []);
+    } catch { /* تجاهل: القائمة الحالية تبقى صالحة */ }
+  }, []);
+
+  /**
+   * اختيار صنف من مُنتقي المنتجات في وضعي الرواجع والتالف.
+   * الرواجع: يُسمح باختيار صنف مخزونه صفر (زبون يرجّع بضاعة نفدت).
+   * التالف: يُمنع اختيار صنف مخزونه صفر (لا يوجد ما يُتلف).
+   */
+  const handlePickVariant = useCallback((variant, colorName, productName, sizeName, product) => {
+    const available = variant.quantity_available ?? 0;
+    if (scanTypeRef.current === 'waste' && available <= 0) {
+      toast.error(`"${productName}" مخزونه صفر — لا يمكن تسجيله تالفاً`);
+      return;
+    }
+    setScannedProduct({
+      name: `${productName} — ${colorName}`,
+      sku: variant.sku || product?.code || '',
+      available,
+      price: Number(product?.price ?? 0),
+      color: colorName,
+      size: sizeName,
+      qr_code: variant.qr_code || variant.sku || String(variant.id),
+    });
+    setError('');
+    stopCamera();
+    setStep('confirm');
+  }, [stopCamera]);
 
   // إيقاف بث الكاميرا بنظافة
   const stopCamera = useCallback(async () => {
@@ -244,6 +278,8 @@ export default function QuickScanPage({ isOpen, onClose }) {
     setReason('');
     setCustomerPhone('');
     setStep('scanning');
+    // نسمح بإعادة تحميل المنتجات عند الفتح التالي حتى تظهر الكميات المحدَّثة
+    saleProductsRequestedRef.current = false;
     if (typeof onClose === 'function') {
       onClose();
     } else {
@@ -251,13 +287,7 @@ export default function QuickScanPage({ isOpen, onClose }) {
     }
   };
 
-  // 1. مرحلة فحص الباركود اليدوي
-  const handleBarcodeSubmit = async (e) => {
-    if (e) e.preventDefault();
-    processScannedCode(barcode);
-  };
-
-  // 2. مرحلة الاعتماد النهائي
+  // مرحلة الاعتماد النهائي
   const handleConfirmSubmit = async (e) => {
     e.preventDefault();
 
@@ -301,11 +331,13 @@ export default function QuickScanPage({ isOpen, onClose }) {
       if (scanType === 'return') {
         const retRes = await catalogApi.processScanReturn(scannedProduct.qr_code, targetNote);
         setIsSubmitting(false);
-        toast.success(retRes?.message || 'تم تسجيل المرتجع بنجاح!');
+        toast.success(retRes?.message || `تم تسجيل مرتجع ${scannedProduct.name} بنجاح ✅`);
+        reloadProducts();
       } else if (scanType === 'waste') {
         const damRes = await catalogApi.processScanDamage(scannedProduct.qr_code, targetNote);
         setIsSubmitting(false);
-        toast.success(damRes?.message || 'تم تسجيل التالف بنجاح!');
+        toast.success(damRes?.message || `تم تسجيل تالف ${scannedProduct.name} بنجاح ✅`);
+        reloadProducts();
       } else {
         // بيع مباشر — يُنشئ طلباً وفاتورة ويسجّل حركة مخزون
         saleResult = await catalogApi.processScanSale(scannedProduct.qr_code, targetNote, customerPhone || null);
@@ -460,8 +492,8 @@ export default function QuickScanPage({ isOpen, onClose }) {
                 <Camera className="w-4 h-4" />
               </div>
               <h3 className="text-lg font-bold text-slate-900">
-                {step === 'scanning'
-                  ? 'مسح سريع'
+                {step === 'scanning' ? 'مسح سريع'
+                  : step === 'pick'  ? 'اختر اللون والمقاس'
                   : scanType === 'return' ? 'تأكيد المرتجع'
                   : scanType === 'waste'  ? 'تأكيد التالف'
                   : 'تأكيد البيع المباشر'}
@@ -511,28 +543,38 @@ export default function QuickScanPage({ isOpen, onClose }) {
                   />
                 )
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {cameraBox}
+                  <p className="text-[10px] text-slate-400 text-center">
+                    امسح الكود بالكاميرا أو اختر الصنف يدوياً من القائمة
+                  </p>
 
-                  <form onSubmit={handleBarcodeSubmit} className="flex flex-col gap-3 pt-1">
-                    <input
-                      type="text"
-                      value={barcode}
-                      onChange={(e) => setBarcode(e.target.value)}
-                      placeholder="أدخل الباركود / كود المنتج يدوياً ثم Enter"
-                      autoFocus
-                      className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 focus:border-slate-400 focus:bg-white rounded-2xl text-[14px] text-center font-medium text-slate-800 outline-none transition-all placeholder:text-slate-400"
-                    />
-                    <button
-                      type="submit"
-                      className={`w-full py-3.5 font-bold rounded-2xl text-[13px] transition-all duration-300 text-white ${
-                        scanType === 'return' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'
-                      }`}
-                    >
-                      بحث وتأكيد
-                    </button>
-                    {error && <p className="text-xs font-bold text-red-600 text-center leading-relaxed">{error}</p>}
-                  </form>
+                  {loadingQuickSale ? (
+                    <div className="flex items-center justify-center gap-2 py-6 text-slate-400">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span className="text-xs font-bold">جاري تحميل المنتجات...</span>
+                    </div>
+                  ) : (
+                    <div className="text-right space-y-1.5">
+                      <h4 className="text-[11px] font-black text-slate-700">
+                        {scanType === 'return' ? 'اختر الصنف المُرتجع' : 'اختر الصنف التالف'}
+                      </h4>
+                      <ProductPicker
+                        products={quickSaleProducts}
+                        allowZeroStock={scanType === 'return'}
+                        maxHeight="max-h-56"
+                        onAddVariant={handlePickVariant}
+                        placeholder="ابحث بالاسم أو الكود أو المقاس..."
+                      />
+                      <p className="text-[10px] text-slate-400">
+                        {scanType === 'return'
+                          ? 'يمكن اختيار صنف حتى لو كان مخزونه صفر (مرتجع زبون).'
+                          : 'الأصناف التي مخزونها صفر تظهر معطّلة — لا يمكن تسجيلها تالفة.'}
+                      </p>
+                    </div>
+                  )}
+
+                  {error && <p className="text-xs font-bold text-red-600 text-center leading-relaxed">{error}</p>}
                 </div>
               )
             )}

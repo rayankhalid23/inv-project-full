@@ -72,6 +72,7 @@ class VariantFilterItemResponse(BaseModel):
     quantity_reserved: int
     is_low_stock: bool
     qr_code: Optional[str] = None
+    variant_sku: Optional[str] = None
 
     class Config:
         from_attributes = True

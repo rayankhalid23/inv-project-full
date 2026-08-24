@@ -57,7 +57,7 @@ export const filterProducts = (products, rawQuery) => {
  * React.memo ضروري: القائمة تُعرض داخل نوافذ كبيرة، وبدونه تُعاد
  * تهيئة كل العناصر مع أي تغيير حالة في الأب.
  */
-const ProductSelector = React.memo(function ProductSelector({ product, onAddVariant, showPrice = false }) {
+const ProductSelector = React.memo(function ProductSelector({ product, onAddVariant, showPrice = false, allowZeroStock = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const price = Number(product.price ?? product.selling_price ?? product.prices?.selling_price ?? 0);
 
@@ -113,11 +113,12 @@ const ProductSelector = React.memo(function ProductSelector({ product, onAddVari
           {color.variants?.map((variant) => {
             const available = variant.quantity_available ?? 0;
             const sizeLabel = variant.size_name || variant.size || 'N/A';
+            const disabled = !allowZeroStock && available <= 0;
             return (
               <button
                 type="button"
                 key={variant.id}
-                disabled={available <= 0}
+                disabled={disabled}
                 onClick={() => onAddVariant(variant, color.color_name, product.name, sizeLabel, product)}
                 className="w-full flex items-center justify-between px-4 py-2 hover:bg-blue-50 disabled:hover:bg-transparent disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-right border-t border-slate-50"
               >
@@ -135,7 +136,7 @@ const ProductSelector = React.memo(function ProductSelector({ product, onAddVari
                   </span>
                 </div>
                 <span className="text-[10px] text-[#6b1d2f] font-bold bg-[#6b1d2f]/10 px-2 py-0.5 rounded shrink-0">
-                  {available > 0 ? '+ إضافة' : 'نفد'}
+                  {allowZeroStock ? '+ اختيار' : (available > 0 ? '+ إضافة' : 'نفد')}
                 </span>
               </button>
             );
@@ -157,6 +158,7 @@ export default function ProductPicker({
   products = [],
   onAddVariant,
   showPrice = false,
+  allowZeroStock = false,
   maxHeight = 'max-h-48',
   placeholder = 'ابحث بالاسم أو الكود أو المقاس... (الأصفار البادئة غير مهمة)',
 }) {
@@ -201,6 +203,7 @@ export default function ProductPicker({
               product={product}
               onAddVariant={onAddVariant}
               showPrice={showPrice}
+              allowZeroStock={allowZeroStock}
             />
           ))
         )}

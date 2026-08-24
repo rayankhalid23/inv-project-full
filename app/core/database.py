@@ -48,6 +48,40 @@ except Exception as e:
 # إعداد مصنع الجلسات (Sessions)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+def _stamp_alembic_head() -> None:
+    """
+    ختم قاعدة بيانات أُنشئت للتو بـ create_all على أحدث مراجعة في Alembic.
+
+    بدون هذا الختم تبقى القاعدة الجديدة بلا جدول alembic_version، فتظن Alembic
+    لاحقاً أنها قاعدة قديمة وتحاول تنفيذ 001 من الصفر على جداول موجودة فتفشل.
+    الختم يُنفَّذ فقط على قاعدة كانت فارغة تماماً قبل create_all، لأن مخطط
+    create_all مطابق حرفياً لناتج سلسلة الهجرات (متحقَّق منه باختبار المطابقة).
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ini_path = os.path.join(project_root, "alembic.ini")
+    if not os.path.exists(ini_path):
+        return
+
+    cfg = Config(ini_path)
+    cfg.set_main_option("script_location", os.path.join(project_root, "alembic"))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    if not head:
+        return
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS alembic_version ("
+            "version_num VARCHAR(32) NOT NULL, "
+            "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+        ))
+        conn.execute(text("DELETE FROM alembic_version"))
+        conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:v)"), {"v": head})
+    print(f"[DB] قاعدة بيانات جديدة — تم ختمها على مراجعة Alembic: {head}")
+
+
 def init_db():
     """
     تهيئة قاعدة البيانات وإنشاء الجداول بناءً على الموديلات المعرفة في النظام.
@@ -56,10 +90,14 @@ def init_db():
     """
     import app.models  # noqa: F401 — يُسجّل كل الموديلات على الـ Base
     from app.models.base import Base
+    from sqlalchemy import inspect
 
     try:
+        # نلتقط الحالة قبل create_all لنعرف إن كانت هذه أول تهيئة على الإطلاق
+        was_empty = not inspect(engine).get_table_names()
+
         Base.metadata.create_all(bind=engine)
-        
+
         # التأكد من وجود أعمدة الشحن الجديدة في جدول orders تلقائياً
         with engine.connect() as conn:
             columns_to_add = [
@@ -95,13 +133,21 @@ def init_db():
                 default_admin = User(
                     name="المدير العام",
                     phone="0912345678",
-                    password_hash=get_password_hash("admin123"),
+                    password_hash=get_password_hash("123456"),
                     role_id=admin_role.id,
                     is_active=True
                 )
                 db.add(default_admin)
-            
+
             db.commit()
+
+        # الختم بعد نجاح الإنشاء والبذر، وعلى قاعدة كانت فارغة فقط.
+        # فشله لا يجوز أن يمنع الخادم من الإقلاع — القاعدة نفسها سليمة بدونه.
+        if was_empty:
+            try:
+                _stamp_alembic_head()
+            except Exception as e:
+                print(f"DATABASE WARNING: Alembic stamp skipped: {e}")
     except SQLAlchemyError as e:
         print(f"DATABASE ERROR: Table creation failed: {e}")
 
@@ -117,4 +163,4 @@ def get_db():
         print(f"DATABASE SESSION ERROR: {e}")
         raise
     finally:
-        db.close()
+        db.close()

@@ -181,6 +181,23 @@ def resolve_variant_by_scan(db: Session, scanned: str, lock: bool = False):
                   .with_for_update()
                   .first())
 
+    # 0) الصيغة الجديدة: {product_id:05d}-{color_pos}-{size_pos}  مثل  00076-1-2
+    #    تقبل أيضاً بدون أصفار أمامية: 76-1-2  ←  يُطابق  00076-1-2
+    m_sku = re.match(r"^(\d+)-(\d+)-(\d+)$", code)
+    if m_sku:
+        # محاولة مطابقة مباشرة أولاً
+        v = _q().filter(ProductVariant.variant_sku == code).first()
+        if v:
+            return _finish(v)
+        # تطبيع رقم المنتج إلى 5 خانات ثم إعادة المحاولة (76-1-2 → 00076-1-2)
+        try:
+            normalized = f"{int(m_sku.group(1)):05d}-{m_sku.group(2)}-{m_sku.group(3)}"
+            v = _q().filter(ProductVariant.variant_sku == normalized).first()
+            if v:
+                return _finish(v)
+        except Exception:
+            pass
+
     # 1) نص الـ QR المطبوع: VAR:{variant_id}|SKU:{product_code}
     m = re.match(r"^VAR:(\d+)", code, re.IGNORECASE)
     if m:

@@ -117,21 +117,31 @@ def generate_product_code(db: Session) -> str:
         if not exists:
             return new_code
 
-def generate_variant_qr(variant_id: int, product_code: str) -> str:
+def compute_variant_sku(product_id: int, color_position: int, size_position: int) -> str:
+    """بناء كود SKU فريد بصيغة {product_id:05d}-{color_pos}-{size_pos}
+
+    مثال: المنتج 76، اللون الأول، المقاس الثاني  →  00076-1-2
+    الأصفار في بداية رقم المنتج تُتجاهل في البحث (76 = 00076).
+    """
+    return f"{product_id:05d}-{color_position}-{size_position}"
+
+
+def generate_variant_qr(variant_id: int, product_code: str, variant_sku: str = None) -> str:
     """توليد كود QR يحتوي على بيانات الصنف الفريدة.
 
     متزامنة عن قصد: لا تحتوي على أي await — مجرد توليد صورة وحفظها على القرص.
     كونها async def سابقاً كان يجعلها تعمل على حلقة الأحداث وتُجمّد الخادم،
     خصوصاً أنها تُستدعى داخل حلقة لكل مقاس عند إنشاء المتغيرات دفعة واحدة.
+
+    إذا أُعطي variant_sku يُشفَّر في صورة الـ QR مباشرة (أسهل للكتابة والحفظ).
     """
     ensure_upload_dirs()
-    # بيانات الـ QR: معرف النسخة وكود المنتج
-    qr_data = f"VAR:{variant_id}|SKU:{product_code}"
-    
+    qr_data = variant_sku if variant_sku else f"VAR:{variant_id}|SKU:{product_code}"
+
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
     qr.add_data(qr_data)
     qr.make(fit=True)
-    
+
     img = qr.make_image(fill_color="black", back_color="white")
     file_name = f"qr_{variant_id}_{uuid.uuid4().hex[:6]}.png"
     file_path = os.path.join(media_dir("qr"), file_name)

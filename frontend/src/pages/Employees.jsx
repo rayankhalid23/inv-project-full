@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  UserPlus, Search, Pencil, Trash2, 
-  MoreVertical, Briefcase, CheckCircle2, 
+import {
+  UserPlus, Search, Pencil, Trash2,
+  MoreVertical, Briefcase, CheckCircle2,
   Users, UserX, RotateCcw, ShieldCheck, UserCog, UserCircle,
-  Loader2, Eye, X, Activity, Scan, AlertTriangle, Clock 
+  Loader2, Eye, X, Activity, Scan, AlertTriangle, Clock, UserSearch
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
@@ -117,8 +117,32 @@ const Employees = () => {
   const handleSoftDelete = async (userId, userNameOrRestore) => {
     const isRestore = typeof userNameOrRestore === 'boolean' ? userNameOrRestore : false;
     const displayName = typeof userNameOrRestore === 'string' ? userNameOrRestore : "هذا الموظف";
-  
-    if (!isRestore && !window.confirm(`هل أنت متأكد من نقل الموظف "${displayName}" إلى سلة المحذوفات؟`)) return;
+
+    if (!isRestore) {
+      const confirmed = await new Promise(resolve => {
+        toast((t) => (
+          <div className="font-arabic text-right" dir="rtl">
+            <p className="font-bold text-slate-800 text-sm mb-1">نقل الموظف للسلة؟</p>
+            <p className="text-slate-500 text-xs mb-3">"{displayName}" سيُنقل لسلة المحذوفات ويمكن استعادته لاحقاً</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { toast.dismiss(t.id); resolve(true); }}
+                className="flex-1 bg-red-600 text-white rounded-xl py-1.5 text-xs font-black hover:bg-red-700 transition-colors"
+              >
+                نعم، نقل
+              </button>
+              <button
+                onClick={() => { toast.dismiss(t.id); resolve(false); }}
+                className="flex-1 bg-slate-100 text-slate-700 rounded-xl py-1.5 text-xs font-black hover:bg-slate-200 transition-colors"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        ), { duration: Infinity, style: { borderRadius: '16px', padding: '16px', minWidth: '260px' } });
+      });
+      if (!confirmed) return;
+    }
 
     if (!navigator.onLine) {
       const type = isRestore ? 'RESTORE_EMPLOYEE' : 'DELETE_EMPLOYEE';
@@ -315,17 +339,43 @@ const Employees = () => {
           );
         })}
 
-        {/* مودال التعديل - نستخدم نفس مكون الإضافة لكن نمرر له البيانات */}
-       <AddEmployeeModal 
-         isOpen={isEditModalOpen} 
-         onClose={() => {
-           setIsEditModalOpen(false);
-           setEmployeeToEdit(null); // تصفير البيانات عند الإغلاق
-         }} 
-         onRefresh={() => fetchEmployees(1, true)} 
-         initialData={employeeToEdit} // هذا هو السطر الأهم لتمرير البيانات القديمة
-       />
+        {/* مودال التعديل */}
+        <AddEmployeeModal
+          isOpen={isEditModalOpen}
+          onClose={() => { setIsEditModalOpen(false); setEmployeeToEdit(null); }}
+          onRefresh={() => fetchEmployees(1, true)}
+          initialData={employeeToEdit}
+        />
       </div>
+
+      {/* Empty State */}
+      {!loading && employees.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-24 gap-4 text-center animate-in fade-in duration-500">
+          <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center">
+            <UserSearch className="h-9 w-9 text-slate-400" />
+          </div>
+          <div>
+            <p className="text-slate-700 font-black text-base">
+              {activeTab === 'deleted' ? 'لا يوجد موظفين محذوفين' : 'لا يوجد موظفين'}
+            </p>
+            <p className="text-slate-400 text-sm mt-1 font-bold">
+              {searchQuery
+                ? `لم يُعثر على نتائج لـ "${searchQuery}"`
+                : activeTab === 'deleted'
+                  ? 'سلة المحذوفات فارغة'
+                  : 'ابدأ بإضافة أول موظف عبر زر "إضافة"'}
+            </p>
+          </div>
+          {activeTab === 'active' && !searchQuery && (
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              className="mt-2 inline-flex items-center gap-2 bg-[#800000] text-white px-6 h-11 rounded-xl font-black shadow-lg shadow-[#800000]/20 hover:scale-105 transition-transform"
+            >
+              <UserPlus className="h-4 w-4" /> إضافة موظف
+            </button>
+          )}
+        </div>
+      )}
 
       <EmployeeDetailsModal 
         isOpen={isStatsModalOpen} 

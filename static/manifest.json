@@ -1,0 +1,67 @@
+{
+  "id": "/",
+  "name": "BELLAGIO - نظام إدارة المخازن",
+  "short_name": "BELLAGIO",
+  "description": "نظام بيلادجيو المتكامل لإدارة المخازن والطلبات والمبيعات والموظفين",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#0a1128",
+  "theme_color": "#800000",
+  "dir": "rtl",
+  "lang": "ar",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": [
+    "business",
+    "productivity",
+    "utilities"
+  ],
+  "shortcuts": [
+    {
+      "name": "المبيعات",
+      "short_name": "المبيعات",
+      "description": "الانتقال السريع لشاشة المبيعات",
+      "url": "/sales",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "المخزون",
+      "short_name": "المخزون",
+      "description": "الانتقال السريع للمخزون",
+      "url": "/products",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    }
+  ]
+}

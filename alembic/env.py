@@ -1,9 +1,11 @@
+import importlib
 import os
+import pkgutil
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 # إضافة مسار المشروع الجذر حتى يمكن استيراد app.models
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,9 +16,22 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# استيراد Base بعد إضافة المسار
-import app.models  # noqa: F401 — تسجيل كل الموديلات
-from app.models.base import Base
+# استيراد Base
+from app.models.base import Base  # noqa: E402
+import app.models  # noqa: E402
+
+
+# دالة تضمن استيراد كل الملفات داخل مجلد models لتسجيل كل الجداول في Base.metadata
+def import_all_models(package):
+    if hasattr(package, "__path__"):
+        for _, name, _ in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+            try:
+                importlib.import_module(name)
+            except Exception:
+                pass
+
+
+import_all_models(app.models)
 
 target_metadata = Base.metadata
 
@@ -54,7 +69,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+        compare_type=False,
+        compare_server_default=False,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -74,7 +90,8 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,
+            compare_type=False,
+            compare_server_default=False,
         )
         with context.begin_transaction():
             context.run_migrations()

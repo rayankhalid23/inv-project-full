@@ -15,9 +15,8 @@ from fastapi import Query
 from app.core.database import get_db
 from app.core.deps import RoleChecker
 from app.schemas.inventory import VariantUpdatePartial
-from app.utils import generate_variant_qr, delete_old_image
+from app.utils import generate_variant_qr, delete_old_image, compute_variant_sku
 from app.models.inventory import Product, ProductColor, ProductVariant, Size
-from app.utils import generate_variant_qr
 from app.crud.inventory_sync import sync_product_metrics
 from app.services.order_service import get_inventory_dashboard_stats
 
@@ -78,8 +77,23 @@ def create_product_variants(
             db.add(new_variant)
             db.flush() # الحصول على ID المتغير فوراً لاستخدامه في الـ QR
 
-            # 4. توليد الـ QR Code
-            qr_path = generate_variant_qr(new_variant.id, product.code)
+            # 4. حساب مواضع اللون والمقاس بين ألوان ومقاسات المنتج (لبناء الـ SKU)
+            color_position = db.query(ProductColor).filter(
+                ProductColor.product_id == product.id,
+                ProductColor.deleted_at == None,
+                ProductColor.id <= product_color_id
+            ).count()
+            # موضع هذا المقاس بين مقاسات نفس اللون (بالترتيب الزمني للإضافة)
+            size_position = db.query(ProductVariant).filter(
+                ProductVariant.product_color_id == product_color_id,
+                ProductVariant.deleted_at == None,
+                ProductVariant.id <= new_variant.id
+            ).count()
+            sku = compute_variant_sku(product.id, color_position, size_position)
+            new_variant.variant_sku = sku
+
+            # 5. توليد الـ QR Code (يُشفَّر فيه الـ SKU القصير)
+            qr_path = generate_variant_qr(new_variant.id, product.code, variant_sku=sku)
             new_variant.qr_code = qr_path
 
             # --- [إضافة: مراقبة المخزون] ---
@@ -495,22 +509,27 @@ def filter_product_variants(
     if catalog_id is not None:
         query = query.filter(Product.catalog_id == catalog_id)
 
-    # 3. تطبيق فلتر البحث الذكي (اسم المنتج أو كود المنتج أو رمز الـ QR)
+    # 3. تطبيق فلتر البحث الذكي
     if search:
         clean_s = search.strip()
         search_filter = f"%{clean_s}%"
         conditions = [
             Product.name.ilike(search_filter),
             Product.code.ilike(search_filter),
-            ProductVariant.qr_code.ilike(search_filter)
+            ProductVariant.qr_code.ilike(search_filter),
+            ProductVariant.variant_sku.ilike(search_filter),
+            ProductColor.color_name.ilike(search_filter),
         ]
-        digits_only = clean_s.lstrip("0")
-        if digits_only and digits_only != clean_s:
-            digits_filter = f"%{digits_only}%"
-            conditions.extend([
-                Product.code.ilike(digits_filter),
-                ProductVariant.qr_code.ilike(digits_filter)
-            ])
+        # دعم البحث بالرقم بدون أصفار أمامية: 76 يطابق 00076-x-x
+        # نُطبّع رقم المنتج إلى 5 خانات لو كان النص أرقام فقط أو صيغة N-N-N
+        import re as _re
+        m_norm = _re.match(r"^(\d+)(-\d+-\d+)?$", clean_s)
+        if m_norm:
+            try:
+                padded = f"{int(m_norm.group(1)):05d}{m_norm.group(2) or ''}"
+                conditions.append(ProductVariant.variant_sku.ilike(f"{padded}%"))
+            except Exception:
+                pass
         query = query.filter(or_(*conditions))
 
     # 3.5 تطبيق فلتر الـ QR المباشر
@@ -569,7 +588,8 @@ def filter_product_variants(
                 min_stock_threshold=variant.min_stock_threshold,
                 quantity_reserved=variant.quantity_reserved,
                 is_low_stock=is_low,
-                qr_code=variant.qr_code
+                qr_code=variant.qr_code,
+                variant_sku=variant.variant_sku
             )
         )
 
@@ -578,6 +598,64 @@ def filter_product_variants(
         low_stock_count=low_stock_count,
         page=page,
         page_size=page_size,
-        matched_product_ids=matched_product_ids, # الحقل الجديد المضاف
+        matched_product_ids=matched_product_ids,
         items=items
     )
+
+
+@router.post("/regenerate-skus", summary="إعادة توليد variant_sku لجميع المتغيرات")
+def regenerate_variant_skus(
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([1]))
+):
+    """
+    يُعيد توليد variant_sku وصورة QR لكل المتغيرات (المحدودة وغير المحدودة).
+    الصيغة الجديدة: {product_id:05d}-{color_pos}-{size_pos}  مثال: 00076-1-2
+    """
+    from app.utils import compute_variant_sku, generate_variant_qr, delete_old_image
+
+    # جلب كل المتغيرات النشطة مرتبة حسب المنتج واللون ثم المعرف
+    variants = (
+        db.query(ProductVariant)
+        .filter(ProductVariant.deleted_at == None)
+        .order_by(ProductVariant.product_color_id.asc(), ProductVariant.id.asc())
+        .all()
+    )
+
+    updated = 0
+    for variant in variants:
+        try:
+            color = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
+            if not color:
+                continue
+            product = db.query(Product).filter(Product.id == color.product_id).first()
+            if not product:
+                continue
+
+            color_position = db.query(ProductColor).filter(
+                ProductColor.product_id == product.id,
+                ProductColor.deleted_at == None,
+                ProductColor.id <= variant.product_color_id
+            ).count()
+
+            size_position = db.query(ProductVariant).filter(
+                ProductVariant.product_color_id == variant.product_color_id,
+                ProductVariant.deleted_at == None,
+                ProductVariant.id <= variant.id
+            ).count()
+
+            sku = compute_variant_sku(product.id, color_position, size_position)
+            variant.variant_sku = sku
+
+            if variant.qr_code:
+                delete_old_image(variant.qr_code)
+            qr_path = generate_variant_qr(variant.id, product.code, variant_sku=sku)
+            variant.qr_code = qr_path
+
+            updated += 1
+        except Exception as e:
+            print(f"Error updating variant {variant.id}: {e}")
+            continue
+
+    db.commit()
+    return {"status": "success", "updated": updated}

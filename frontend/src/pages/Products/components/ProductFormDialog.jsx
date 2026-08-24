@@ -282,41 +282,65 @@ formData.append('variants', JSON.stringify(data.variants));
         // 1. استدعاء الدالة من المتغير المحمي داخلياً apiToUse بدلاً من activeApi
         await apiToUse.updateProduct(data.id, formData);
 
-// 2. المزامنة العميقة فوراً للألوان والمقاسات الفردية بالسيرفر لمنع أي تضارب بالمخزون
+// 2. المزامنة العميقة للألوان والمقاسات
 if (data.variants && data.variants.length > 0) {
   for (const variant of data.variants) {
-    
-    // 1️⃣ السطر الجديد: استخراج المعرف الصحيح للون (تجنباً للـ NaN)
     const rawColorId = variant.color_id || variant.color?.id || variant.id;
     const parsedColorId = parseInt(rawColorId, 10);
 
-    // أ) تحديث بيانات اللون وصورته فورا إذا كان مسجلاً بالسيرفر ولديه معرف صالح
     if (rawColorId && !isNaN(parsedColorId)) {
+      // لون موجود مسبقاً — تحديث بياناته وكميات مقاساته
       const actualFile = variant.color_image instanceof File ? variant.color_image : null;
-      
-      // 2️⃣ السطر الجديد: استدعاء التحديث والتقاط النتيجة مع حزام الأمان
       const colorResponse = await apiToUse.updateColor(parsedColorId, variant.color_name, actualFile);
-      
-      // إذا كان الباك إند يرجع رسالة خطأ صريحة في الـ data نقوم برميها يدوياً لتلتقطها الـ catch بالأسفل
       if (colorResponse && colorResponse.status === "error") {
         throw new Error(colorResponse.message || "فشل تحديث بيانات اللون");
       }
-      
-      // ب) تحديث كميات المقاسات التابعة لهذا اللون فوراً عبر دالة الـ Patch الجزئية لتعمل بالمخزون حالاً
+
       if (variant.sizes && variant.sizes.length > 0) {
-        for (const sizeItem of variant.sizes) {
-          if (sizeItem.id) { 
-            const variantResponse = await apiToUse.updateVariantPartial(
-              parseInt(sizeItem.id, 10), 
-              Number(sizeItem.quantity || 0), 
-              parseInt(freshMinStock, 10)
-            );
-            
-            if (variantResponse && variantResponse.status === "error") {
-              throw new Error(variantResponse.message || "فشل تحديث كمية المقاس");
-            }
+        // تحديث المقاسات الموجودة
+        const existingSizes = variant.sizes.filter(s => s.id);
+        for (const sizeItem of existingSizes) {
+          const variantResponse = await apiToUse.updateVariantPartial(
+            parseInt(sizeItem.id, 10),
+            Number(sizeItem.quantity || 0),
+            parseInt(freshMinStock, 10)
+          );
+          if (variantResponse && variantResponse.status === "error") {
+            throw new Error(variantResponse.message || "فشل تحديث كمية المقاس");
           }
         }
+
+        // إضافة المقاسات الجديدة (بدون id) لهذا اللون
+        const newSizes = variant.sizes.filter(s => !s.id && s.size_id);
+        if (newSizes.length > 0) {
+          const newVariantsArray = newSizes.map(s => ({
+            size_id: Number(s.size_id),
+            qty: Number(s.quantity || 0),
+            min_stock: parseInt(freshMinStock, 10)
+          }));
+          await apiToUse.createBatchVariants(parsedColorId, newVariantsArray);
+        }
+      }
+    } else {
+      // لون جديد تماماً — إنشاؤه ثم إضافة مقاساته
+      const colorFormData = new FormData();
+      colorFormData.append('product_id', String(data.id));
+      colorFormData.append('color_name', variant.color_name || 'لون جديد');
+      const colorFile = variant.color_image instanceof File
+        ? variant.color_image
+        : (variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : null));
+      if (colorFile) colorFormData.append('image_file', colorFile);
+
+      const newColorRes = await apiToUse.addColor(colorFormData);
+      const newColorId = newColorRes?.data?.id || newColorRes?.id;
+
+      if (newColorId && variant.sizes && variant.sizes.length > 0) {
+        const variantsArray = variant.sizes.map(s => ({
+          size_id: Number(s.size_id),
+          qty: Number(s.quantity || 0),
+          min_stock: parseInt(freshMinStock, 10)
+        }));
+        await apiToUse.createBatchVariants(newColorId, variantsArray);
       }
     }
   }
@@ -620,15 +644,27 @@ if (!open) return null;
               <span className="min-w-[4.5rem] px-2.5 py-1 flex items-center justify-center bg-white rounded-lg text-[12px] font-black text-[#800000] border border-slate-200 shadow-sm text-center whitespace-nowrap shrink-0">
                 {v.size_name}
               </span>
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">الكمية:</span>
-                <span className="text-[13px] font-black text-slate-700 truncate">
-                  {v.quantity_available} <span className="text-[11px] font-normal text-slate-500">قطعة</span>
-                </span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">الكمية:</span>
+                  <span className="text-[13px] font-black text-slate-700 truncate">
+                    {v.quantity_available} <span className="text-[11px] font-normal text-slate-500">قطعة</span>
+                  </span>
+                </div>
+                {v.variant_sku && (
+                  <button
+                    type="button"
+                    onClick={() => { navigator.clipboard.writeText(v.variant_sku); triggerToast("تم نسخ كود البحث", "success"); }}
+                    className="text-[10px] font-mono text-slate-400 hover:text-[#800000] text-right transition-colors"
+                    title="اضغط لنسخ كود البحث"
+                  >
+                    📎 {v.variant_sku}
+                  </button>
+                )}
               </div>
             </div>
-            
-            <button 
+
+            <button
               type="button"
               disabled={isDownloadingQr === v.id}
               onClick={() => handleDownloadQR(v.id)}

@@ -110,6 +110,12 @@ export const catalogApi = {
         return response.data;
     },
 
+    // جلب منتج برقمه فقط (للاختيار اليدوي لون/مقاس)
+    getProductByNumber: async (productNumber) => {
+        const response = await api.get(`/products/${parseInt(productNumber, 10)}/details`);
+        return response.data;
+    },
+
     // تصدير الكتالوج PDF
     exportCatalogPdf: async (params) => {
         const response = await api.get('/products/export-pdf', {
