@@ -85,15 +85,14 @@ def log_product_data_update(db, admin_id, product_id, old_product, new_product):
         old_val = old_product.get(field)
         new_val = new_product.get(field)
 
-      # تحويل التغيير إلى نص مباشر بدلاً من Dictionary
-if field in ["selling_price", "cost_price"]:
-    if round(float(old_val or 0), 2) != round(float(new_val or 0), 2):
-        changes[field] = f"من {old_val} إلى {new_val}"
+        # تحويل التغيير إلى نص مباشر بدلاً من Dictionary
+        if field in ["selling_price", "cost_price"]:
+            if round(float(old_val or 0), 2) != round(float(new_val or 0), 2):
+                changes[field] = f"من {old_val} إلى {new_val}"
         # التعامل مع النصوص والكتالوج
         elif field != "main_image":
             if old_val != new_val:
                 changes[field] = {"من": old_val, "إلى": new_val}
-        
         # التعامل الخاص مع الصورة: لا تسجل تغييراً إلا إذا كان المسار مختلفاً فعلاً
         else:
             if old_val != new_val and new_val is not None:

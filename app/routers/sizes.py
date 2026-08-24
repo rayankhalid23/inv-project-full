@@ -20,7 +20,7 @@ from app.models.user import User
 from app.services.audit_service import create_system_audit_log
 
 
-router = APIRouter(prefix="/sizes", tags=["Sizes"])
+router = APIRouter(tags=["Sizes"])
 
 
 

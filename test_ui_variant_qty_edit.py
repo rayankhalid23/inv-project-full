@@ -22,25 +22,19 @@ token = create_access_token(data={"sub": str(admin_user.id)}, expires_delta=time
 user_dict = {
     "id": admin_user.id,
     "name": admin_user.name,
-    "role_id": admin_user.role_id,
-    "role": admin_user.role.name if admin_user.role else "Admin",
+    "role_id": 1,
+    "role": "Admin",
     "phone": admin_user.phone
 }
 
-# Find a product with variants
-variant = db.query(ProductVariant).filter(
-    ProductVariant.deleted_at.is_(None)
-).first()
-target_var_id = variant.id
-color_id = variant.product_color_id
-product = db.query(Product).join(ProductColor).filter(ProductColor.id == color_id).first()
-prod_id = product.id
-old_qty = variant.quantity_available or 0
+target_var_id = 97
+v_before = db.query(ProductVariant).filter(ProductVariant.id == target_var_id).first()
+old_qty = v_before.quantity_available
+target_new_qty = 85 if old_qty != 85 else 77
 db.close()
 
-print(f"[*] Testing UI Quantity Edit for Product: {product.name} (ID: {prod_id}), Variant ID: {target_var_id} (Old Qty: {old_qty})")
-
-target_new_qty = (old_qty + 12) if old_qty < 80 else 25
+print(f"[*] Testing UI Quantity Edit for Variant ID: {target_var_id}")
+print(f"[*] Old Quantity: {old_qty} -> New Target Quantity: {target_new_qty}")
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
@@ -51,6 +45,7 @@ with sync_playwright() as p:
     page.evaluate(f"""() => {{
         localStorage.setItem('token', '{token}');
         localStorage.setItem('user', JSON.stringify({user_dict}));
+        localStorage.setItem('role_id', '1');
     }}""")
     
     # 2. Go to Products Page
@@ -59,48 +54,54 @@ with sync_playwright() as p:
     page.wait_for_load_state("networkidle")
     time.sleep(2)
     
-    # 3. Find and click Edit on our product card
-    print(f"[-] Looking for Product ID {prod_id} card...")
-    edit_btn = page.locator(f"button[title*='تعديل'], button:has-text('تعديل')").first
+    # 3. Click on the first catalog card
+    print("[-] Clicking on Catalog card...")
+    page.locator("div.cursor-pointer:has(svg.lucide-folder-open)").first.click()
+    time.sleep(2.5)
+    print("[+] Opened Catalog products view!")
+    
+    # 4. Click the three-dots menu on the first product card
+    print("[-] Opening card options menu...")
+    card_menu_btn = page.locator("button.p-2.hover\\:bg-slate-50").first
+    card_menu_btn.click()
+    time.sleep(0.8)
+    
+    edit_btn = page.locator("button:has-text('تعديل')").first
     if edit_btn.is_visible():
+        print("[+] Clicking 'تعديل' button...")
         edit_btn.click()
-        time.sleep(2)
-        print("[+] Clicked Edit on Product. Form dialog opened.")
+        time.sleep(3) # Wait for getProductForEdit and Form reset
         
-        # 4. Find the quantity input for the variant
-        qty_inputs = page.locator("input[type='number']")
-        count = qty_inputs.count()
-        print(f"[+] Found {count} number inputs in form.")
-        
-        # Locate the size quantity input
-        for idx in range(count):
-            inp = qty_inputs.nth(idx)
-            val = inp.input_value()
-            name_attr = inp.get_attribute("name") or ""
-            placeholder = inp.get_attribute("placeholder") or ""
-            print(f"  Input #{idx}: name='{name_attr}', val='{val}', placeholder='{placeholder}'")
-            if "quantity" in name_attr or "الكمية" in placeholder:
-                print(f"[+] Found Variant Quantity input #{idx}! Changing value from '{val}' to '{target_new_qty}'")
-                inp.fill("")
-                inp.fill(str(target_new_qty))
-                break
-                
-        time.sleep(1)
-        # 5. Click Save
-        save_btn = page.locator("button:has-text('حفظ التعديلات'), button:has-text('تحديث المنتج')").first
-        if save_btn.is_visible():
-            print("[+] Clicking Save button...")
-            save_btn.click()
-            time.sleep(3)
-            print("[+] Save submitted!")
+        # Find quantity inputs inside dialog
+        qty_inputs = page.locator("input[name*='quantity']")
+        print(f"[+] Found {qty_inputs.count()} quantity inputs in form dialog")
+        if qty_inputs.count() > 0:
+            qty_input = qty_inputs.first
+            curr_val = qty_input.input_value()
+            print(f"[+] Found Variant Quantity Input with current value '{curr_val}'. Changing to '{target_new_qty}'...")
+            qty_input.fill("")
+            qty_input.fill(str(target_new_qty))
+            time.sleep(1)
             
+            # Submit form
+            save_btn = page.locator("button:has-text('حفظ التعديلات'), button:has-text('تحديث المنتج'), button[type='submit']").last
+            if save_btn.is_visible():
+                print("[+] Clicking Save Changes button...")
+                save_btn.click()
+                time.sleep(4)
+                print("[+] Save submitted!")
+    else:
+        print("[-] 'تعديل' button was not visible in menu")
+        
     browser.close()
 
-# 6. Verify directly in database
+# 5. Verify in Database
 with SessionLocal() as db:
     v_updated = db.query(ProductVariant).filter(ProductVariant.id == target_var_id).first()
-    print(f"\n[*] DB Check: Variant ID {target_var_id} quantity_available is now: {v_updated.quantity_available}")
+    p_updated = db.query(Product).filter(Product.id == 78).first()
+    print(f"\n[*] DB Verification: Variant ID {target_var_id} quantity_available is now: {v_updated.quantity_available}")
+    print(f"[*] Product 78 total_available is now: {p_updated.total_available}")
     if v_updated.quantity_available == target_new_qty:
-        print("[+] SUCCESS! The quantity in database changed successfully via UI form submission!")
+        print(f"[+] 🎉 SUCCESS! Quantity successfully changed from {old_qty} to {v_updated.quantity_available} via UI!")
     else:
-        print(f"[-] Value was not updated to {target_new_qty}, current value: {v_updated.quantity_available}")
+        print(f"[-] FAILED! Quantity is {v_updated.quantity_available}, expected {target_new_qty}")

@@ -37,25 +37,25 @@ export const catalogApi = {
           params.status = 'الكل'; // القيمة الافتراضية في الباك اند
       }
 
-      const response = await api.get('/catalogs/catalogs/', { params });
+      const response = await api.get('/catalogs/', { params });
       return response.data;
     },
 
     // إضافة كتالوج جديد
     createCatalog: async (name) => {
-        const response = await api.post('/catalogs/catalogs/', { name });
+        const response = await api.post('/catalogs/', { name });
         return response.data;
     },
 
     // تعديل كتالوج
     updateCatalog: async (id, name) => {
-        const response = await api.put(`/catalogs/catalogs/${id}`, { name });
+        const response = await api.put(`/catalogs/${id}`, { name });
         return response.data;
     },
 
     // تغيير حالة الكتالوج (نشط/معطل)
     toggleCatalogStatus: async (id) => {
-        const response = await api.patch(`/catalogs/catalogs/${id}/toggle`, {});
+        const response = await api.patch(`/catalogs/${id}/toggle`, {});
         return response.data;
     },
 
@@ -85,7 +85,7 @@ export const catalogApi = {
     // جلب أسماء الكتالوجات النشطة فقط (للفلترة السريعة)
     getCatalogNames: async () => {
         try {
-            const response = await api.get('/catalogs/catalogs/names-only');
+            const response = await api.get('/catalogs/names-only');
             return response.data;
         } catch (error) {
             console.error("Error fetching catalog names:", error);
@@ -96,7 +96,7 @@ export const catalogApi = {
     // جلب أسماء ومعرفات المقاسات
     getSizeNames: async () => {
         try {
-            const response = await api.get('/sizes/sizes/');
+            const response = await api.get('/sizes/');
             return response.data;
         } catch (error) {
             console.error("Error fetching size names:", error);
@@ -137,7 +137,7 @@ export const catalogApi = {
 
     // 2. إضافة لون للمنتج (FormData)
     addColor: async (formData) => {
-        const response = await api.post('/colors/colors/', formData, {
+        const response = await api.post('/colors/', formData, {
             headers: { 'Content-Type': 'multipart/form-data' }
         });
         return response.data; // يعيد بيانات اللون ومعرفه ID
@@ -155,7 +155,7 @@ export const catalogApi = {
     // تستخدم في حال أراد المستخدم إضافة مقاس غير موجود في القائمة
     createSize: async (name, sortOrder = null) => {
         try {
-            const response = await api.post('/sizes/sizes/', null, {
+            const response = await api.post('/sizes/', null, {
                 params: {
                     name: name,
                     sort_order: sortOrder
@@ -196,7 +196,7 @@ export const catalogApi = {
       formData.append('image_file', colorImage);
     }
   
-    const response = await api.put(`/colors/colors/${intColorId}`, formData, {
+    const response = await api.put(`/colors/${intColorId}`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },

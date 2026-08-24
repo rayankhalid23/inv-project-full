@@ -13,7 +13,7 @@ from app.core.deps import RoleChecker
 from app.crud.catalog import create_catalog,toggle_catalog_status, update_catalog
 from app.utils import delete_old_image
 
-router = APIRouter(prefix="/catalogs", tags=["Catalogs"])
+router = APIRouter(tags=["Catalogs"])
 
 
 
@@ -38,23 +38,24 @@ def get_catalog_names_for_filter(
 
 @router.get("/", response_model=List[CatalogResponse])
 def read_catalogs(
-    status: str = Query("active", enum=["active", "inactive"]),
+    status: Optional[str] = Query("all"),
     db: Session = Depends(get_db), 
     current_user: User = Depends(RoleChecker([1, 2, 3]))
 ):
     query = db.query(Catalog, User.name.label("creator_name")).outerjoin(User, Catalog.created_by == User.id)
     
-    if status == "active":
+    if status in ["active", "نشط"]:
         query = query.filter(Catalog.deleted_at == None, Catalog.is_active == True)
-    elif status == "inactive":
+    elif status in ["inactive", "غير نشط"]:
         query = query.filter(Catalog.deleted_at == None, Catalog.is_active == False)
- 
+    else:
+        query = query.filter(Catalog.deleted_at == None)
 
     results = query.order_by(Catalog.created_at.desc()).all()
     
     final_result = []
     for catalog_obj, creator_name in results:
-        catalog_dict = catalog_obj.__dict__.copy()
+        catalog_dict = {c.name: getattr(catalog_obj, c.name) for c in catalog_obj.__table__.columns}
         catalog_dict["creator_name"] = creator_name or "Unknown"
         final_result.append(catalog_dict)
         

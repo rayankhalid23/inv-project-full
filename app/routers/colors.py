@@ -11,7 +11,7 @@ from app.utils import process_and_save_color_image, delete_old_image
 from app.core.deps import RoleChecker
 from app.crud.inventory_sync import sync_product_metrics
 
-router = APIRouter(prefix="/colors", tags=["Colors"])
+router = APIRouter(tags=["Colors"])
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def add_color(
