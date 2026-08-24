@@ -6,14 +6,23 @@ from app.models.user import User
 from app.models.role import Role
 from collections import defaultdict
 from datetime import datetime
+from app.services import audit_taxonomy as tax
 
 class ReportingService:
 
     @staticmethod
     def get_performance_analytics(db: Session, start_date=None, end_date=None):
-        # 1. جلب الموظفين وتصنيفهم
+        """
+        تحليل أداء الموظفين عبر ثلاثة مصادر مجتمعة:
+          - system_audit_logs  : عمليات الموظفين والكتالوجات والمنتجات
+          - order_actions      : عمليات الطلبات وعمليات المسح
+          - inventory_movements: التوالف والرواجع
+
+        التصنيف كله يمرّ عبر app.services.audit_taxonomy حتى لا تعود
+        قواميس التحويل تتفرّع وتفقد قيماً بصمت كما كان يحدث سابقاً.
+        """
         users = db.query(User).options(joinedload(User.role)).filter(User.deleted_at.is_(None)).all()
-        
+
         user_stats = {}
         for u in users:
             user_stats[u.id] = {
@@ -21,153 +30,223 @@ class ReportingService:
                 "role_id": u.role_id,
                 "employee_name": u.name,
                 "role": u.role.name if u.role else "Employee",
-                "categories": {
-                    "employees": {"adds": 0, "updates": 0, "deletes": 0},
-                    "catalogs": {"adds": 0, "updates": 0, "deletes": 0},
-                    "products": {"adds": 0, "updates": 0, "deletes": 0},
-                    "sales": {"adds": 0, "updates": 0, "deletes": 0},
-                    "damages": {"total": 0},
-                    "returns": {"total": 0}
-                }
+                "categories": tax.empty_categories(),
             }
 
-        def get_action_category(action_type: str) -> str:
-            action_type = (action_type or "").lower()
-            if any(k in action_type for k in ["create", "add", "initial", "item_added"]): return "adds"
-            if any(k in action_type for k in ["update", "edit", "status", "toggle", "restore"]): return "updates"
-            if any(k in action_type for k in ["delete", "remove", "cancel", "archive", "item_removed"]): return "deletes"
-            return "adds"
+        def _bump(user_id, category, action_type, count):
+            """يضيف عمليات لموظف مع احترام قيود الرتبة وشكل الفئة."""
+            stats = user_stats.get(user_id)
+            if not stats or not category:
+                return
+            # الموظف العادي لا تُحتسب له العمليات الإدارية
+            if stats["role_id"] == tax.ROLE_STAFF and category in tax.MANAGEMENT_CATEGORIES:
+                return
+            bucket = stats["categories"][category]
+            if "total" in bucket:
+                bucket["total"] += count
+            else:
+                bucket[tax.classify_action(action_type)] += count
 
-        # 2. جلب البيانات من الجداول وتجميعها
-        audit_q = db.query(SystemAuditLog.user_id, SystemAuditLog.action_target, SystemAuditLog.action_type, func.count(SystemAuditLog.id).label("count"))
-        if start_date: audit_q = audit_q.filter(SystemAuditLog.created_at >= start_date)
-        if end_date: audit_q = audit_q.filter(SystemAuditLog.created_at <= end_date)
-        
-        for row in audit_q.group_by(SystemAuditLog.user_id, SystemAuditLog.action_target, SystemAuditLog.action_type).all():
-            if row.user_id in user_stats:
-                target = (row.action_target or "").lower()
-                cat_map = {"user": "employees", "catalog": "catalogs", "product": "products", "order": "sales", "return": "returns", "damage": "damages"}
-                cat = cat_map.get(target)
-                if cat:
-                    # تطبيق قيد الموظفين (id=3): لا يتم احتساب عمليات الموظفين/الكتالوج/المنتجات لهم
-                    if user_stats[row.user_id]["role_id"] == 3 and cat in ["employees", "catalogs", "products"]:
-                        continue
-                    user_stats[row.user_id]["categories"][cat][get_action_category(row.action_type)] += row.count
+        # --- 1. سجل التدقيق العام ---
+        audit_q = db.query(
+            SystemAuditLog.user_id,
+            SystemAuditLog.action_target,
+            SystemAuditLog.action_type,
+            func.count(SystemAuditLog.id).label("count"),
+        )
+        if start_date:
+            audit_q = audit_q.filter(SystemAuditLog.created_at >= start_date)
+        if end_date:
+            audit_q = audit_q.filter(SystemAuditLog.created_at <= end_date)
+        audit_q = audit_q.group_by(
+            SystemAuditLog.user_id, SystemAuditLog.action_target, SystemAuditLog.action_type
+        )
 
-        # 3. معالجة التوالف والرواجع وحساب الإجمالي لكل موظف
-        for u_id, u_data in user_stats.items():
-            for cat in ["damages", "returns"]:
-                 total_cat_ops = sum(u_data["categories"][cat].values())
-                 u_data["categories"][cat] = {"total": total_cat_ops}
-            
-            u_data["total_operations"] = sum(c["total"] if "total" in c else sum(c.values()) for c in u_data["categories"].values())
+        for row in audit_q.all():
+            category = tax.classify_audit_target(row.action_target, row.action_type)
+            _bump(row.user_id, category, row.action_type, row.count)
 
-        # 4. تقسيم القوائم بناءً على الأدوار الوظيفية
+        # --- 2. عمليات الطلبات والمسح ---
+        order_q = db.query(
+            OrderAction.user_id,
+            OrderAction.action_type,
+            func.count(OrderAction.id).label("count"),
+        )
+        if start_date:
+            order_q = order_q.filter(OrderAction.created_at >= start_date)
+        if end_date:
+            order_q = order_q.filter(OrderAction.created_at <= end_date)
+        order_q = order_q.group_by(OrderAction.user_id, OrderAction.action_type)
+
+        for row in order_q.all():
+            category = tax.classify_order_action(row.action_type)
+            _bump(row.user_id, category, row.action_type, row.count)
+
+        # --- 3. التوالف والرواجع من حركات المخزون ---
+        # (مصدر واحد يغطي مسار الـ QR والمسار اليدوي معاً بلا عدّ مزدوج)
+        move_q = db.query(
+            InventoryMovement.user_id,
+            InventoryMovement.movement_type,
+            func.count(InventoryMovement.id).label("count"),
+        ).filter(InventoryMovement.movement_type.in_(list(tax.MOVEMENT_CATEGORY.keys())))
+        if start_date:
+            move_q = move_q.filter(InventoryMovement.created_at >= start_date)
+        if end_date:
+            move_q = move_q.filter(InventoryMovement.created_at <= end_date)
+        move_q = move_q.group_by(InventoryMovement.user_id, InventoryMovement.movement_type)
+
+        for row in move_q.all():
+            category = tax.classify_movement(row.movement_type)
+            _bump(row.user_id, category, row.movement_type, row.count)
+
+        # --- 4. الإجماليات ---
+        for u_data in user_stats.values():
+            u_data["total_operations"] = tax.sum_categories(u_data["categories"])
+
+        # --- 5. التقسيم حسب الرتبة ---
         admins_list, managers_list, staff_list = [], [], []
         for u_data in user_stats.values():
-            if u_data["role_id"] == 1: admins_list.append(u_data)
-            elif u_data["role_id"] == 2: managers_list.append(u_data)
-            elif u_data["role_id"] == 3: staff_list.append(u_data)
+            if u_data["role_id"] == 1:
+                admins_list.append(u_data)
+            elif u_data["role_id"] == 2:
+                managers_list.append(u_data)
+            elif u_data["role_id"] == tax.ROLE_STAFF:
+                staff_list.append(u_data)
 
-        # ترتيب القوائم من الأعلى للأقل أداءً
         for l in [admins_list, managers_list, staff_list]:
             l.sort(key=lambda x: x["total_operations"], reverse=True)
 
         def get_performance_group(sorted_list):
-            if not sorted_list: return [], []
-            max_val = sorted_list[0]["total_operations"]
-            top_performers = [u for u in sorted_list if u["total_operations"] == max_val]
+            """
+            الأعلى والأدنى أداءً. تُستبعد حالة انعدام العمليات تماماً من
+            قائمة "الأعلى" حتى لا يُعرض موظف بصفر عملية كأفضل أداء عندما
+            يكون الجميع بلا نشاط في الفترة المختارة.
+            """
+            active = [u for u in sorted_list if u["total_operations"] > 0]
+            if not active:
+                return [], []
+            max_val = active[0]["total_operations"]
+            top_performers = [u for u in active if u["total_operations"] == max_val]
             min_val = sorted_list[-1]["total_operations"]
             bottom_performers = [u for u in sorted_list if u["total_operations"] == min_val]
+            # لا معنى لأن يكون الموظف نفسه الأفضل والأسوأ في آن واحد
+            if max_val == min_val:
+                bottom_performers = []
             return top_performers, bottom_performers
 
         def format_rank(lst):
             top, bottom = get_performance_group(lst)
-            return {"top": top, "bottom": bottom, "list": lst}       
+            return {"top": top, "bottom": bottom, "list": lst}
 
         return {
             "admins": format_rank(admins_list),
             "managers": format_rank(managers_list),
-            "staff": format_rank(staff_list)
+            "staff": format_rank(staff_list),
         }
 
     @staticmethod
     def get_inventory_performance_report(db: Session, start_date, end_date):
         """تقرير أداء حركة المخزن والمنتجات الأكثر وأقل مبيعاً بناء على الحالات المعتمدة"""
-        
+
+        # الحالات التي تُعتبر بيعاً محقّقاً. الحالات العربية والإنجليزية
+        # الإضافية موجودة لتحمّل أي بيانات قديمة أو تسميات بديلة.
         sold_statuses = ["prepared", "shipped", "delivered", "تم التجهيز", "جاري الشحن", "تم اسناده للتوصيل", "تم التوصيل"]
+
+        sold_filters = [
+            Order.status.in_(sold_statuses),
+            Order.deleted_at.is_(None),
+            OrderItem.deleted_at.is_(None),
+            Product.deleted_at.is_(None),
+            Order.created_at >= start_date,
+            Order.created_at <= end_date,
+        ]
 
         # الأكثر مبيعاً
         top_selling_raw = db.query(
             Product.name, func.sum(OrderItem.quantity).label("total")
-        ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)\
-         .join(Order, Order.id == OrderItem.order_id)\
-         .filter(
-             Order.status.in_(sold_statuses),
-             Order.deleted_at.is_(None),
-             OrderItem.deleted_at.is_(None),
-             Product.deleted_at.is_(None),
-             Order.created_at >= start_date,
-             Order.created_at <= end_date
-         )\
-         .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
+        ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)         .join(Order, Order.id == OrderItem.order_id)         .filter(*sold_filters)         .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
-        # الأقل مبيعاً
-        least_selling_raw = db.query(
-            Product.name, func.sum(OrderItem.quantity).label("total")
-        ).select_from(Product).join(OrderItem, Product.id == OrderItem.product_id)\
-         .join(Order, Order.id == OrderItem.order_id)\
-         .filter(
-             Order.status.in_(sold_statuses),
-             Order.deleted_at.is_(None),
-             OrderItem.deleted_at.is_(None),
-             Product.deleted_at.is_(None),
-             Order.created_at >= start_date,
-             Order.created_at <= end_date
-         )\
-         .group_by(Product.id, Product.name).order_by("total").limit(5).all()
+        # الأقل مبيعاً / السلع الراكدة.
+        # كان هذا الاستعلام يستخدم JOIN داخلياً فيستبعد كل منتج لم يُبع منه
+        # ولا قطعة واحدة — أي أن "السلع الراكدة" كانت تعرض سلعاً تتحرك فعلاً
+        # وتُخفي الراكدة تماماً، وهو عكس الغرض من التقرير. الآن نستخدم
+        # استعلاماً فرعياً بـ LEFT JOIN فتظهر المنتجات ذات المبيعات الصفرية أولاً.
+        sold_subq = (
+            db.query(
+                OrderItem.product_id.label("pid"),
+                func.sum(OrderItem.quantity).label("sold"),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .filter(
+                Order.status.in_(sold_statuses),
+                Order.deleted_at.is_(None),
+                OrderItem.deleted_at.is_(None),
+                Order.created_at >= start_date,
+                Order.created_at <= end_date,
+            )
+            .group_by(OrderItem.product_id)
+            .subquery()
+        )
+
+        least_selling_rows = (
+            db.query(
+                Product.name,
+                func.coalesce(sold_subq.c.sold, 0).label("total"),
+            )
+            .outerjoin(sold_subq, sold_subq.c.pid == Product.id)
+            .filter(Product.deleted_at.is_(None))
+            .order_by("total", Product.name)
+            .limit(5)
+            .all()
+        )
 
         # الأكثر مرتجعاً
         top_returns_raw = db.query(
             Product.name, func.sum(InventoryMovement.quantity_change).label("total")
-        ).select_from(InventoryMovement)\
-         .outerjoin(Product, Product.id == InventoryMovement.product_id)\
-         .filter(
-             InventoryMovement.movement_type == 'return', 
-             InventoryMovement.created_at >= start_date, 
+        ).select_from(InventoryMovement)         .join(Product, Product.id == InventoryMovement.product_id)         .filter(
+             InventoryMovement.movement_type == 'return',
+             Product.deleted_at.is_(None),
+             InventoryMovement.created_at >= start_date,
              InventoryMovement.created_at <= end_date
-         )\
-         .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
+         )         .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
         # الأكثر تالفاً
         top_damaged_raw = db.query(
             Product.name, func.sum(func.abs(InventoryMovement.quantity_change)).label("total")
-        ).select_from(InventoryMovement)\
-         .outerjoin(Product, Product.id == InventoryMovement.product_id)\
-         .filter(
-             InventoryMovement.movement_type == 'damage', 
-             InventoryMovement.created_at >= start_date, 
+        ).select_from(InventoryMovement)         .join(Product, Product.id == InventoryMovement.product_id)         .filter(
+             InventoryMovement.movement_type == 'damage',
+             Product.deleted_at.is_(None),
+             InventoryMovement.created_at >= start_date,
              InventoryMovement.created_at <= end_date
-         )\
-         .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
+         )         .group_by(Product.id, Product.name).order_by(desc("total")).limit(5).all()
 
         # حساب خسائر التوالف المالية
+        # (join داخلي بدل outerjoin: الحركة بلا منتج لا قيمة مالية لها وكانت
+        #  تُنتج صفوفاً باسم فارغ في التقارير)
         loss_value = db.query(
             func.sum(func.abs(InventoryMovement.quantity_change) * Product.cost_price)
-        ).select_from(InventoryMovement)\
-         .outerjoin(Product, Product.id == InventoryMovement.product_id)\
-         .filter(
-             InventoryMovement.movement_type == 'damage', 
-             InventoryMovement.created_at >= start_date, 
+        ).select_from(InventoryMovement)         .join(Product, Product.id == InventoryMovement.product_id)         .filter(
+             InventoryMovement.movement_type == 'damage',
+             InventoryMovement.created_at >= start_date,
              InventoryMovement.created_at <= end_date
-         )\
-         .scalar() or 0
+         )         .scalar() or 0
+
+        def _rows(raw):
+            """يستبعد أي صف بلا اسم منتج ويوحّد الأرقام إلى int."""
+            out = []
+            for r in raw:
+                d = dict(r._mapping)
+                if not d.get("name"):
+                    continue
+                d["total"] = int(d.get("total") or 0)
+                out.append(d)
+            return out
 
         return {
-            "top_selling": [dict(r._mapping) for r in top_selling_raw],
-            "least_selling": [dict(r._mapping) for r in least_selling_raw],
-            "top_returns": [dict(r._mapping) for r in top_returns_raw],
-            "top_damaged": [dict(r._mapping) for r in top_damaged_raw],
+            "top_selling": _rows(top_selling_raw),
+            "least_selling": _rows(least_selling_rows),
+            "top_returns": _rows(top_returns_raw),
+            "top_damaged": _rows(top_damaged_raw),
             "loss_value": float(loss_value)
         }
 
@@ -201,38 +280,51 @@ class ReportingService:
         )
         movements_by_user = {r.uid: r for r in movement_rows}
 
-        # عدد الطلبات: مقيّد ببداية ونهاية الفترة (كما في المنطق الأصلي)
+        # عدد عمليات الطلبات لكل موظف.
+        # كان يُقرأ من system_audit_logs بالهدف "order" وهو هدف لا يُكتب أبداً
+        # (الكود يكتب "orders" وفي حالة واحدة فقط)، فكان العمود صفراً للجميع.
+        # المصدر الصحيح هو order_actions حيث تُسجَّل كل عمليات الطلبات فعلياً.
         order_rows = (
-            db.query(SystemAuditLog.user_id.label('uid'), func.count().label('cnt'))
+            db.query(OrderAction.user_id.label('uid'), func.count().label('cnt'))
             .filter(
-                SystemAuditLog.user_id.in_(emp_ids),
-                SystemAuditLog.action_target == "order",
-                SystemAuditLog.created_at >= start_date,
-                SystemAuditLog.created_at <= end_date,
+                OrderAction.user_id.in_(emp_ids),
+                OrderAction.created_at >= start_date,
+                OrderAction.created_at <= end_date,
             )
-            .group_by(SystemAuditLog.user_id)
+            .group_by(OrderAction.user_id)
             .all()
         )
         orders_by_user = {r.uid: int(r.cnt or 0) for r in order_rows}
 
-        # أنشطة الإدارة: مقيّدة ببداية الفترة فقط (مطابقة للمنطق الأصلي عمداً)
+        # أنشطة الإدارة داخل الفترة المطلوبة.
+        # كان الفلتر مقيّداً ببداية الفترة دون نهايتها فيحتسب عمليات وقعت
+        # بعدها، وكان يبحث عن ثلاثة أهداف فقط فتسقط عمليات المقاسات
+        # والألوان والمتغيّرات رغم أنها كلها إدارة منتجات.
         audit_rows = (
             db.query(
                 SystemAuditLog.user_id.label('uid'),
                 SystemAuditLog.action_target.label('target'),
+                SystemAuditLog.action_type.label('action'),
                 func.count().label('cnt'),
             )
             .filter(
                 SystemAuditLog.user_id.in_(emp_ids),
-                SystemAuditLog.action_target.in_(["catalog", "product", "user"]),
                 SystemAuditLog.created_at >= start_date,
+                SystemAuditLog.created_at <= end_date,
             )
-            .group_by(SystemAuditLog.user_id, SystemAuditLog.action_target)
+            .group_by(
+                SystemAuditLog.user_id,
+                SystemAuditLog.action_target,
+                SystemAuditLog.action_type,
+            )
             .all()
         )
         audit_by_user = {}
         for r in audit_rows:
-            audit_by_user.setdefault(r.uid, {})[r.target] = int(r.cnt or 0)
+            category = tax.classify_audit_target(r.target, r.action)
+            if category in tax.MANAGEMENT_CATEGORIES:
+                bucket = audit_by_user.setdefault(r.uid, {})
+                bucket[category] = bucket.get(category, 0) + int(r.cnt or 0)
 
         report_data = []
         for emp in employees:
@@ -252,9 +344,9 @@ class ReportingService:
 
             if is_manager:
                 stats["management_actions"] = {
-                    "catalogs_managed": counts.get("catalog", 0),
-                    "products_managed": counts.get("product", 0),
-                    "users_managed": counts.get("user", 0),
+                    "catalogs_managed": counts.get(tax.CATEGORY_CATALOGS, 0),
+                    "products_managed": counts.get(tax.CATEGORY_PRODUCTS, 0),
+                    "users_managed": counts.get(tax.CATEGORY_EMPLOYEES, 0),
                 }
             report_data.append(stats)
 
@@ -291,86 +383,4 @@ class ReportingService:
             "admins_count": int(stats.admins or 0),
             "managers_count": int(stats.managers or 0),
             "employees_count": int(stats.employees or 0),
-        }
-
-    @staticmethod
-    def get_user_full_activity_stats(db: Session, user_id: int):
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return None
-
-        is_employee_only = user.role_id == 3 
-
-        products_created_count = 0
-        catalogs_created_count = 0
-        
-        # جلب كود موديل الكاتالوج محلياً لتفادي تداخل الـ Imports الدائرية إذا حدثت
-        from app.models.inventory import Catalog 
-
-        if not is_employee_only:
-            products_created_count = db.query(func.count(Product.id)).filter(Product.created_by == user_id).scalar() or 0
-            catalogs_created_count = db.query(func.count(Catalog.id)).filter(Catalog.created_by == user_id).scalar() or 0
-
-        audit_query = db.query(SystemAuditLog.action_type, func.count(SystemAuditLog.id))\
-                        .filter(SystemAuditLog.user_id == user_id)
-
-        if is_employee_only:
-            excluded_tables = ['users', 'products', 'catalogs', 'inventory_movements', 'roles']
-            audit_query = audit_query.filter(SystemAuditLog.table_name.notin_(excluded_tables))
-
-        audit_logs = audit_query.group_by(SystemAuditLog.action_type).all()
-        audit_dict = {row[0]: row[1] for row in audit_logs}
-
-        inv_dict = {}
-        if not is_employee_only:
-            inv_movements = db.query(InventoryMovement.movement_type, func.count(InventoryMovement.id))\
-                              .filter(InventoryMovement.user_id == user_id)\
-                              .group_by(InventoryMovement.movement_type).all()
-            inv_dict = {row[0]: row[1] for row in inv_movements}
-
-        order_actions = db.query(OrderAction.action_type, func.count(OrderAction.id))\
-                          .filter(OrderAction.user_id == user_id)\
-                          .group_by(OrderAction.action_type).all()
-        order_dict = {row[0]: row[1] for row in order_actions}
-
-        total_adds = (
-            audit_dict.get('create', 0) + audit_dict.get('created', 0) + 
-            audit_dict.get('bulk_variants_created', 0) +
-            order_dict.get('created', 0) + order_dict.get('order_created', 0)
-        )
-
-        total_updates = (
-            audit_dict.get('update', 0) + audit_dict.get('updated', 0) + 
-            audit_dict.get('toggle_status', 0) + audit_dict.get('restore', 0) +
-            order_dict.get('updated', 0) + order_dict.get('order_edit_full', 0)
-        )
-
-        total_deletes = audit_dict.get('delete', 0) + audit_dict.get('deleted', 0)
-        total_damages = inv_dict.get('damage', 0) + audit_dict.get('mark_damaged_qr', 0)
-        total_returns = inv_dict.get('return', 0) + audit_dict.get('return', 0)
-        total_qr_scans = order_dict.get('qr_scanned', 0) + order_dict.get('qr_scan_success', 0)
-
-        grand_total_operations = total_adds + total_updates + total_deletes + total_returns + total_damages + total_qr_scans
-
-        return {
-            "user_id": user_id,
-            "user_role": user.role_id,
-            "grand_total": grand_total_operations,
-            "direct_creations": {
-                "products_created": products_created_count,
-                "catalogs_created": catalogs_created_count
-            },
-            "consolidated_stats": {
-                "adds": total_adds,
-                "updates": total_updates,
-                "deletes": total_deletes,
-                "returns": total_returns,
-                "damages": total_damages,
-                "scans": total_qr_scans
-            },
-            "raw_details": {
-                "audit_logs": audit_dict,
-                "inventory": inv_dict,
-                "orders": order_dict
-            }
         }

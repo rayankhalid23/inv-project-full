@@ -401,7 +401,11 @@ if (data.variants && data.variants.length > 0) {
   }
 }
 
-      alert("تم حفظ المنتج مع الصورة بنجاح وتحديث المخزون!");
+      // رسالة نجاح عبر نظام التنبيهات الموحّد (تظهر عالمياً حتى بعد إغلاق النافذة)
+      triggerToast(
+        productToEdit ? "تم حفظ تعديلات المنتج بنجاح ✅" : "تمت إضافة المنتج وتحديث المخزون بنجاح ✅",
+        "success"
+      );
       onSaveSuccess();
       onOpenChange(false);
     } catch (e) { 
@@ -453,10 +457,10 @@ if (data.variants && data.variants.length > 0) {
   } else if (e.message) {
     finalMessage = e.message;
   }
-      // إرسال الرسالة إلى الـ Toast الموجود في أعلى الملف الرئيسي ProductsPage
-      alert("🚨 تنبيه من النظام: " + finalMessage);
+      // رسالة الفشل عبر نظام التنبيهات الموحّد بدل نافذة alert المزعجة
+      triggerToast(finalMessage, "error");
 
-    } finally { 
+    } finally {
       setIsSaving(false); 
     }
   };
@@ -999,7 +1003,7 @@ if (!open) return null;
                   await apiToUse.deleteSingleVariant(variantId);
                 } catch (error) {
                   const backendError = error.response?.data?.detail || "لا يمكن حذف المقاس لارتباطه بطلبيات أو فواتير قيد التنفيذ";
-                  alert("🚨 تنبيه النظام: " + backendError);
+                  triggerToast(backendError, "error");
                   setSizeToDelete(null);
                   return;
                 }
@@ -1051,7 +1055,7 @@ if (!open) return null;
                 triggerToast("جاري حذف مجموعة اللون من السيرفر...", "success");
                 await activeApi.deleteColorGroup(serverColorId);
               } catch (error) {
-                alert("🚨 خطأ: " + (error.response?.data?.detail || "فشل حذف اللون من السيرفر"));
+                triggerToast(error.response?.data?.detail || "فشل حذف اللون من السيرفر", "error");
                 setColorToDelete(null);
                 return;
               }

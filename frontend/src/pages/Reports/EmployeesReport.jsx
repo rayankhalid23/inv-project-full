@@ -293,12 +293,15 @@ export default function EmployeesReport({ period }) {
                           const catLabels = { 
                             catalogs: "الكتالوجات", employees: "الموظفين", products: "المنتجات",
                             sales: "المبيعات", orders: "الطلبات",
-                            damages: "تالف", returns: "مرتجع"
+                            damages: "تالف", returns: "مرتجع", scans: "مسح QR"
                           };
-                          
+
+                          // فئات تُعرض كعدّاد واحد بلا تفصيل إضافة/تعديل/حذف
+                          const isTotalOnly = ["damages", "returns", "scans"].includes(catKey);
+
                           const title = catLabels[catKey] || catKey;
-                          const total = catKey === "damages" || catKey === "returns" 
-                                      ? actions.total 
+                          const total = isTotalOnly
+                                      ? (actions.total || 0)
                                       : ((actions.adds || 0) + (actions.updates || 0) + (actions.deletes || 0));
 
                           return (
@@ -315,7 +318,7 @@ export default function EmployeesReport({ period }) {
                               </div>
 
                               {/* الجزء السفلي: تفاصيل إضافة/تعديل/حذف في المنتصف */}
-                              {!(catKey === "damages" || catKey === "returns") && (
+                              {!isTotalOnly && (
                                 <div className="flex items-center justify-center gap-6 mt-auto pt-2 border-t border-slate-50">
                                   
                                   {/* إضافة */}

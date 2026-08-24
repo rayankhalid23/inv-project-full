@@ -158,11 +158,12 @@ const Settings = () => {
     try {
       const response = await updateProfile(user.id, payload);
 
-      if (response.status === "success") {
-        updateUserData(response.data);
-        toast.success("تم تحديث بياناتك بنجاح", { id: toastId });
-        setProfileData(prev => ({ ...prev, password: '', confirmPassword: '' }));
-      }
+      // axios يرمي استثناءً لأي رد غير ناجح (4xx/5xx)، فالوصول هنا يعني نجاح
+      // الطلب حتماً. الاعتماد سابقاً على response.status === "success" فقط كان
+      // يترك مؤشر التحميل معلّقاً للأبد لو اختلف شكل الرد ولا تظهر أي رسالة.
+      updateUserData(response?.data || { ...user, name: payload.name, phone: payload.phone });
+      toast.success(response?.message || "تم تحديث بياناتك بنجاح", { id: toastId });
+      setProfileData(prev => ({ ...prev, password: '', confirmPassword: '' }));
     } catch (error) {
       if (isNetworkError(error)) {
         await saveOfflineAction(

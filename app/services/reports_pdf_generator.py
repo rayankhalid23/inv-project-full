@@ -22,12 +22,52 @@ try:
 except:
     ARABIC_FONT = "Helvetica"
 
+# مجموعة الرموز التي يدعمها الخط فعلياً.
+# سبب وجودها: الخط Amiri خطٌّ عربي لا يحتوي على رموز الزخرفة (✎ ✖ ⤷ …)،
+# وreportlab لا يرمي خطأً عند غياب الشكل بل يطبع مربعاً فارغاً. فكانت
+# أعمدة كاملة في التقرير تخرج كصناديق لا معنى لها دون أي رسالة خطأ.
+# نتحقق مرة واحدة عند الإقلاع ونستبدل أي رمز مفقود ببديل مقروء.
+_FONT_CMAP = set()
+try:
+    from fontTools.ttLib import TTFont as _TTFont
+    _FONT_CMAP = set(_TTFont(FONT_PATH).getBestCmap().keys())
+except Exception:
+    pass
+
+# بدائل مقروءة لرموز شائعة قد لا يحملها الخط
+_GLYPH_FALLBACKS = {
+    0x2937: ">",   # ⤷ مؤشر التفرّع
+    0x270E: "e",   # ✎ تعديل
+    0x2716: "d",   # ✖ حذف
+    0x2713: "v",   # ✓
+    0x2192: "->",  # →
+    0x2190: "<-",  # ←
+}
+
+
+def font_safe(text: str) -> str:
+    """
+    يستبدل أي محرف لا يملك الخط شكلاً له، حتى لا يظهر مربع فارغ في الـ PDF.
+    المحارف غير المعروفة تُحذف بدل أن تُطبع صناديق.
+    """
+    if not _FONT_CMAP:
+        return text
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if code in _FONT_CMAP or code in (10, 9):
+            out.append(ch)
+        else:
+            out.append(_GLYPH_FALLBACKS.get(code, ""))
+    return "".join(out)
+
+
 def format_ar(text):
     if not text:
         return ""
     # إعادة تشكيل النص العربي ومعالجة اتجاه الكتابة من اليمين لليسار
     reshaped_text = arabic_reshaper.reshape(str(text))
-    return get_display(reshaped_text)
+    return font_safe(get_display(reshaped_text))
 
 class ReportsPDFGenerator:
 
@@ -246,11 +286,12 @@ class ReportsPDFGenerator:
                     text_y = y - 0.38 * cm
                     
                     val_str = str(val) if val is not None else ""
-                    # تشكيل النصوص العربية فقط
+                    # تشكيل النصوص العربية فقط، مع تمرير الجميع على مصفاة
+                    # الخط حتى لا يتسرّب رمز بلا شكل إلى الصفحة
                     if any(ord(char) > 127 for char in val_str):
                         txt = format_ar(val_str)
                     else:
-                        txt = val_str
+                        txt = font_safe(val_str)
                     
                     if align == "R":
                         c.drawRightString(curr_x + w - 0.15 * cm, text_y, txt)
@@ -479,9 +520,16 @@ class ReportsPDFGenerator:
         c.drawRightString(width - margin, y - 0.4 * cm, format_ar("سجل عمليات الموظفين التفصيلي:"))
         y -= 0.6 * cm
         
-        headers_audit = ["الاسم", "الرتبة", "العمليات", "الكتالوج", "المنتجات", "الطلبيات", "التوالف", "المرتجع"]
-        widths_audit = [3.5 * cm, 2.2 * cm, 1.8 * cm, 2.1 * cm, 2.1 * cm, 2.1 * cm, 2.1 * cm, 2.1 * cm]
-        alignments_audit = ["R", "C", "C", "C", "C", "C", "C", "C"]
+        # مفتاح قراءة الأعمدة المختصرة، وإلا بدت "a3 / e1 / d0" بلا معنى
+        c.setFont(ARABIC_FONT, 7)
+        c.setFillColor(colors.HexColor("#64748b"))
+        c.drawRightString(width - margin, y - 0.15 * cm,
+                          format_ar("(a = إضافة، e = تعديل، d = حذف)"))
+        y -= 0.35 * cm
+
+        headers_audit = ["الاسم", "الرتبة", "العمليات", "الكتالوج", "المنتجات", "الطلبيات", "المسح", "التوالف", "المرتجع"]
+        widths_audit = [3.2 * cm, 2.0 * cm, 1.6 * cm, 1.9 * cm, 1.9 * cm, 1.9 * cm, 1.5 * cm, 1.5 * cm, 1.5 * cm]
+        alignments_audit = ["R", "C", "C", "C", "C", "C", "C", "C", "C"]
         
         rows_audit = []
         for role_key in ["admins", "managers", "staff"]:
@@ -489,12 +537,24 @@ class ReportsPDFGenerator:
             for emp in role_list:
                 cats = emp.get("categories", {})
                 
-                # تنسيق تفاصيل العمليات
-                catalog_ops = f"+{cats.get('catalogs', {}).get('adds', 0)} / ✎{cats.get('catalogs', {}).get('updates', 0)} / ✖{cats.get('catalogs', {}).get('deletes', 0)}"
-                product_ops = f"+{cats.get('products', {}).get('adds', 0)} / ✎{cats.get('products', {}).get('updates', 0)} / ✖{cats.get('products', {}).get('deletes', 0)}"
-                order_ops = f"+{cats.get('sales', {}).get('adds', 0)} / ✎{cats.get('sales', {}).get('updates', 0)} / ✖{cats.get('sales', {}).get('deletes', 0)}"
+                # تنسيق تفاصيل العمليات.
+                # كانت الرموز ✎ و ✖ تُستخدم هنا للتعديل والحذف، وخط Amiri
+                # المستخدم في هذا التقرير لا يحتوي على شكل لأيٍّ منهما، فكانت
+                # تُطبع مربعات فارغة ويصبح العمود غير مقروء إطلاقاً.
+                # البديل حروف لاتينية بسيطة موجودة في كل الخطوط:
+                #   a = إضافة (add)   e = تعديل (edit)   d = حذف (delete)
+                def _ops(cat_name):
+                    cat = cats.get(cat_name, {})
+                    return (f"a{cat.get('adds', 0)} / "
+                            f"e{cat.get('updates', 0)} / "
+                            f"d{cat.get('deletes', 0)}")
+
+                catalog_ops = _ops('catalogs')
+                product_ops = _ops('products')
+                order_ops = _ops('sales')
                 damaged_ops = str(cats.get('damages', {}).get('total', 0))
                 returned_ops = str(cats.get('returns', {}).get('total', 0))
+                scanned_ops = str(cats.get('scans', {}).get('total', 0))
                 
                 # الموظفون لا يتم احتساب عمليات الموظف/المنتج/الكتالوج لهم
                 if emp.get("role_id") == 3:
@@ -508,6 +568,7 @@ class ReportsPDFGenerator:
                     catalog_ops,
                     product_ops,
                     order_ops,
+                    scanned_ops,
                     damaged_ops,
                     returned_ops
                 ])

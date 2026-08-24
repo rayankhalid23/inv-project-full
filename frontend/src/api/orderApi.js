@@ -353,10 +353,14 @@ export const orderApi = {
                             variants:    [],
                         };
                     }
+                    // الكود المعروض: الصيغة القصيرة 00075-1-1 فقط. لا نعرض مسار
+                    // صورة الـ QR كأنه كود (كان يظهر /static/uploads/qrcodes/...).
+                    const displaySku = v.variant_sku
+                        || (v.sku && !/[\\/]|\.(png|jpe?g|webp)$/i.test(v.sku) ? v.sku : '');
                     colorMap[key].variants.push({
                         id:                 v.variant_id,
                         size_name:          v.size_name,
-                        sku:                v.sku || v.qr_code || String(v.variant_id),
+                        sku:                displaySku,
                         qr_code:            v.qr_code,
                         quantity_available: v.quantity_available ?? 0,
                         quantity_reserved:  v.quantity_reserved  ?? 0,

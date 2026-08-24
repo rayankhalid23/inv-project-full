@@ -519,9 +519,9 @@ def standalone_return_logic(db: Session, qr_code: str, user_id: int, note: str =
     if not variant:
         raise HTTPException(status_code=404, detail=f"لم يتم العثور على منتج برمز QR: {qr_code}")
 
-    if (variant.total_sold or 0) <= 0:
-        raise HTTPException(status_code=400, detail="لا توجد قطع مسجلة كمبيوعة لهذا الصنف لإعادة استرجاعها")    
-
+    # المرتجع مسموح دائماً حتى لو لم يُسجَّل بيع سابق للصنف (زبون يرجّع بضاعة
+    # أو تصحيح مخزون): record_return_to_stock يضبط total_sold بحدّ أدنى صفر،
+    # فلا يصبح سالباً. يزيد المتاح ويزيد returned_quantity فقط.
     q_before = variant.quantity_available or 0
 
     record_return_to_stock(db, variant_id=variant.id, user_id=user_id, quantity=1, notes=note)
@@ -1769,7 +1769,10 @@ def get_products_with_variants_logic(db: Session):
                         "returned_quantity": int(v.returned_quantity or 0),
                         "damaged_quantity": int(v.damaged_quantity or 0),
                         "qr_code": v.qr_code,
-                        "sku": v.qr_code or str(v.id)
+                        "variant_sku": v.variant_sku,
+                        # الكود المعروض في الواجهة: نفضّل الصيغة القصيرة 00075-1-1
+                        # بدل مسار صورة الـ QR الطويل
+                        "sku": v.variant_sku or v.qr_code or str(v.id)
                     })
 
             # 3. بناء هيكل الرد الخاص بالمنتج الرئيسي والإجماليات المخزنة (Cache Columns)

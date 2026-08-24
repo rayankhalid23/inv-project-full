@@ -63,7 +63,7 @@ const MainLayout = ({ children }) => {
   };
 
   return (
-    <div className="h-screen bg-[#F8FAFC] flex flex-col font-arabic overflow-hidden" dir="rtl">
+    <div className="app-shell h-screen bg-[#F8FAFC] flex flex-col font-arabic overflow-hidden" dir="rtl">
       
       {/* 0 — شريط التنبيه عند الأوفلاين والمزامنة */}
       <OfflineBanner />
@@ -183,7 +183,7 @@ const MainLayout = ({ children }) => {
       </div>
 
       {/* 4 — شريط الموبايل السفلي */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-100 z-30 h-20 flex items-center justify-around px-2 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
+      <nav className="app-bottom-nav lg:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-100 z-30 flex items-center justify-around px-2 shadow-[0_-5px_20px_rgba(0,0,0,0.03)]">
         <div className="flex w-1/3 justify-around items-center">
           <Link to="/" className={cn("flex flex-col items-center gap-1", location.pathname === "/" ? "text-[#800000]" : "text-slate-400")}>
             <LayoutDashboard className="w-5.5 h-5.5" />

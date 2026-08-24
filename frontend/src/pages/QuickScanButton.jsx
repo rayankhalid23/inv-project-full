@@ -106,10 +106,28 @@ export default function QuickScanPage({ isOpen, onClose }) {
     } catch { /* تجاهل: القائمة الحالية تبقى صالحة */ }
   }, []);
 
+  // إيقاف بث الكاميرا بنظافة
+  const stopCamera = useCallback(async () => {
+    if (html5QrCodeRef.current) {
+      try {
+        await html5QrCodeRef.current.stop();
+        html5QrCodeRef.current.clear();
+      } catch (e) {}
+      html5QrCodeRef.current = null;
+    }
+    isProcessingScanRef.current = false;
+    scanCooldownRef.current = false;
+    setScanCooldown(false);
+    setLastScannedFeedback('');
+    setCameraStatus('idle');
+  }, []);
+
   /**
    * اختيار صنف من مُنتقي المنتجات في وضعي الرواجع والتالف.
    * الرواجع: يُسمح باختيار صنف مخزونه صفر (زبون يرجّع بضاعة نفدت).
    * التالف: يُمنع اختيار صنف مخزونه صفر (لا يوجد ما يُتلف).
+   * تُعرَّف بعد stopCamera لأنها تعتمد عليها — لو سبقتها لظهر خطأ
+   * ReferenceError: Cannot access 'stopCamera' before initialization.
    */
   const handlePickVariant = useCallback((variant, colorName, productName, sizeName, product) => {
     const available = variant.quantity_available ?? 0;
@@ -130,22 +148,6 @@ export default function QuickScanPage({ isOpen, onClose }) {
     stopCamera();
     setStep('confirm');
   }, [stopCamera]);
-
-  // إيقاف بث الكاميرا بنظافة
-  const stopCamera = useCallback(async () => {
-    if (html5QrCodeRef.current) {
-      try {
-        await html5QrCodeRef.current.stop();
-        html5QrCodeRef.current.clear();
-      } catch (e) {}
-      html5QrCodeRef.current = null;
-    }
-    isProcessingScanRef.current = false;
-    scanCooldownRef.current = false;
-    setScanCooldown(false);
-    setLastScannedFeedback('');
-    setCameraStatus('idle');
-  }, []);
 
   // دالة التعامل مع الرمز الممسوح
   const processScannedCode = useCallback(async (scannedCode) => {

@@ -310,6 +310,9 @@ def get_employee_info(db: Session, user_id: int):
     }
 
 
+from app.services import audit_taxonomy as tax
+
+
 def get_user_full_activity_stats(db: Session, user_id: int):
     # 1. جلب بيانات المستخدم مع الرتبة (للهوية الشخصية والتحقق من الصلاحيات)
     user = db.query(User).options(joinedload(User.role)).filter(User.id == user_id).first()
@@ -351,48 +354,59 @@ def get_user_full_activity_stats(db: Session, user_id: int):
     order_act_dict = {row[0]: row[1] for row in order_actions}
 
     # ج. سجل حركة المخزون (Inventory Movements)
-    inv_dict = {}
-    if not is_employee:
-        inv_movements = db.query(InventoryMovement.movement_type, func.count(InventoryMovement.id))\
-                          .filter(InventoryMovement.user_id == user_id)\
-                          .group_by(InventoryMovement.movement_type).all()
-        inv_dict = {row[0]: row[1] for row in inv_movements}
+    # تُجلب لكل الرتب: تسجيل التوالف والمرتجعات عمل يومي للموظف العادي،
+    # وكان استثناؤه هنا يجعل عمودَي "تالف" و"مرتجع" صفراً له دائماً.
+    inv_movements = (
+        db.query(InventoryMovement.movement_type, func.count(InventoryMovement.id))
+        .filter(InventoryMovement.user_id == user_id)
+        .group_by(InventoryMovement.movement_type)
+        .all()
+    )
+    inv_dict = {row[0]: row[1] for row in inv_movements}
 
     # --- تنظيم البيانات في المجموعات المطلوبة للفرونت إند ---
 
-    # 1. إحصائيات المنتجات
+    # التصنيف كله يمرّ عبر المفردات الموحّدة في audit_taxonomy.
+    # القوائم اليدوية التي كانت هنا كُتبت بالتخمين: كانت تبحث عن 'catalogs'
+    # بالجمع بينما الكود يكتب 'catalog' بالمفرد فتسقط كل عمليات الكتالوج،
+    # ولا تعرف 'size' ولا 'variant' ولا 'product_color'، ولا تعرف
+    # 'manual_scan' فيسقط أكثر من نصف عمليات المسح.
     product_stats = {"adds": 0, "updates": 0, "deletes": 0}
-    if not is_employee:
-        for (target, action), count in audit_map.items():
-            if target in ['products', 'catalogs', 'product']:
-                if action in ['create', 'created', 'bulk_variants_created']: product_stats["adds"] += count
-                elif action in ['update', 'updated']: product_stats["updates"] += count
-                elif action in ['delete', 'deleted']: product_stats["deletes"] += count
-
-    # 2. إحصائيات إدارة الموظفين
     emp_activity_stats = {"adds": 0, "updates": 0, "deletes": 0}
-    if not is_employee:
-        for (target, action), count in audit_map.items():
-            if target in ['users', 'user', 'employees']:
-                if action in ['create', 'created']: emp_activity_stats["adds"] += count
-                elif action in ['update', 'updated', 'toggle_status']: emp_activity_stats["updates"] += count
-                elif action in ['delete', 'deleted']: emp_activity_stats["deletes"] += count
+    catalog_stats = {"adds": 0, "updates": 0, "deletes": 0}
 
-    # 3. إحصائيات الطلبات
-    order_stats = {
-        "adds": order_act_dict.get('created', 0) + order_act_dict.get('order_created', 0),
-        "updates": order_act_dict.get('updated', 0) + order_act_dict.get('order_edit_full', 0) + \
-                   order_act_dict.get('delivery_assigned', 0),
-        "deletes": order_act_dict.get('order_cancelled', 0) + \
-                   audit_map.get(('orders', 'delete'), 0) + \
-                   audit_map.get(('orders', 'deleted'), 0)
+    category_buckets = {
+        tax.CATEGORY_PRODUCTS: product_stats,
+        tax.CATEGORY_EMPLOYEES: emp_activity_stats,
+        tax.CATEGORY_CATALOGS: catalog_stats,
     }
 
+    if not is_employee:
+        for (target, action), count in audit_map.items():
+            bucket = category_buckets.get(tax.classify_audit_target(target, action))
+            if bucket is not None:
+                bucket[tax.classify_action(action)] += count
+
+    # الكتالوجات تُعرض ضمن إدارة المنتجات في هذه الشاشة
+    for _key in product_stats:
+        product_stats[_key] += catalog_stats[_key]
+
+    # 3. عمليات الطلبات وعمليات المسح — مصدرها order_actions
+    order_stats = {"adds": 0, "updates": 0, "deletes": 0}
+    scans_count = 0
+    for action, count in order_act_dict.items():
+        if tax.classify_order_action(action) == tax.CATEGORY_SCANS:
+            scans_count += count
+        else:
+            order_stats[tax.classify_action(action)] += count
+
     # 4. اللوجستيات
+    # التوالف والرواجع تُقرأ من حركات المخزون وحدها: مسار الـ QR يكتب حركة
+    # مخزون وسطر تدقيق للحدث نفسه، فجمع المصدرين كان يضاعف العدّ.
     logistics_stats = {
-        "damages": inv_dict.get('damage', 0) + audit_map.get(('inventory', 'mark_damaged_qr'), 0),
-        "returns": inv_dict.get('return', 0) + order_act_dict.get('return', 0),
-        "scans": order_act_dict.get('qr_scanned', 0) + order_act_dict.get('qr_scan_success', 0)
+        "damages": inv_dict.get('damage', 0),
+        "returns": inv_dict.get('return', 0),
+        "scans": scans_count,
     }
 
     # حساب الإجمالي الكلي
