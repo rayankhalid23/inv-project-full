@@ -32,6 +32,15 @@ def create_inventory_log(
     if quantity_after is None:
         quantity_after = quantity_before + quantity_change
 
+    # معالجة details ودمجها في notes لأن موديل InventoryMovement لا يحتوي على عمود details
+    final_notes = notes
+    if details:
+        details_formatted = ", ".join([f"{k}: {v}" for k, v in details.items()])
+        if final_notes:
+            final_notes = f"{final_notes} | {details_formatted}"
+        else:
+            final_notes = details_formatted
+
     new_movement = InventoryMovement(
         variant_id=variant_id,
         product_id=product_id,
@@ -42,8 +51,7 @@ def create_inventory_log(
         quantity_after=quantity_after,
         related_order_id=related_order_id,
         damage_reason=damage_reason,
-        notes=notes,
-        details=details,
+        notes=final_notes,
     )
     db.add(new_movement)
     return new_movement
