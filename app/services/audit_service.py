@@ -1,14 +1,9 @@
-from sqlalchemy.orm import Session
-from app.models.user import User
-from app.models.order import OrderAction
-from app.models.inventory import InventoryMovement, Product, ProductVariant,SystemAuditLog
-from app.models.inventory import Product, ProductVariant
+from app.models.inventory import InventoryMovement, Product, ProductVariant
 
 try:
     from app.models.inventory import SystemAuditLog
 except ImportError:
-    SystemAuditLog = None # لتجنب الانهيار إذا لم يتم تعريف الموديل بعد
-
+    SystemAuditLog = None
 # --- المحركات المركزية (Core Engines) ---
 
 def create_inventory_log(db: Session, variant_id: int, product_id: int, user_id: int,
@@ -21,18 +16,19 @@ def create_inventory_log(db: Session, variant_id: int, product_id: int, user_id:
     """
     if quantity_after is None:
         quantity_after = quantity_before + quantity_change
-    new_movement = InventoryMovement(
-        variant_id=variant_id,
-        product_id=product_id,
-        user_id=user_id,
-        movement_type=movement_type,
-        quantity_change=quantity_change,
-        quantity_before=quantity_before,
-        quantity_after=quantity_after,
-        related_order_id=related_order_id,
-        damage_reason=damage_reason,
-        notes=notes
-    )
+   new_movement = InventoryMovement(
+    variant_id=variant_id,
+    product_id=product_id,
+    user_id=user_id,
+    movement_type=movement_type,
+    quantity_change=quantity_change,
+    quantity_before=quantity_before,
+    quantity_after=quantity_after,
+    related_order_id=related_order_id,
+    damage_reason=damage_reason,
+    notes=notes,
+    details=details
+)
     db.add(new_movement)
     return new_movement
 
@@ -89,16 +85,12 @@ def log_product_data_update(db, admin_id, product_id, old_product, new_product):
         if field in ["selling_price", "cost_price"]:
             if round(float(old_val or 0), 2) != round(float(new_val or 0), 2):
                 changes[field] = f"من {old_val} إلى {new_val}"
-        # التعامل مع النصوص والكتالوج
-        elif field != "main_image":
-            if old_val != new_val:
-                changes[field] = {"من": old_val, "إلى": new_val}
-        # التعامل الخاص مع الصورة: لا تسجل تغييراً إلا إذا كان المسار مختلفاً فعلاً
-        else:
-            if old_val != new_val and new_val is not None:
-                # التحقق أن المسار الجديد ليس فارغاً وأنه تغير عن المسار القديم
-                changes[field] = {"التحديث": "تم رفع صورة جديدة"}
-
+    elif field != "main_image":
+    if old_val != new_val:
+        changes[field] = f"من {old_val} إلى {new_val}"
+else:
+    if old_val != new_val and new_val is not None:
+        changes[field] = "تم رفع صورة جديدة"
     if changes:
         create_system_audit_log(
             db=db,
