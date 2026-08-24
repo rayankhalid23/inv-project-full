@@ -435,12 +435,14 @@ def standardize_inventory_movement(item, user, variant, color, product):
         "details": None
     }
 
+
 def standardize_system_audit_log(item, user):
     product_info = None
     variant_info = None
     target_name = ""
-    
-   raw_details = item.details or {}
+
+    # تحويل آمن للـ details لتجنب خطأ AttributeError
+    raw_details = item.details or {}
     if isinstance(raw_details, str):
         try:
             details = json.loads(raw_details)
@@ -452,7 +454,7 @@ def standardize_system_audit_log(item, user):
         details = raw_details
     else:
         details = {}
-    
+
     if item.action_target == 'product':
         product_info = {
             "id": item.target_id,
@@ -468,13 +470,17 @@ def standardize_system_audit_log(item, user):
         }
         target_name = f"مقاس {variant_info['size']}"
     elif item.action_target == 'catalog':
-        target_name = details.get("catalog_name") or details.get("name") or details.get("old_name") or details.get("new_name") or f"كتالوج #{item.target_id}"
+        target_name = (
+            details.get("catalog_name")
+            or details.get("name")
+            or details.get("old_name")
+            or details.get("new_name")
+            or f"كتالوج #{item.target_id}"
+        )
 
-    # friendly labels
     movement_type = f"{item.action_target}_{item.action_type}"
-    
-    # Calculate Arabic label
     type_label = "عملية إدارية"
+
     if item.action_target == 'user':
         target_name = details.get("name") or f"موظف #{item.target_id}"
         if item.action_type in ['create', 'created']:
@@ -521,10 +527,12 @@ def standardize_system_audit_log(item, user):
             type_label = "مسح توالف"
             movement_type = 'clear_damages'
 
-    # notes description
     notes = details.get("message") or f"عملية {type_label} للمستهدف {target_name}"
-    if 'changes' in details:
-        changes_str = ", ".join([f"{k}: {v.get('from')} -> {v.get('to')}" if isinstance(v, dict) else f"{k}: {v}" for k, v in details['changes'].items()])
+    if 'changes' in details and isinstance(details['changes'], dict):
+        changes_str = ", ".join([
+            f"{k}: {v.get('from')} -> {v.get('to')}" if isinstance(v, dict) else f"{k}: {v}"
+            for k, v in details['changes'].items()
+        ])
         notes += f" (التعديلات: {changes_str})"
 
     return {
