@@ -50,8 +50,8 @@ class QRGeneratorService:
         raw_c_name = variant.color.color_name if variant.color else "N/A"
         raw_s_name = variant.size.name if variant.size else "N/A"
 
-        # 1. رسم QR Code بحجمه الكامل وموقعه المحدد
-        qr_content = variant.variant_sku if getattr(variant, 'variant_sku', None) else f"VAR:{variant.id}|SKU:{raw_p_code}"
+        # 1. رسم QR Code بحجمه الكامل وموقعه المحدد - فريد لكل صنف ولكل مقاس ولون
+        qr_content = f"VAR:{variant.id}|SKU:{raw_p_code}"
         qr_code = qr.QrCodeWidget(qr_content, barLevel='H')
         bounds = qr_code.getBounds()
         qr_w, qr_h = bounds[2] - bounds[0], bounds[3] - bounds[1]
@@ -84,9 +84,8 @@ class QRGeneratorService:
         size_line = cls._format_arabic(f"المقاس: {raw_s_name}")
         c.drawRightString(right_margin, h - 76 * mm, size_line)
 
-        # سطر الكود
-        sku_display = getattr(variant, 'variant_sku', None) or raw_p_code
-        code_line = cls._format_arabic(f"الكود: {sku_display}")
+        # سطر الكود (كود المنتج فقط مثل 0008 بدون أي زوائد)
+        code_line = cls._format_arabic(f"الكود: {raw_p_code}")
         c.drawRightString(right_margin, h - 82 * mm, code_line)
 
     @classmethod

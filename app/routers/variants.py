@@ -158,37 +158,43 @@ def update_variant_partial(
         raise HTTPException(status_code=404, detail="المقاس المطلوب غير موجود أو تم حذفه.")
 
     has_changes = False
-    old_qty = variant.quantity_available
+    old_qty = variant.quantity_available or 0
     old_min_stock = variant.min_stock_threshold
     audit_details = {}
 
+    target_qty = update_data.qty if update_data.qty is not None else update_data.quantity_available
+    target_min_stock = update_data.min_stock if update_data.min_stock is not None else update_data.min_stock_threshold
+
     # مراقبة تغيير الكمية
-    if update_data.qty is not None:
-        if update_data.qty != old_qty:
-            diff = update_data.qty - old_qty
+    if target_qty is not None:
+        if target_qty < 0:
+            raise HTTPException(status_code=400, detail="الكمية لا يمكن أن تكون بالسالب.")
+        if target_qty != old_qty:
+            diff = target_qty - old_qty
             # --- [إضافة: مراقبة المخزون - جرد يدوي] ---
             color_entry = db.query(ProductColor).filter(ProductColor.id == variant.product_color_id).first()
+            prod_id = color_entry.product_id if color_entry else getattr(variant, "product_id", None)
             create_inventory_log(
-                db=db, variant_id=variant.id, product_id=color_entry.product_id,
+                db=db, variant_id=variant.id, product_id=prod_id,
                 user_id=current_user.id, movement_type='manual_adjust',
                 quantity_change=diff, quantity_before=old_qty,
                 notes="تعديل كمية يدوي من شاشة التحكم"
             )
-            variant.quantity_available = update_data.qty
-            audit_details["quantity_available"] = {"from": old_qty, "to": update_data.qty}
+            variant.quantity_available = target_qty
+            audit_details["quantity_available"] = {"from": old_qty, "to": target_qty}
             has_changes = True
 
     # 3. تحديث حد المخزون الأدنى (min_stock)
-    if update_data.min_stock is not None:
-        if update_data.min_stock < 0:
+    if target_min_stock is not None:
+        if target_min_stock < 0:
             raise HTTPException(status_code=400, detail="حد المخزون لا يمكن أن يكون بالسالب.")
             
         audit_details["min_stock_threshold"] = {
             "from": variant.min_stock_threshold, 
-            "to": update_data.min_stock
+            "to": target_min_stock
         }
            
-        variant.min_stock_threshold = update_data.min_stock
+        variant.min_stock_threshold = target_min_stock
         has_changes = True
 
     # إذا لم يتم إرسال أي حقول للتعديل

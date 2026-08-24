@@ -136,7 +136,7 @@ def generate_variant_qr(variant_id: int, product_code: str, variant_sku: str = N
     إذا أُعطي variant_sku يُشفَّر في صورة الـ QR مباشرة (أسهل للكتابة والحفظ).
     """
     ensure_upload_dirs()
-    qr_data = variant_sku if variant_sku else f"VAR:{variant_id}|SKU:{product_code}"
+    qr_data = f"VAR:{variant_id}|SKU:{product_code}"
 
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
     qr.add_data(qr_data)

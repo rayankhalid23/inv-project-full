@@ -40,12 +40,12 @@ class VariantCreate(BaseModel):
     qty: int
     min_stock: int = 5
 
-# التعديل الجوهري هنا ليتوافق مع الـ CURL الخاص بك
+# التعديل الجوهري هنا ليتوافق مع جميع صيغ الواجهة الأمامية والـ CURL
 class VariantUpdatePartial(BaseModel):
-    # نستخدم qty و min_stock لتطابق طلبك
     qty: Optional[int] = None 
+    quantity_available: Optional[int] = None
     min_stock: Optional[int] = None
-    # إذا كنت تريد تغيير السعر أو المقاس مستقبلاً
+    min_stock_threshold: Optional[int] = None
     price: Optional[float] = None
     size: Optional[str] = None
 

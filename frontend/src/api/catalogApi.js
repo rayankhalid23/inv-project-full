@@ -64,7 +64,7 @@ export const catalogApi = {
     // جلب منتجات لوحة التحكم (Infinite Scroll)
     getProductsDashboard: async (filters = {}) => {
         try {
-            const response = await api.get('/products/products/dashboard', {
+            const response = await api.get('/products/dashboard', {
                 params: {
                     offset: filters.offset || 0,
                     limit: filters.limit || 20,
@@ -129,7 +129,7 @@ export const catalogApi = {
 
     // 1. إنشاء المنتج الرئيسي (FormData)
     createProduct: async (formData) => {
-        const response = await api.post('/products/products/', formData, {
+        const response = await api.post('/products/', formData, {
             headers: { 'Content-Type': 'multipart/form-data' }
         });
         return response.data; // يعيد بيانات المنتج ومعرفه ID
@@ -173,7 +173,7 @@ export const catalogApi = {
   // تستخدم FormData لأن الباك إند يستقبل Form Fields وصورة
   updateProduct: async (productId, formData) => {
     // نمرر الـ formData الجاهز مباشرة من النموذج لأنه يحتوي على الـ variants والصور مسبقاً
-    const response = await api.put(`/products/products/${productId}`, formData, {
+    const response = await api.put(`/products/${productId}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
     return response.data;
@@ -215,9 +215,13 @@ export const catalogApi = {
     }
   
     // بناء الـ Payload النظيف والمطابق لجدول product_variants
+    const numericQty = Number(qty !== undefined && qty !== null ? qty : 0);
+    const numericMinStock = parseInt(minStock || 5, 10);
     const dataPayload = {
-      quantity_available: Number(qty || 0),
-      min_stock_threshold: parseInt(minStock || 5, 10)
+      qty: numericQty,
+      quantity_available: numericQty,
+      min_stock: numericMinStock,
+      min_stock_threshold: numericMinStock
     };
   
     const response = await api.patch(`/variants/${intVariantId}`, dataPayload);
@@ -227,7 +231,7 @@ export const catalogApi = {
   getProductForEdit: async (productId) => {
     try {
         // نستخدم المسار الذي أنشأناه في الـ Router
-        const response = await api.get(`/products/products/${productId}/details`);
+        const response = await api.get(`/products/${productId}/details`);
         return response.data; 
         /* البيانات ستصل بنفس هيكلية الإضافة:
            { name, selling_price, colors: [{ color_name, variants: [...] }] }
@@ -239,7 +243,7 @@ export const catalogApi = {
 },
 
 exportVariantQR: async (variantId) => {
-    const response = await api.get(`/products/products/variant/${variantId}`, {
+    const response = await api.get(`/products/variant/${variantId}`, {
       responseType: 'blob', // مهم جداً لاستقبال ملفات PDF
     });
     return response.data;
@@ -248,7 +252,7 @@ exportVariantQR: async (variantId) => {
   downloadProductQRs: async (productId) => {
     try {
       // تأكد من استخدام اسم المتغير الصحيح هنا (api أو axios)
-      const response = await api.get(`/products/products/product/${productId}`, {
+      const response = await api.get(`/products/product/${productId}`, {
         responseType: 'blob', 
       });
       
@@ -269,7 +273,7 @@ exportVariantQR: async (variantId) => {
   // أضف هذه الدالة داخل ملف catalogApi.js
 exportAllActiveQRs: async () => {
     try {
-        const response = await api.get('/products/products/all', {
+        const response = await api.get('/products/all', {
             responseType: 'blob', // مهم جداً للتعامل مع ملفات PDF
         });
         
@@ -296,7 +300,7 @@ exportProductsPdf: async (filters) => {
             Object.entries(filters).filter(([_, v]) => v !== '' && v !== null && v !== undefined)
         );
 
-        const response = await api.get('/products/products/export-pdf', {
+        const response = await api.get('/products/export-pdf', {
             params: cleanFilters, // نرسل فقط القيم المملوءة
             responseType: 'blob',
         });

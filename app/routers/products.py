@@ -33,7 +33,7 @@ from app.utils import delete_old_image, save_upload_sync
 from app.services.audit_service import create_system_audit_log,log_product_data_update
 
 
-router = APIRouter(prefix="/products", tags=["Products"])
+router = APIRouter(tags=["Products"])
 # مجلد الرفع يُدار مركزياً في app/core/media.py
 from app.core.media import media_dir
 UPLOAD_DIR = media_dir("product")

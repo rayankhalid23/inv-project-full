@@ -236,7 +236,7 @@ class QRGeneratorService:
         size_name = getattr(variant.size, 'name', 'N/A')
 
         # 1. إنشاء الـ QR Code
-        qr_data = getattr(variant, 'variant_sku', None) or f"VAR:{variant.id}|SKU:{product_code}"
+        qr_data = f"VAR:{variant.id}|SKU:{product_code}"
         qr_code = qr.QrCodeWidget(qr_data, barLevel='H')
         bounds = qr_code.getBounds()
         qr_w = bounds[2] - bounds[0]
