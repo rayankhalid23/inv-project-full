@@ -727,7 +727,7 @@ def create_darb_shipment_for_order_logic(db: Session, order_id: int, shipment_da
             "order_id": order.id,
             "warning": err
         }
-   
+
 
 def delete_order_logic(db: Session, order_id: int, user_id: int):
     """
@@ -737,9 +737,9 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
     """
     from datetime import datetime
     from fastapi import HTTPException
-    from app.models.inventory import ProductVariant # تأكد من مطابقة مسار الـ Import لبيئتك
-    from app.models.order import OrderAction # تأكد من مطابقة مسار الـ Import لبيئتك
-    from app.services.order_service import sync_product_metrics # أو المسار الفعلي لدالة المزامنة لديك
+    from app.models.inventory import ProductVariant
+    from app.models.order import OrderAction
+    from app.services.order_service import sync_product_metrics
 
     # 1. جلب الطلب مع قفل (Row-level Lock) لضمان عدم تعديله بالتزامن من مستخدم آخر
     db_order = db.query(Order).filter(
@@ -761,7 +761,6 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
         affected_product_ids = set()
 
         # 2. معالجة عناصر الطلب وعكس الكميات في المستودع
-        # ✅ إصلاح: تجاهل العناصر المحذوفة مسبقاً (soft-deleted) لمنع إعادة إضافة كمياتها للمخزون مرتين
         for item in db_order.items:
             if item.deleted_at is not None:
                 continue
@@ -775,12 +774,9 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
                     affected_product_ids.add(variant.color.product_id)
 
                 # المنطق الرياضي المحدث:
-                # أ. إذا كان الطلب جاهزاً أو مشحوناً: نعيد الكمية للمتاح ونخصمها من المباع الكلي
                 if db_order.status in ('prepared', 'shipped'):
                     variant.quantity_available += item.quantity
                     variant.total_sold = max(0, (variant.total_sold or 0) - item.quantity)
-                
-                # ب. إذا كان الطلب معلقاً أو قيد التجهيز: نعيد الكمية للمتاح ونخصمها من المحجوز
                 else:
                     variant.quantity_available += item.quantity
                     variant.quantity_reserved = max(0, (variant.quantity_reserved or 0) - item.quantity)
@@ -791,15 +787,13 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
         now = datetime.now()
         
         db_order.deleted_at = now
-        db_order.status = 'cancelled' # تحديث الحالة لـ ملغي للتقارير الدفترية
+        db_order.status = 'cancelled'
 
         for item in db_order.items:
             item.deleted_at = now
         
-        # تحديث الحذف الناعم للعمليات اللوجستية المرتبطة بالطلب
         db.query(OrderAction).filter(OrderAction.order_id == order_id).update({"deleted_at": now})
         
-        # تسجيل العملية في سجل التدقيق (Audit Log)
         create_order_action_log(
             db=db,
             order_id=order_id,
@@ -808,12 +802,10 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
             notes="تم إلغاء الطلب وإعادة المنتجات للمخزون تلقائياً بناءً على حالته قبل الحذف"
         )
         
-        # 4. دفع التعديلات مؤقتاً ومزامنة مؤشرات المنتج الأب (Product Metrics)
         db.flush()
         for p_id in affected_product_ids:
             sync_product_metrics(db, p_id)
 
-        # 5. الحفظ النهائي للمجالس والتأكيد في قاعدة البيانات
         db.commit()
     
         return {
@@ -827,58 +819,67 @@ def delete_order_logic(db: Session, order_id: int, user_id: int):
             raise e
         raise HTTPException(status_code=500, detail=f"خطأ أثناء عملية الحذف: {str(e)}")
 
+
 def _get_locked_order_and_variants(db: Session, order_id: int, new_item_ids: List[int]):
-    # جلب الطلب مع القفل
     db_order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
     if not db_order:
         raise HTTPException(status_code=404, detail="الطلب غير موجود")
 
-    # جلب جميع الـ variants المرتبطة (القديمة الموجودة في الطلب + الجديدة المراد إضافتها)
     current_variant_ids = [item.variant_id for item in db_order.items if item.deleted_at is None]
     all_target_ids = list(set(current_variant_ids + new_item_ids))
     
-    # قفل الـ variants لضمان دقة الحسابات الرياضية
     locked_variants = db.query(ProductVariant).filter(
         ProductVariant.id.in_(all_target_ids)
-    ).with_for_update().all() # ستقوم SQLAlchemy بقفل جميع الصفوف المسترجعة
+    ).with_for_update().all()
 
     return db_order
 
 
 def _update_basic_info(db_order: Order, update_data: Dict):
-    fields = ["customer_name", "address", "social_media_source", "notes", "delivery_info", "inventory_employee_id"]
+    fields = [
+        "customer_name", "address", "social_media_source", "notes", 
+        "delivery_info", "inventory_employee_id", "shipping_provider", 
+        "tracking_number", "shipment_id"
+    ]
     for field in fields:
-        if field in update_data:
+        if field in update_data and update_data[field] is not None:
             setattr(db_order, field, update_data[field])
     
-   # 2. تطبيق مفهوم assign_delivery_logic (الدمج في حقل delivery_info)
     d_name = update_data.get("delivery_name")
     d_type = update_data.get("delivery_type")
     
     if d_name and d_type:
-        # دمج بنفس الطريقة التي نجحت معك
         db_order.delivery_info = f"{d_name} - {d_type}"
     elif d_name:
         db_order.delivery_info = d_name
              
-    
-    # معالجة الهواتف بشكل خاص لأنها JSON
-    if "customer_phones" in update_data:
-        db_order.customer_phones = update_data["customer_phones"]    
+    if "customer_phones" in update_data and update_data["customer_phones"] is not None:
+        phones_val = update_data["customer_phones"]
+        if isinstance(phones_val, str):
+            phones_val = [p.strip() for p in phones_val.split(",") if p.strip()]
+        elif isinstance(phones_val, list):
+            phones_val = [str(p).strip() for p in phones_val if str(p).strip()]
+        db_order.customer_phones = phones_val    
+
 
 def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
-    # جلب العناصر الحالية
     current_items = {item.variant_id: item for item in db_order.items if item.deleted_at is None}
     new_items_dict = {item['variant_id']: item for item in new_items if item['quantity'] > 0}
     to_be_removed_ids = [item['variant_id'] for item in new_items if item['quantity'] <= 0]
     
     total_price = Decimal('0.00')
     items_changed = False
+    affected_product_ids = set()
 
     # 1. معالجة المحذوف والمعدل
     for v_id, db_item in current_items.items():
-        # استخدام query مع populate_existing لضمان جلب أحدث بيانات للمخزن
         variant = db.query(ProductVariant).filter(ProductVariant.id == v_id).with_for_update().first()
+        if not variant:
+            continue
+            
+        p_id = variant.color.product_id if (variant.color and variant.color.product_id) else db_item.product_id
+        if p_id:
+            affected_product_ids.add(p_id)
         
         if v_id not in new_items_dict or v_id in to_be_removed_ids:
             _reverse_stock(db_order.status, variant, db_item.quantity)
@@ -886,19 +887,23 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
             db_item.picked_quantity = 0 
             items_changed = True
         else:
-            new_qty = new_items_dict[v_id]['quantity']
+            item_data = new_items_dict[v_id]
+            new_qty = item_data['quantity']
             if db_item.quantity != new_qty:
                 _adjust_stock(db_order.status, variant, db_item.quantity, new_qty)
-                db_item.quantity = new_qty # تحديث الكمية في الكائن
+                db_item.quantity = new_qty
                 
                 if new_qty < db_item.picked_quantity: 
-                    
                     removed_from_box = db_item.picked_quantity - new_qty
                     db_item.picked_quantity = new_qty
                     print(f"ALERT: Remove {removed_from_box} pieces of {variant.id} from box")
                 items_changed = True
             
-            # حساب السعر بناءً على الكمية الجديدة المحققة (new_qty)
+            if 'allow_inspection' in item_data:
+                db_item.allow_inspection = bool(item_data['allow_inspection'])
+            if 'allow_try_on' in item_data:
+                db_item.allow_try_on = bool(item_data['allow_try_on'])
+            
             total_price += (db_item.price_at_order * Decimal(str(db_item.quantity)))
             del new_items_dict[v_id]
 
@@ -908,24 +913,33 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
         if not variant or variant.quantity_available < item_data['quantity']:
             raise HTTPException(status_code=400, detail=f"المخزون غير كافٍ للمنتج {v_id}")
         
+        p_id = variant.color.product_id if (variant.color and variant.color.product_id) else None
+        if p_id:
+            affected_product_ids.add(p_id)
+
         variant.quantity_available -= item_data['quantity']
-        variant.quantity_reserved += item_data['quantity']
+        variant.quantity_reserved = (variant.quantity_reserved or 0) + item_data['quantity']
         
-        product_price = Decimal(str(variant.color.product.selling_price))
+        product_price = Decimal(str(variant.color.product.selling_price if (variant.color and variant.color.product) else 0))
         new_item = OrderItem(
             order_id=db_order.id,
             variant_id=v_id,
-            product_id=variant.color.product_id,
+            product_id=p_id or 0,
             quantity=item_data['quantity'],
             price_at_order=product_price,
-            picked_quantity=0
+            picked_quantity=0,
+            allow_inspection=bool(item_data.get('allow_inspection', False)),
+            allow_try_on=bool(item_data.get('allow_try_on', False))
         )
         db.add(new_item)
         total_price += (product_price * Decimal(str(item_data['quantity'])))
         items_changed = True
 
-    # إجبار التغييرات على النزول لجدول الأصناف قبل العودة للدالة الأم
     db.flush() 
+
+    for p_id in affected_product_ids:
+        sync_product_metrics(db, p_id)
+
     return total_price, items_changed
 
 def _reverse_stock(status, variant, qty):

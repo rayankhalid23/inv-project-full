@@ -31,6 +31,7 @@ class OrderUpdate(BaseModel):
     customer_name: Optional[str] = None
     customer_phones: Optional[Union[List[str], str]] = None
     address: Optional[str] = None
+    social_media_source: Optional[str] = None
     status: Optional[str] = None
     notes: Optional[str] = None
     items: Optional[List[OrderItemCreate]] = None
@@ -39,6 +40,10 @@ class OrderUpdate(BaseModel):
     shipping_provider: Optional[str] = None
     tracking_number: Optional[str] = None
     shipment_id: Optional[str] = None
+    darb_service_id: Optional[str] = None
+    darb_city: Optional[str] = None
+    darb_area: Optional[str] = None
+    darb_payment_by: Optional[str] = None
 
 class DeliveryAssignRequest(BaseModel):
     delivery_name: str

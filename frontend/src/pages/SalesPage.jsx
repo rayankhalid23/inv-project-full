@@ -655,11 +655,40 @@ const handleScanProduct = async (barcodeValue) => {
     setScannerCameraError('');
     try {
       await stopOrderScanner();
+
+      // انتظر حتى يكتمل إدراج عنصر الـ DOM بعد أنيميشن فتح المودال
+      let retries = 6;
+      let container = document.getElementById('order-camera-reader');
+      while (!container && retries > 0) {
+        await new Promise(r => setTimeout(r, 100));
+        container = document.getElementById('order-camera-reader');
+        retries--;
+      }
+
+      if (!container) {
+        setScannerCameraStatus('error');
+        setScannerCameraError('تعذر العثور على مشغل الكاميرا. يرجى إعادة المحاولة.');
+        return;
+      }
+
       const html5QrCode = new Html5Qrcode('order-camera-reader');
       orderScannerRef.current = html5QrCode;
+
+      const cameraConfig = {
+        fps: 15,
+        qrbox: (viewfinderWidth, viewfinderHeight) => {
+          const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+          const qrSize = Math.floor(minEdge * 0.75);
+          return {
+            width: Math.max(160, Math.min(qrSize, 240)),
+            height: Math.max(160, Math.min(qrSize, 240)),
+          };
+        },
+      };
+
       await html5QrCode.start(
         { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 220, height: 220 } },
+        cameraConfig,
         (decodedText) => {
           if (!decodedText || isProcessingScanRef.current || scannerCooldownRef.current) return;
           const now = Date.now();
@@ -981,9 +1010,11 @@ const updateVariantQty = (variantId, qty) => {
 };
 
 // ========= دوال إدارة المنتجات داخل نافذة تعديل الطلب =========
-const addVariantToEditOrder = useCallback((variant, colorName, productName, sizeName) => {
-  const label = `${productName} - ${colorName} - ${sizeName}`;
-  const availableStock = variant.quantity_available !== undefined ? variant.quantity_available : 0;
+const addVariantToEditOrder = useCallback((variant, colorName, productName, sizeName, product) => {
+  const colorPart = colorName ? colorName : '';
+  const sizePart = sizeName ? sizeName : '';
+  const label = `${productName}${colorPart || sizePart ? ` (${colorPart}${colorPart && sizePart ? ' - ' : ''}${sizePart})` : ''}`.trim();
+  const availableStock = variant.quantity_available !== undefined ? Number(variant.quantity_available) : 0;
 
   const exists = editSelectedVariants.find(v => v.variant_id === variant.id);
   if (exists) {
@@ -994,13 +1025,19 @@ const addVariantToEditOrder = useCallback((variant, colorName, productName, size
     setEditSelectedVariants(prev => prev.map(v =>
       v.variant_id === variant.id ? { ...v, quantity: v.quantity + 1 } : v
     ));
-    showToast(`تمت زيادة كمية الصنف`, 'success');
+    showToast(`تمت زيادة كمية الصنف (${label}) إلى ${exists.quantity + 1}`, 'success');
   } else {
     if (availableStock <= 0) {
       showToast(`عذراً، الصنف (${label}) غير متوفر في المخزون حالياً!`, 'error');
       return;
     }
-    const itemPrice = Number(variant.selling_price ?? variant.price ?? 0);
+    const itemPrice = Number(
+      variant.selling_price ?? 
+      variant.price ?? 
+      product?.selling_price ?? 
+      product?.price ?? 
+      0
+    );
     setEditSelectedVariants(prev => [...prev, {
       variant_id: variant.id,
       quantity: 1,
@@ -1010,12 +1047,16 @@ const addVariantToEditOrder = useCallback((variant, colorName, productName, size
       allow_inspection: false,
       allow_try_on: false
     }]);
-    showToast(`تمت إضافة الصنف للطلب بنجاح`, 'success');
+    showToast(`تمت إضافة الصنف (${label}) للطلب بنجاح`, 'success');
   }
 }, [editSelectedVariants, showToast]);
 
 const removeEditVariant = (variantId) => {
+  const target = editSelectedVariants.find(v => v.variant_id === variantId);
   setEditSelectedVariants(prev => prev.filter(v => v.variant_id !== variantId));
+  if (target) {
+    showToast(`تم حذف الصنف (${target.label}) من الطلب`, 'info');
+  }
 };
 
 const toggleEditVariantPermission = (variantId, field) => {
@@ -1026,11 +1067,14 @@ const toggleEditVariantPermission = (variantId, field) => {
 
 const updateEditVariantQty = (variantId, qty) => {
   const n = parseInt(qty, 10);
-  if (n < 1) { removeEditVariant(variantId); return; }
+  if (isNaN(n) || n < 1) { 
+    removeEditVariant(variantId); 
+    return; 
+  }
 
   const target = editSelectedVariants.find(v => v.variant_id === variantId);
   if (target && n > target.stock) {
-    showToast(`المخزون لا يكفي! المتاح هو (${target.stock}) قطع فقط.`, 'error');
+    showToast(`المخزون لا يكفي! المتاح لهذا الطلب هو (${target.stock}) قطع فقط.`, 'error');
     return;
   }
   setEditSelectedVariants(prev => prev.map(v => v.variant_id === variantId ? { ...v, quantity: n } : v));
@@ -2936,29 +2980,38 @@ const updateEditVariantQty = (variantId, qty) => {
                       <Package className="h-4 w-4 text-[#800000]" />
                       أصناف الطلب الحالية
                     </span>
-                    <span className="bg-[#800000]/10 text-[#800000] text-[10px] px-2 py-0.5 rounded-full font-bold">
-                      {editSelectedVariants.length} أصناف
+                    <span className="bg-[#800000]/10 text-[#800000] text-[10px] px-2.5 py-0.5 rounded-full font-bold">
+                      {editSelectedVariants.length} أصناف · {editSelectedVariants.reduce((sum, v) => sum + v.quantity, 0)} قطعة
                     </span>
                   </div>
 
                   {editSelectedVariants.length === 0 ? (
-                    <div className="text-center py-4 text-xs text-slate-400">
-                      لم يتم اختيار أي أصناف. يجب إضافة صنف واحد على الأقل.
+                    <div className="text-center py-6 text-xs text-slate-400 bg-white/60 rounded-xl border border-dashed border-slate-200">
+                      لم يتم اختيار أي أصناف. يجب إضافة صنف واحد على الأقل للمتابعة.
                     </div>
                   ) : (
-                    <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-0.5 custom-scrollbar">
                       {editSelectedVariants.map(v => (
-                        <div key={v.variant_id} className="bg-white border border-slate-200/80 rounded-xl p-2.5 shadow-xs transition-all hover:border-slate-300">
+                        <div key={v.variant_id} className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs transition-all hover:border-slate-300">
                           <div className="flex items-center justify-between gap-3">
-                            <span className="text-xs font-bold text-slate-800 flex-1 truncate">{v.label}</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-xs font-bold text-slate-800 block truncate">{v.label}</span>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-400">
+                                {v.price > 0 && <span>سعر القطعة: <strong className="text-slate-600 font-mono">{v.price.toFixed(2)} د.ل</strong></span>}
+                                <span>·</span>
+                                <span className="text-emerald-600 font-medium">المتاح لهذا الطلب: {v.stock} قطعة</span>
+                              </div>
+                            </div>
 
-                            <div className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-200 rounded-lg p-0.5">
+                            {/* أزرار التحكم بالكمية للشاشات العادية واللمس */}
+                            <div className="flex items-center gap-1.5 shrink-0 bg-slate-50 border border-slate-200 rounded-xl p-1 shadow-xs">
                               <button
                                 type="button"
                                 onClick={() => updateEditVariantQty(v.variant_id, v.quantity - 1)}
-                                className="h-6 w-6 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-xs"
+                                className="h-7 w-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 active:scale-90 transition-all shadow-xs"
+                                title="إنقاص الكمية"
                               >
-                                <Minus className="h-3 w-3" />
+                                <Minus className="h-3.5 w-3.5" />
                               </button>
 
                               <input
@@ -2966,52 +3019,55 @@ const updateEditVariantQty = (variantId, qty) => {
                                 min="1"
                                 value={v.quantity}
                                 onChange={e => updateEditVariantQty(v.variant_id, parseInt(e.target.value) || 1)}
-                                className="w-10 text-center font-bold text-xs bg-transparent focus:outline-none text-slate-800"
+                                className="w-10 text-center font-bold text-xs bg-transparent focus:outline-none text-slate-800 font-mono"
                               />
 
                               <button
                                 type="button"
                                 onClick={() => updateEditVariantQty(v.variant_id, v.quantity + 1)}
-                                className="h-6 w-6 rounded-md bg-white border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors shadow-xs"
+                                className="h-7 w-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-100 hover:text-slate-900 active:scale-90 transition-all shadow-xs"
+                                title="زيادة الكمية"
                               >
-                                <Plus className="h-3 w-3" />
+                                <Plus className="h-3.5 w-3.5" />
                               </button>
                             </div>
 
                             <button
                               type="button"
                               onClick={() => removeEditVariant(v.variant_id)}
-                              className="text-red-400 hover:text-red-600 p-1 rounded-md hover:bg-red-50 transition-colors shrink-0"
+                              className="h-8 w-8 flex items-center justify-center text-red-400 hover:text-red-600 rounded-xl hover:bg-red-50 active:scale-90 transition-all shrink-0"
                               title="حذف الصنف من الطلب"
                             >
-                              <X className="h-4 w-4" />
+                              <Trash2 className="h-4 w-4" />
                             </button>
                           </div>
 
-                          {/* خيارات المعاينة والقياس */}
-                          <div className="flex items-center gap-3 mt-2 pt-2 border-t border-slate-100 text-[10px]">
-                            <label className="flex items-center gap-1.5 cursor-pointer text-slate-600">
-                              <input
-                                type="checkbox"
-                                checked={!!v.allow_inspection}
-                                onChange={() => toggleEditVariantPermission(v.variant_id, 'allow_inspection')}
-                                className="rounded border-slate-300 text-[#800000] focus:ring-[#800000] h-3.5 w-3.5"
-                              />
-                              <span>سماح بالمعاينة</span>
-                            </label>
+                          {/* خيارات المعاينة والقياس والمجموع الفرعي */}
+                          <div className="flex items-center justify-between gap-3 mt-2 pt-2 border-t border-slate-100 text-[10px]">
+                            <div className="flex items-center gap-3">
+                              <label className="flex items-center gap-1.5 cursor-pointer text-slate-600 hover:text-slate-800 select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!!v.allow_inspection}
+                                  onChange={() => toggleEditVariantPermission(v.variant_id, 'allow_inspection')}
+                                  className="rounded border-slate-300 text-[#800000] focus:ring-[#800000] h-3.5 w-3.5"
+                                />
+                                <span>سماح بالمعاينة</span>
+                              </label>
 
-                            <label className="flex items-center gap-1.5 cursor-pointer text-slate-600">
-                              <input
-                                type="checkbox"
-                                checked={!!v.allow_try_on}
-                                onChange={() => toggleEditVariantPermission(v.variant_id, 'allow_try_on')}
-                                className="rounded border-slate-300 text-[#800000] focus:ring-[#800000] h-3.5 w-3.5"
-                              />
-                              <span>سماح بالقياس</span>
-                            </label>
+                              <label className="flex items-center gap-1.5 cursor-pointer text-slate-600 hover:text-slate-800 select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!!v.allow_try_on}
+                                  onChange={() => toggleEditVariantPermission(v.variant_id, 'allow_try_on')}
+                                  className="rounded border-slate-300 text-[#800000] focus:ring-[#800000] h-3.5 w-3.5"
+                                />
+                                <span>سماح بالقياس</span>
+                              </label>
+                            </div>
 
                             {v.price > 0 && (
-                              <span className="mr-auto font-bold text-slate-700">
+                              <span className="font-bold text-[#800000] font-mono text-xs">
                                 {(v.price * v.quantity).toFixed(2)} د.ل
                               </span>
                             )}
@@ -3023,32 +3079,41 @@ const updateEditVariantQty = (variantId, qty) => {
 
                   {/* إجمالي قيمة الطلب التقديري */}
                   {editSelectedVariants.length > 0 && (
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 text-xs font-bold text-slate-800">
-                      <span>إجمالي القطع: {editSelectedVariants.reduce((sum, v) => sum + v.quantity, 0)} قطعة</span>
-                      <span className="text-[#800000]">
-                        الإجمالي: {editSelectedVariants.reduce((sum, v) => sum + (v.price || 0) * v.quantity, 0).toFixed(2)} د.ل
+                    <div className="flex items-center justify-between pt-2.5 border-t border-slate-200/60 text-xs font-bold text-slate-800">
+                      <span>إجمالي القطع: <strong className="text-slate-900 font-mono">{editSelectedVariants.reduce((sum, v) => sum + v.quantity, 0)}</strong> قطعة</span>
+                      <span className="text-[#800000] text-sm font-black font-mono">
+                        الإجمالي الكلي: {editSelectedVariants.reduce((sum, v) => sum + (v.price || 0) * v.quantity, 0).toFixed(2)} د.ل
                       </span>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* أزرار الإجراء */}
-              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsEditOpen(false)}
-                  className="px-4 py-2.5 border border-slate-300 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-50 transition-all"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving || editSelectedVariants.length === 0}
-                  className="px-5 py-2.5 bg-[#800000] text-white rounded-xl text-xs font-bold hover:bg-[#660000] disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-all flex items-center gap-1.5 shadow-sm shadow-[#800000]/20"
-                >
-                  {isSaving ? <><Loader2 className="h-4 w-4 animate-spin" /> جاري الحفظ والتحديث...</> : 'حفظ التعديلات الشاملة ✓'}
-                </button>
+              {/* أزرار الإجراء الثابتة والواضحة للهاتف والكمبيوتر */}
+              <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-4 sticky bottom-0 bg-white/95 backdrop-blur-sm -mx-4 -mb-4 p-4 sm:-mx-5 sm:-mb-5 sm:p-5 rounded-b-2xl shadow-lg border-slate-200">
+                <div className="text-right">
+                  <span className="text-[10px] text-slate-400 block font-medium">القيمة بعد التعديل:</span>
+                  <span className="text-sm font-black text-[#800000] font-mono">
+                    {editSelectedVariants.reduce((sum, v) => sum + (v.price || 0) * v.quantity, 0).toFixed(2)} د.ل
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditOpen(false)}
+                    className="px-4 py-2.5 border border-slate-300 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-50 active:scale-95 transition-all"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSaving || editSelectedVariants.length === 0}
+                    className="px-5 py-2.5 bg-[#800000] text-white rounded-xl text-xs font-bold hover:bg-[#660000] disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-all flex items-center gap-1.5 shadow-md shadow-[#800000]/20"
+                  >
+                    {isSaving ? <><Loader2 className="h-4 w-4 animate-spin" /> جاري الحفظ والتحديث...</> : 'حفظ التعديلات الشاملة ✓'}
+                  </button>
+                </div>
               </div>
 
             </form>
