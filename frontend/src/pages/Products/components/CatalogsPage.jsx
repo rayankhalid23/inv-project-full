@@ -50,6 +50,7 @@ const CatalogsPage = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('active');
   const [selectedSizeFilter, setSelectedSizeFilter] = useState('');
+  const [selectedSizeId, setSelectedSizeId] = useState(null);
   
   // حالات جديدة لإدارة جلب المنتجات من الباك إند مباشرة أثناء البحث
   const [searchedProducts, setSearchedProducts] = useState([]);
@@ -108,9 +109,10 @@ const CatalogsPage = ({
       if (searchTerm.trim() || selectedSizeFilter) {
         setSearchLoading(true);
         try {
-          // جلب المنتجات مباشرة من السيرفر بناءً على نص البحث وفلتر المقاس
+          // جلب المنتجات مباشرة من السيرفر بناءً على نص البحث وفلتر المقاس بدقة
           const params = {};
-          if (searchTerm.trim()) params.search = searchTerm;
+          if (searchTerm.trim()) params.search = searchTerm.trim();
+          if (selectedSizeId) params.size_id = selectedSizeId;
           if (selectedSizeFilter) params.size_name = selectedSizeFilter;
 
           const data = await catalogApi.getProductsDashboard(params);
@@ -136,7 +138,7 @@ const CatalogsPage = ({
     }, 400); // تأخير بسيط 400ms لحماية السيرفر من كثرة الطلبات أثناء الكتابة السريعة
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm, selectedSizeFilter]);
+  }, [searchTerm, selectedSizeFilter, selectedSizeId]);
 
   const filteredCatalogs = useMemo(() => {
     return catalogs.filter(catalog => {
@@ -144,7 +146,7 @@ const CatalogsPage = ({
         statusFilter === 'all' || 
         (statusFilter === 'active' && (catalog.is_active || catalog.status === 'نشط')) ||
         (statusFilter === 'inactive' && (!catalog.is_active && catalog.status !== 'نشط'));
-      const matchesSearch = catalog.name?.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesSearch = !searchTerm.trim() || catalog.name?.toLowerCase().includes(searchTerm.toLowerCase());
       return isStatusMatch && matchesSearch;
     });
   }, [catalogs, statusFilter, searchTerm]);
@@ -155,13 +157,30 @@ const CatalogsPage = ({
       if (Array.isArray(catalog.products)) {
         catalog.products.forEach(product => {
           const matchesProductSearch = 
+            !searchTerm.trim() ||
             product.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
             (product.code && product.code.toLowerCase().includes(searchTerm.toLowerCase()));
           
-          // التحقق من مطابقة المقاس المختار إذا كان فعالاً داخل المنتجات المحلية
-          const matchesSize = !selectedSizeFilter || 
-            (Array.isArray(product.sizes) && product.sizes.some(s => s.name === selectedSizeFilter)) ||
-            (product.size_name === selectedSizeFilter);
+          // التحقق الدقيق من مطابقة المقاس المختار داخل شجرة المنتج والألوان والمتغيرات
+          let matchesSize = !selectedSizeFilter;
+          if (selectedSizeFilter) {
+            if (product.colors && Array.isArray(product.colors)) {
+              matchesSize = product.colors.some(color => 
+                color.variants && Array.isArray(color.variants) && color.variants.some(v => 
+                  v.size_name === selectedSizeFilter || 
+                  (selectedSizeId && String(v.size_id) === String(selectedSizeId)) ||
+                  (v.size && v.size.name === selectedSizeFilter)
+                )
+              );
+            } else if (Array.isArray(product.sizes)) {
+              matchesSize = product.sizes.some(s => 
+                s.name === selectedSizeFilter || 
+                (selectedSizeId && String(s.id) === String(selectedSizeId))
+              );
+            } else if (product.size_name) {
+              matchesSize = product.size_name === selectedSizeFilter;
+            }
+          }
 
           if (matchesProductSearch && matchesSize) {
             ids.push(product.id);
@@ -170,7 +189,7 @@ const CatalogsPage = ({
       }
     });
     return ids;
-  }, [filteredCatalogs, searchTerm, selectedSizeFilter]);
+  }, [filteredCatalogs, searchTerm, selectedSizeFilter, selectedSizeId]);
 
   useEffect(() => {
     if (typeof onFilteredProductIdsChange === 'function') {
@@ -409,7 +428,11 @@ useEffect(() => {
             <div className="absolute top-full left-0 mt-2 w-48 sm:w-56 bg-white border border-slate-100 rounded-xl sm:rounded-2xl shadow-xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
               <div className="max-h-[220px] overflow-y-auto custom-scrollbar font-bold text-xs sm:text-sm">
                 <div 
-                  onClick={() => { setSelectedSizeFilter(''); setIsMainSizeDropdownOpen(false); }}
+                  onClick={() => { 
+                    setSelectedSizeFilter(''); 
+                    setSelectedSizeId(null); 
+                    setIsMainSizeDropdownOpen(false); 
+                  }}
                   className="px-4 py-2.5 sm:py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 text-slate-400"
                 >
                   كل المقاسات
@@ -417,7 +440,11 @@ useEffect(() => {
                 {filterData.sizes.map((size, index) => (
                   <div 
                     key={size.id || index}
-                    onClick={() => { setSelectedSizeFilter(size.name); setIsMainSizeDropdownOpen(false); }}
+                    onClick={() => { 
+                      setSelectedSizeFilter(size.name); 
+                      setSelectedSizeId(size.id); 
+                      setIsMainSizeDropdownOpen(false); 
+                    }}
                     className={`px-4 py-2.5 sm:py-3 hover:bg-[#80000008] hover:text-[#800000] cursor-pointer border-b border-slate-50 last:border-0 ${selectedSizeFilter === size.name ? 'bg-[#80000005] text-[#800000]' : 'text-slate-600'}`}
                   >
                     {size.name}
@@ -427,6 +454,21 @@ useEffect(() => {
             </div>
           )}
         </div>
+
+        {/* شارة توضيح الفلتر النشط للمقاس مع إمكانية الإلغاء السريع */}
+        {selectedSizeFilter && (
+          <div className="flex items-center gap-1.5 bg-[#800000]/10 text-[#800000] px-3 py-1 rounded-xl text-xs font-black self-start animate-in fade-in duration-150">
+            <span>تصفية بالمقاس: {selectedSizeFilter}</span>
+            <button
+              type="button"
+              onClick={() => { setSelectedSizeFilter(''); setSelectedSizeId(null); }}
+              className="p-0.5 hover:bg-[#800000]/20 rounded-full transition-colors cursor-pointer mr-1"
+              title="إلغاء فلتر المقاس"
+            >
+              <X size={12} strokeWidth={3} />
+            </button>
+          </div>
+        )}
 
         {/* السطر الثاني: أزرار تصفية الحالة على اليمين، وأزرار التصدير على اليسار - تكبر وتتوسع الفراغات بمرونة */}
         <div className="flex flex-row items-center justify-between gap-3 w-full">

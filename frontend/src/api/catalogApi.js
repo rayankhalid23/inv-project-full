@@ -71,6 +71,7 @@ export const catalogApi = {
                     search: filters.search || undefined,
                     catalog_id: filters.catalog_id || undefined,
                     size_id: filters.size_id || undefined,
+                    size_name: filters.size_name || undefined,
                     out_of_stock: filters.out_of_stock || false,
                     low_stock: filters.low_stock || false,
                 },
@@ -130,7 +131,8 @@ export const catalogApi = {
     // 1. إنشاء المنتج الرئيسي (FormData)
     createProduct: async (formData) => {
         const response = await api.post('/products/', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 60000,
         });
         return response.data; // يعيد بيانات المنتج ومعرفه ID
     },
@@ -138,7 +140,8 @@ export const catalogApi = {
     // 2. إضافة لون للمنتج (FormData)
     addColor: async (formData) => {
         const response = await api.post('/colors/', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 60000,
         });
         return response.data; // يعيد بيانات اللون ومعرفه ID
     },
@@ -147,7 +150,8 @@ export const catalogApi = {
     // نلاحظ هنا نمرر الـ product_color_id في الرابط كما يطلب الباك اند لديك
     createBatchVariants: async (colorId, variantsArray) => {
         const response = await api.post(`/variants/batch-create`, variantsArray, {
-            params: { product_color_id: colorId }
+            params: { product_color_id: colorId },
+            timeout: 30000,
         });
         return response.data;
     },
@@ -174,7 +178,8 @@ export const catalogApi = {
   updateProduct: async (productId, formData) => {
     // نمرر الـ formData الجاهز مباشرة من النموذج لأنه يحتوي على الـ variants والصور مسبقاً
     const response = await api.put(`/products/${productId}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
     });
     return response.data;
   },
@@ -200,6 +205,7 @@ export const catalogApi = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: 60000,
     });
     return response.data;
   },

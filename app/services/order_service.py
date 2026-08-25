@@ -874,11 +874,17 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
     
     total_price = Decimal('0.00')
     items_changed = False
+    affected_product_ids = set()
 
     # 1. معالجة المحذوف والمعدل
     for v_id, db_item in current_items.items():
-        # استخدام query مع populate_existing لضمان جلب أحدث بيانات للمخزن
+        # استخدام query مع with_for_update لضمان قفل وحماية السجل
         variant = db.query(ProductVariant).filter(ProductVariant.id == v_id).with_for_update().first()
+        if not variant:
+            continue
+            
+        if variant.color and variant.color.product_id:
+            affected_product_ids.add(variant.color.product_id)
         
         if v_id not in new_items_dict or v_id in to_be_removed_ids:
             _reverse_stock(db_order.status, variant, db_item.quantity)
@@ -892,14 +898,12 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
                 db_item.quantity = new_qty # تحديث الكمية في الكائن
                 
                 if new_qty < db_item.picked_quantity: 
-                    
-                    removed_from_box = db_item.picked_quantity - new_qty
                     db_item.picked_quantity = new_qty
-                    print(f"ALERT: Remove {removed_from_box} pieces of {variant.id} from box")
                 items_changed = True
             
-            # حساب السعر بناءً على الكمية الجديدة المحققة (new_qty)
-            total_price += (db_item.price_at_order * Decimal(str(db_item.quantity)))
+            # حساب السعر بناءً على الكمية الجديدة المحققة
+            item_price = db_item.price_at_order if db_item.price_at_order is not None else Decimal('0.00')
+            total_price += (item_price * Decimal(str(db_item.quantity)))
             del new_items_dict[v_id]
 
     # 2. معالجة المضاف الجديد
@@ -909,13 +913,23 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
             raise HTTPException(status_code=400, detail=f"المخزون غير كافٍ للمنتج {v_id}")
         
         variant.quantity_available -= item_data['quantity']
-        variant.quantity_reserved += item_data['quantity']
+        if db_order.status in ('prepared', 'shipped'):
+            variant.total_sold = (variant.total_sold or 0) + item_data['quantity']
+        else:
+            variant.quantity_reserved = (variant.quantity_reserved or 0) + item_data['quantity']
         
-        product_price = Decimal(str(variant.color.product.selling_price))
+        if variant.color and variant.color.product_id:
+            affected_product_ids.add(variant.color.product_id)
+
+        selling_price_val = 0
+        if variant.color and variant.color.product and variant.color.product.selling_price is not None:
+            selling_price_val = variant.color.product.selling_price
+
+        product_price = Decimal(str(selling_price_val))
         new_item = OrderItem(
             order_id=db_order.id,
             variant_id=v_id,
-            product_id=variant.color.product_id,
+            product_id=variant.color.product_id if variant.color else None,
             quantity=item_data['quantity'],
             price_at_order=product_price,
             picked_quantity=0
@@ -926,6 +940,12 @@ def _apply_inventory_delta(db: Session, db_order: Order, new_items: List[Dict]):
 
     # إجبار التغييرات على النزول لجدول الأصناف قبل العودة للدالة الأم
     db.flush() 
+
+    # مزامنة عدادات المنتج الأب في جدول products لجميع المنتجات المتأثرة
+    for p_id in affected_product_ids:
+        if p_id:
+            sync_product_metrics(db, p_id)
+
     return total_price, items_changed
 
 def _reverse_stock(status, variant, qty):

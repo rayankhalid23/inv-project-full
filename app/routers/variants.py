@@ -477,7 +477,8 @@ async def refresh_dashboard_ws():
 def filter_product_variants(
     search: Optional[str] = Query(None, description="البحث باسم المنتج أو كود المنتج"),
     catalog_id: Optional[int] = Query(None, description="معرف الكتالوج/القسم الافتراضي None يعطي الكل"),
-    size_id: Optional[int] = Query(None, description="فلترة بحسب معرف المقاس المحدود"),
+    size_id: Optional[int] = Query(None, description="فلترة بحسب معرف المقاس المحدد"),
+    size_name: Optional[str] = Query(None, description="فلترة بحسب اسم المقاس"),
     low_stock_only: bool = Query(False, description="عرض المخزون الناقص فقط (الكمية <= حد الأمان)"),
     qr_code: Optional[str] = Query(None, description="فلتر رمز الـ QR خاص بالمنتج"),
     page: int = Query(1, ge=1, description="رقم الصفحة"),
@@ -487,7 +488,7 @@ def filter_product_variants(
 ):
     """
     نظام فلترة ذكي وشامل ومطور:
-    1. يدعم الفلترة بالكتالوج ومسح الـ QR.
+    1. يدعم الفلترة بالكتالوج ومسح الـ QR والمقاس.
     2. يعيد قائمة بكافة معرفات المنتجات الفريدة المطابقة لخيارات البحث الحالية.
     """
     
@@ -508,15 +509,16 @@ def filter_product_variants(
     ).filter(
         ProductVariant.deleted_at == None,
         ProductColor.deleted_at == None,
-        Product.deleted_at == None
+        Product.deleted_at == None,
+        Size.deleted_at == None
     )
 
     # 2. فلتر الكتالوج (إذا كان None أو لم يرسل، يتخطى الشرط تلقائياً ويعرض الكل)
-    if catalog_id is not None:
+    if catalog_id is not None and isinstance(catalog_id, int):
         query = query.filter(Product.catalog_id == catalog_id)
 
     # 3. تطبيق فلتر البحث الذكي
-    if search:
+    if search and isinstance(search, str) and search.strip():
         clean_s = search.strip()
         search_filter = f"%{clean_s}%"
         conditions = [
@@ -539,7 +541,7 @@ def filter_product_variants(
         query = query.filter(or_(*conditions))
 
     # 3.5 تطبيق فلتر الـ QR المباشر
-    if qr_code:
+    if qr_code and isinstance(qr_code, str) and qr_code.strip():
         clean_qr = qr_code.strip()
         filename = clean_qr.replace("\\", "/").split("/")[-1]
         query = query.filter(
@@ -550,11 +552,14 @@ def filter_product_variants(
         )
 
     # 4. تطبيق فلتر المقاس
-    if size_id:
+    if size_id and isinstance(size_id, int):
         query = query.filter(ProductVariant.size_id == size_id)
 
+    if size_name and isinstance(size_name, str) and size_name.strip():
+        query = query.filter(Size.name.ilike(size_name.strip()))
+
     # 5. تطبيق الفلتر الذكي للمخزون الناقص
-    if low_stock_only:
+    if low_stock_only is True:
         query = query.filter(ProductVariant.quantity_available <= ProductVariant.min_stock_threshold)
 
     # [مهم جداً] 6. استخراج معرفات المنتجات الفريدة المطابقة للفلاتر بالكامل قبل الـ Pagination
@@ -570,10 +575,12 @@ def filter_product_variants(
     ).count()
 
     # 8. تطبيق نظام التنقيل (Pagination) وترتيب النتائج بحسب النقص أولاً
-    offset = (page - 1) * page_size
+    safe_page = page if isinstance(page, int) and page >= 1 else 1
+    safe_page_size = page_size if isinstance(page_size, int) and page_size >= 1 else 20
+    offset = (safe_page - 1) * safe_page_size
     results = query.order_by(
         ProductVariant.quantity_available.asc()
-    ).offset(offset).limit(page_size).all()
+    ).offset(offset).limit(safe_page_size).all()
 
     # 9. تحويل المخرجات إلى الهيكل المطلوب
     items = []
@@ -602,8 +609,8 @@ def filter_product_variants(
     return PaginatedVariantFilterResponse(
         total_count=total_count,
         low_stock_count=low_stock_count,
-        page=page,
-        page_size=page_size,
+        page=safe_page,
+        page_size=safe_page_size,
         matched_product_ids=matched_product_ids,
         items=items
     )

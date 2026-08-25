@@ -12,6 +12,7 @@ import { toast as hotToast } from 'react-hot-toast';
 import { catalogApi as fallbackCatalogApi } from "../../../api/catalogApi";
 import { mediaUrl, IMAGE_FALLBACK, onImageError } from "../../../utils/media";
 import { isNetworkError } from "../../../utils/netErrors";
+import { compressImageFile } from "../../../utils/imageCompressor";
 
 // --- Schema & Helpers ---
 const productSchema = z.object({
@@ -261,145 +262,150 @@ const handleAddNewSizeToDB = async (sizeName) => {
     }
   
     try {
+      const processedMainFile = selectedFile ? await compressImageFile(selectedFile) : null;
+
       if (data.id) {
         // --- أولاً: حالة التعديل الشامل ---
         const formData = new FormData();
-        if (selectedFile) formData.append('image_file', selectedFile); 
+        if (processedMainFile) formData.append('image_file', processedMainFile); 
   
         // نقرأ القيمة الطازجة مباشرة باستخدام watch لضمان التقاط التعديل الحالي من الواجهة
-const freshMinStock = watch("min_stock_threshold") || 5;
+        const freshMinStock = watch("min_stock_threshold") || 5;
 
-Object.keys(data).forEach(key => {
-  if (key !== 'variants' && key !== 'image_file' && key !== 'min_stock_threshold') {
-    formData.append(key, data[key]);
-  }
-});
+        Object.keys(data).forEach(key => {
+          if (key !== 'variants' && key !== 'image_file' && key !== 'min_stock_threshold') {
+            formData.append(key, data[key]);
+          }
+        });
 
-// نرسلها صراحة من المتغير الطازج لمنع أي كاش أو قيمة قديمة
-formData.append('min_stock_threshold', String(freshMinStock));
-formData.append('variants', JSON.stringify(data.variants));
+        // نرسلها صراحة من المتغير الطازج لمنع أي كاش أو قيمة قديمة
+        formData.append('min_stock_threshold', String(freshMinStock));
+        formData.append('variants', JSON.stringify(data.variants));
   
         // 1. استدعاء الدالة من المتغير المحمي داخلياً apiToUse بدلاً من activeApi
         await apiToUse.updateProduct(data.id, formData);
 
-// 2. المزامنة العميقة للألوان والمقاسات
-if (data.variants && data.variants.length > 0) {
-  for (const variant of data.variants) {
-    const rawColorId = variant.color_id || variant.color?.id || variant.id;
-    const parsedColorId = parseInt(rawColorId, 10);
+        // 2. المزامنة العميقة للألوان والمقاسات
+        if (data.variants && data.variants.length > 0) {
+          for (const variant of data.variants) {
+            const rawColorId = variant.color_id || variant.color?.id || variant.id;
+            const parsedColorId = parseInt(rawColorId, 10);
 
-    if (rawColorId && !isNaN(parsedColorId)) {
-      // لون موجود مسبقاً — تحديث بياناته وكميات مقاساته
-      const actualFile = variant.color_image instanceof File ? variant.color_image : null;
-      const colorResponse = await apiToUse.updateColor(parsedColorId, variant.color_name, actualFile);
-      if (colorResponse && colorResponse.status === "error") {
-        throw new Error(colorResponse.message || "فشل تحديث بيانات اللون");
-      }
+            if (rawColorId && !isNaN(parsedColorId)) {
+              // لون موجود مسبقاً — تحديث بياناته وكميات مقاساته
+              const rawFile = variant.color_image instanceof File ? variant.color_image : null;
+              const actualFile = rawFile ? await compressImageFile(rawFile) : null;
+              const colorResponse = await apiToUse.updateColor(parsedColorId, variant.color_name, actualFile);
+              if (colorResponse && colorResponse.status === "error") {
+                throw new Error(colorResponse.message || "فشل تحديث بيانات اللون");
+              }
 
-      if (variant.sizes && variant.sizes.length > 0) {
-        // تحديث المقاسات الموجودة
-        const existingSizes = variant.sizes.filter(s => s.id);
-        for (const sizeItem of existingSizes) {
-          const variantResponse = await apiToUse.updateVariantPartial(
-            parseInt(sizeItem.id, 10),
-            Number(sizeItem.quantity || 0),
-            parseInt(freshMinStock, 10)
-          );
-          if (variantResponse && variantResponse.status === "error") {
-            throw new Error(variantResponse.message || "فشل تحديث كمية المقاس");
+              if (variant.sizes && variant.sizes.length > 0) {
+                // تحديث المقاسات الموجودة
+                const existingSizes = variant.sizes.filter(s => s.id);
+                for (const sizeItem of existingSizes) {
+                  const variantResponse = await apiToUse.updateVariantPartial(
+                    parseInt(sizeItem.id, 10),
+                    Number(sizeItem.quantity || 0),
+                    parseInt(freshMinStock, 10)
+                  );
+                  if (variantResponse && variantResponse.status === "error") {
+                    throw new Error(variantResponse.message || "فشل تحديث كمية المقاس");
+                  }
+                }
+
+                // إضافة المقاسات الجديدة (بدون id) لهذا اللون
+                const newSizes = variant.sizes.filter(s => !s.id && s.size_id);
+                if (newSizes.length > 0) {
+                  const newVariantsArray = newSizes.map(s => ({
+                    size_id: Number(s.size_id),
+                    qty: Number(s.quantity || 0),
+                    min_stock: parseInt(freshMinStock, 10)
+                  }));
+                  await apiToUse.createBatchVariants(parsedColorId, newVariantsArray);
+                }
+              }
+            } else {
+              // لون جديد تماماً — إنشاؤه ثم إضافة مقاساته
+              const colorFormData = new FormData();
+              colorFormData.append('product_id', String(data.id));
+              colorFormData.append('color_name', variant.color_name || 'لون جديد');
+              const rawColorFile = variant.color_image instanceof File
+                ? variant.color_image
+                : (variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : null));
+              const colorFile = rawColorFile ? await compressImageFile(rawColorFile) : null;
+              if (colorFile) colorFormData.append('image_file', colorFile);
+
+              const newColorRes = await apiToUse.addColor(colorFormData);
+              const newColorId = newColorRes?.data?.id || newColorRes?.id;
+
+              if (newColorId && variant.sizes && variant.sizes.length > 0) {
+                const variantsArray = variant.sizes.map(s => ({
+                  size_id: Number(s.size_id),
+                  qty: Number(s.quantity || 0),
+                  min_stock: parseInt(freshMinStock, 10)
+                }));
+                await apiToUse.createBatchVariants(newColorId, variantsArray);
+              }
+            }
           }
         }
 
-        // إضافة المقاسات الجديدة (بدون id) لهذا اللون
-        const newSizes = variant.sizes.filter(s => !s.id && s.size_id);
-        if (newSizes.length > 0) {
-          const newVariantsArray = newSizes.map(s => ({
-            size_id: Number(s.size_id),
-            qty: Number(s.quantity || 0),
-            min_stock: parseInt(freshMinStock, 10)
-          }));
-          await apiToUse.createBatchVariants(parsedColorId, newVariantsArray);
+      } else {
+        // --- ثانياً: حالة إنشاء منتج جديد ---
+        const productFormData = new FormData();
+        if (processedMainFile) {
+          productFormData.append('image_file', processedMainFile);
+        }
+
+        productFormData.append('name', data.name);
+        productFormData.append('catalog_id', String(data.catalog_id));
+        productFormData.append('selling_price', String(data.selling_price));
+        productFormData.append('cost_price', String(data.cost_price || 0.0));
+        productFormData.append('min_stock_threshold', String(data.min_stock_threshold || 5));
+        
+        if (data.description) {
+          productFormData.append('description', data.description);
+        }
+
+        // 🔥 استخدام المرجع المؤمن المحمول والمضمون لمنع الـ undefined
+        const productResponse = await apiToUse.createProduct(productFormData);
+        const createdProductId = productResponse?.data?.id || productResponse?.id;
+
+        if (!createdProductId) {
+          throw new Error("فشل استخراج معرف المنتج المستلم من السيرفر");
+        }
+
+        if (data.variants && data.variants.length > 0) {
+          for (const variant of data.variants) {
+            const colorFormData = new FormData();
+            colorFormData.append('product_id', String(createdProductId)); 
+            colorFormData.append('color_name', variant.color_name);
+
+            const rawColorFile = variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : variant.color_image);
+            const actualColorFile = rawColorFile ? await compressImageFile(rawColorFile) : null;
+
+            if (actualColorFile) {
+              colorFormData.append('image_file', actualColorFile); 
+            }
+
+            // 🔥 استخدام المرجع المؤمن هنا أيضاً
+            const colorResponse = await apiToUse.addColor(colorFormData);
+            const createdColorId = colorResponse?.data?.id || colorResponse?.id;
+
+            if (createdColorId && variant.sizes && variant.sizes.length > 0) {
+              const variantsArray = variant.sizes.map(s => ({
+                size_id: Number(s.size_id), 
+                qty: Number(s.quantity || 0),                   
+                min_stock: Number(data.min_stock_threshold || 5) 
+              }));
+
+              // 🔥 استخدام المرجع المؤمن هنا أيضاً
+              await apiToUse.createBatchVariants(createdColorId, variantsArray);
+            }
+          }
         }
       }
-    } else {
-      // لون جديد تماماً — إنشاؤه ثم إضافة مقاساته
-      const colorFormData = new FormData();
-      colorFormData.append('product_id', String(data.id));
-      colorFormData.append('color_name', variant.color_name || 'لون جديد');
-      const colorFile = variant.color_image instanceof File
-        ? variant.color_image
-        : (variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : null));
-      if (colorFile) colorFormData.append('image_file', colorFile);
-
-      const newColorRes = await apiToUse.addColor(colorFormData);
-      const newColorId = newColorRes?.data?.id || newColorRes?.id;
-
-      if (newColorId && variant.sizes && variant.sizes.length > 0) {
-        const variantsArray = variant.sizes.map(s => ({
-          size_id: Number(s.size_id),
-          qty: Number(s.quantity || 0),
-          min_stock: parseInt(freshMinStock, 10)
-        }));
-        await apiToUse.createBatchVariants(newColorId, variantsArray);
-      }
-    }
-  }
-}
-
-} else {
-  // --- ثانياً: حالة إنشاء منتج جديد ---
-  const productFormData = new FormData();
-  if (selectedFile) {
-    productFormData.append('image_file', selectedFile);
-  }
-
-  productFormData.append('name', data.name);
-  productFormData.append('catalog_id', String(data.catalog_id));
-  productFormData.append('selling_price', String(data.selling_price));
-  productFormData.append('cost_price', String(data.cost_price || 0.0));
-  productFormData.append('min_stock_threshold', String(data.min_stock_threshold || 5));
-  
-  if (data.description) {
-    productFormData.append('description', data.description);
-  }
-
-  // 🔥 استخدام المرجع المؤمن المحمول والمضمون لمنع الـ undefined
-  const productResponse = await apiToUse.createProduct(productFormData);
-  const createdProductId = productResponse?.data?.id || productResponse?.id;
-
-  if (!createdProductId) {
-    throw new Error("فشل استخراج معرف المنتج المستلم من السيرفر");
-  }
-
-  if (data.variants && data.variants.length > 0) {
-    for (const variant of data.variants) {
-      const colorFormData = new FormData();
-      colorFormData.append('product_id', String(createdProductId)); 
-      colorFormData.append('color_name', variant.color_name);
-
-      const actualColorFile = variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : variant.color_image);
-
-      if (actualColorFile) {
-        colorFormData.append('image_file', actualColorFile); 
-      }
-
-      // 🔥 استخدام المرجع المؤمن هنا أيضاً
-      const colorResponse = await apiToUse.addColor(colorFormData);
-      const createdColorId = colorResponse?.data?.id || colorResponse?.id;
-
-      if (createdColorId && variant.sizes && variant.sizes.length > 0) {
-        const variantsArray = variant.sizes.map(s => ({
-          size_id: Number(s.size_id), 
-          qty: Number(s.quantity || 0),                   
-          min_stock: Number(data.min_stock_threshold || 5) 
-        }));
-
-        // 🔥 استخدام المرجع المؤمن هنا أيضاً
-        await apiToUse.createBatchVariants(createdColorId, variantsArray);
-      }
-    }
-  }
-}
 
       // رسالة نجاح عبر نظام التنبيهات الموحّد (تظهر عالمياً حتى بعد إغلاق النافذة)
       triggerToast(
@@ -417,47 +423,51 @@ if (data.variants && data.variants.length > 0) {
       if (e.response && e.response.data) {
         const errorData = e.response.data;
 
-     // 1. إذا كان الخطأ نصاً مباشراً قادماً من الـ detail (مثل: "هذا الاسم موجود مسبقاً")
-     if (typeof errorData.detail === "string") {
-      finalMessage = errorData.detail;
-      
-      // أ) إذا كان الخطأ متعلقاً باسم المنتج، نربطه بالحقل
-      if (finalMessage.includes("الاسم موجود مسبقاً") || finalMessage.includes("اسم المنتج")) {
-        setError("name", { type: "server", message: finalMessage });
+        // 1. إذا كان الخطأ نصاً مباشراً قادماً من الـ detail (مثل: "هذا الاسم موجود مسبقاً")
+        if (typeof errorData.detail === "string") {
+          finalMessage = errorData.detail;
+          
+          // أ) إذا كان الخطأ متعلقاً باسم المنتج، نربطه بالحقل
+          if (finalMessage.includes("الاسم موجود مسبقاً") || finalMessage.includes("اسم المنتج")) {
+            setError("name", { type: "server", message: finalMessage });
+          }
+          // ب) إذا كان الخطأ متعلقاً بالوان المنتج
+          else if (finalMessage.includes("اللون") || finalMessage.includes("color")) {
+            triggerToast(finalMessage, "error");
+          }
+          // ج) إذا كان الخطأ متعلقاً بالمقاسات أو الـ Batch Variants
+          else if (finalMessage.includes("المقاس") || finalMessage.includes("الكمية") || finalMessage.includes("variant")) {
+            triggerToast(finalMessage, "error");
+          }
+        } 
+        // 2. إذا كان الخطأ مصفوفة Validation تلقائية من FastAPI Pydantic
+        else if (Array.isArray(errorData.detail)) {
+          const firstErr = errorData.detail[0];
+          const fieldName = firstErr?.loc?.[firstErr.loc.length - 1] || "البيانات";
+          finalMessage = `خطأ في المدخلات [${fieldName}]: ${firstErr?.msg}`;
+          
+          // ربط الأخطاء بكل الحقول تلقائياً لتظهر تحت الخانات
+          errorData.detail.forEach(err => {
+            const fName = err.loc[err.loc.length - 1];
+            setError(fName, { type: "server", message: err.msg });
+          });
+        }
+        // 3. أي صيغة أخرى احتياطية من الباك إند
+        else if (errorData.message) {
+          finalMessage = errorData.message;
+        }
+      } 
+      // 4. أخطاء الكود البرمجية الداخلية
+      else if (e.message && !isNetworkError(e)) {
+        finalMessage = e.message;
       }
-      // ب) إذا كان الخطأ متعلقاً بالوان المنتج
-      else if (finalMessage.includes("اللون") || finalMessage.includes("color")) {
-        triggerToast(finalMessage, "error");
+      // 5. خطأ شبكة مؤكد (انقطاع أو عدم استجابة الخادم)
+      else if (isNetworkError(e)) {
+        finalMessage = 'تعذر الاتصال بالخادم. يُرجى التحقق من اتصال الشبكة أو الخادم ثم المحاولة مجدداً.';
+      } else if (e.message) {
+        finalMessage = e.message;
       }
-      // ج) إذا كان الخطأ متعلقاً بالمقاسات أو الـ Batch Variants
-      else if (finalMessage.includes("المقاس") || finalMessage.includes("الكمية") || finalMessage.includes("variant")) {
-        triggerToast(finalMessage, "error");
-      }
-    } 
-    // 2. إذا كان الخطأ مصفوفة Validation تلقائية من FastAPI Pydantic
-    else if (Array.isArray(errorData.detail)) {
-      const firstErr = errorData.detail[0];
-      const fieldName = firstErr?.loc?.[firstErr.loc.length - 1] || "البيانات";
-      finalMessage = `خطأ في المدخلات [${fieldName}]: ${firstErr?.msg}`;
-      
-      // ربط الأخطاء بكل الحقول تلقائياً لتظهر تحت الخانات
-      errorData.detail.forEach(err => {
-        const fName = err.loc[err.loc.length - 1];
-        setError(fName, { type: "server", message: err.msg });
-      });
-    }
-    // 3. أي صيغة أخرى احتياطية من الباك إند
-    else if (errorData.message) {
-      finalMessage = errorData.message;
-    }
-  } 
-  // 4. خطأ شبكة (أوفلاين أو مهلة) — إضافة/تعديل المنتجات يتطلب اتصالاً
-  else if (isNetworkError(e)) {
-    finalMessage = 'لا يوجد اتصال بالإنترنت. إضافة وتعديل المنتجات تتطلب اتصالاً نشطاً — يُرجى المحاولة لاحقاً.';
-  } else if (e.message) {
-    finalMessage = e.message;
-  }
-      // رسالة الفشل عبر نظام التنبيهات الموحّد بدل نافذة alert المزعجة
+      // رسالة الفشل عبر نظام التنبيهات الموحّد
       triggerToast(finalMessage, "error");
 
     } finally {
@@ -695,16 +705,16 @@ if (!open) return null;
     <label className="text-[10px] font-black text-[#800000] bg-white px-4 py-2 rounded-xl shadow-sm border cursor-pointer hover:bg-slate-50 transition-colors">
     تحميل الصورة الرئيسية للمنتج
     
-    {/*  التعديل الصحيح: تم إغلاق التاج وإضافة حدث التغيير لقراءة الصورة */}
     <input 
       type="file" 
       accept="image/*" 
       hidden 
-      onChange={(e) => {
+      onChange={async (e) => {
         const file = e.target.files?.[0];
         if(file) {
-          setSelectedFile(file);
-          setImagePreview(URL.createObjectURL(file));
+          const compressed = await compressImageFile(file);
+          setSelectedFile(compressed);
+          setImagePreview(URL.createObjectURL(compressed));
         }
       }} 
     />
@@ -1157,19 +1167,21 @@ type="file"
 ref={fileInputRef} 
 className="hidden" 
 accept="image/*" 
-onChange={(e) => {
+onChange={async (e) => {
   const file = e.target.files?.[0];
   
   if (!file) return;
 
+  const compressed = await compressImageFile(file);
+
   // 1️⃣ تحديث الملف داخل نظام الـ Form لتلتقطه دالة الحفظ النهائي عند الضغط على الزر
-  setValue(`variants.${colorIndex}.color_image`, file, { 
+  setValue(`variants.${colorIndex}.color_image`, compressed, { 
     shouldValidate: true, 
     shouldDirty: true 
   });
 
   // 2️⃣ إنشاء رابط معاينة وهمي (Blob) وتخزينه في الـ Form لعرض الصورة فوراً في الواجهة أمام المستخدم كمعاينة
-  const previewUrl = URL.createObjectURL(file);
+  const previewUrl = URL.createObjectURL(compressed);
   setValue(`variants.${colorIndex}.preview_url`, previewUrl);
 
   // 3️⃣ كتم أي رسائل تأكيد مزعجة؛ فالعملية الآن محلية بالكامل وآمنة 🚀
@@ -1265,7 +1277,7 @@ setSizeToDelete({
   colorName: colorItem?.color_name || `لون ${colorIndex}`
 });
                 }}
-                className="absolute -top-1 -right-1 hidden group-hover/size:flex items-center justify-center w-4 h-4 bg-white shadow-sm rounded-full text-red-500 border border-slate-100 hover:bg-red-50 transition-colors cursor-pointer z-20" 
+                className="absolute -top-1 -right-1 flex sm:hidden sm:group-hover/size:flex items-center justify-center w-4 h-4 bg-white shadow-sm rounded-full text-red-500 border border-slate-100 hover:bg-red-50 transition-colors cursor-pointer z-20" 
                 >
                 <X size={8} strokeWidth={3}/>
               </button>

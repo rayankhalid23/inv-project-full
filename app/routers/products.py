@@ -22,7 +22,7 @@ from app.services.order_service import get_inventory_dashboard_stats
 from app.core.database import get_db
 from app.core.deps import RoleChecker
 from app.models.user import User
-from app.models.inventory import Product, ProductColor, ProductVariant
+from app.models.inventory import Product, ProductColor, ProductVariant, Size
 from app.schemas.product_display import PaginatedProductDashboard, ProductDeepDiveOut, ProductDashboardItem 
 from app.schemas.inventory import VariantUpdatePartial
 from app.services.qr_service import QRGeneratorService
@@ -229,7 +229,8 @@ def get_products_dashboard(
     limit: int = Query(20, ge=1, le=100, description="عدد العناصر المراد جلبها في كل سحبة"),
     search: Optional[str] = Query(None, description="بحث بالاسم أو الكود"),
     catalog_id: Optional[int] = Query(None, description="فلترة بالتصنيف"),
-    size_id: Optional[int] = Query(None, description="فلترة بالمقاس"),
+    size_id: Optional[int] = Query(None, description="فلترة بمعرف المقاس"),
+    size_name: Optional[str] = Query(None, description="فلترة باسم المقاس"),
     out_of_stock: bool = Query(False),
     low_stock: bool = Query(False),
     db: Session = Depends(get_db),
@@ -240,44 +241,56 @@ def get_products_dashboard(
         query = db.query(Product).filter(Product.deleted_at == None)
 
         # 1. الفلترة بالبحث
-        if search:
-            search_term = f"%{search}%"
+        if search and isinstance(search, str) and search.strip():
+            search_term = f"%{search.strip()}%"
             query = query.filter(or_(
                 Product.name.ilike(search_term),
                 Product.code.ilike(search_term)
             ))
 
         # 2. الفلترة بالكتالوج
-        if catalog_id:
+        if catalog_id and isinstance(catalog_id, int):
             query = query.filter(Product.catalog_id == catalog_id)
 
-        # 3. الربط للفلترة بالمقاس أو المخزون المنخفض (بناءً على image_2c2e1a.png و image_2c2b38.png)
-        if size_id or low_stock:
-            query = query.join(ProductColor, Product.id == ProductColor.product_id) \
-                         .join(ProductVariant, ProductColor.id == ProductVariant.product_color_id)
+        # 3. الربط للفلترة بالمقاس أو المخزون المنخفض
+        clean_size_name = size_name.strip() if (size_name and isinstance(size_name, str)) else None
+        valid_size_id = size_id if (size_id and isinstance(size_id, int)) else None
+        if valid_size_id or clean_size_name or low_stock is True:
+            query = query.join(
+                ProductColor, 
+                and_(Product.id == ProductColor.product_id, ProductColor.deleted_at == None)
+            ).join(
+                ProductVariant, 
+                and_(ProductColor.id == ProductVariant.product_color_id, ProductVariant.deleted_at == None)
+            )
             
-            if size_id:
-                query = query.filter(
-                    ProductVariant.size_id == size_id,
-                    ProductVariant.deleted_at == None
-                )
+            if valid_size_id:
+                query = query.filter(ProductVariant.size_id == valid_size_id)
 
-            if low_stock:
+            if clean_size_name:
+                query = query.join(
+                    Size,
+                    and_(ProductVariant.size_id == Size.id, Size.deleted_at == None)
+                ).filter(Size.name.ilike(clean_size_name))
+
+            if low_stock is True:
                 query = query.filter(
-                    ProductVariant.deleted_at == None,
                     ProductVariant.quantity_available <= ProductVariant.min_stock_threshold
                 )
             
             query = query.distinct()
 
-        if out_of_stock:
+        if out_of_stock is True:
             query = query.filter(Product.total_available <= 0)
+
+        safe_offset = offset if isinstance(offset, int) else 0
+        safe_limit = limit if isinstance(limit, int) else 20
 
         # جلب البيانات باستخدام offset و limit للتحميل اللانهائي
         products = query.options(selectinload(Product.colors)) \
                         .order_by(Product.created_at.desc()) \
-                        .offset(offset) \
-                        .limit(limit) \
+                        .offset(safe_offset) \
+                        .limit(safe_limit) \
                         .all()
 
         items = []

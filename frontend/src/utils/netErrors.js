@@ -14,18 +14,31 @@
  * خطأ مهلة يُعرض للمستخدم كفشل نهائي بدل حفظ العملية للمزامنة لاحقاً.
  */
 export const isNetworkError = (err) => {
-  if (!navigator.onLine) return true;
   if (!err) return false;
 
-  // انتهاء المهلة في axios
+  // إذا كانت هناك استجابة من الخادم (حتى لو كانت كود خطأ مثل 400 أو 422 أو 500)
+  // فهذا يعني أن الاتصال تم بنجاح والخطأ من البيانات أو منطق الخادم، وليس انقطاع شبكة
+  if (err.response) return false;
+
+  // انتهاء المهلة أو أخطاء الاتصال المباشرة في axios
   if (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'ERR_NETWORK') return true;
 
-  // لم تصل أي استجابة من الخادم إطلاقاً
+  // تم إرسال الطلب لكن لم تصل أي استجابة من الخادم
   if (err.request && !err.response) return true;
 
   const msg = String(err.message || '');
-  return msg.includes('Network Error') || msg.includes('timeout') || msg.includes('Failed to fetch');
+  if (msg.includes('Network Error') || msg.includes('timeout') || msg.includes('Failed to fetch')) {
+    return true;
+  }
+
+  // في حال انقطاع الإنترنت الصريح المؤكد وعدم وجود استجابة
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return true;
+  }
+
+  return false;
 };
 
 /** المهلة الافتراضية لكل طلبات الـ API (بالمللي ثانية) */
-export const API_TIMEOUT_MS = 15000;
+export const API_TIMEOUT_MS = 25000;
+
