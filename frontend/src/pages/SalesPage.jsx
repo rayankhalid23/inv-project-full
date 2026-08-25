@@ -523,24 +523,24 @@ const handleScanProduct = async (barcodeValue) => {
     if (!isEditOpen) setSelectedOrder(null);
   };
 
-  // مرجع لتحديث وقراءة كائن الطلب المختار الحالي دائماً بدون مشاكل Stale Closure
-  const selectedOrderRef = useRef(selectedOrder);
-  useEffect(() => { 
-    selectedOrderRef.current = selectedOrder; 
-    selectedOrderIdRef.current = selectedOrder?.id || null;
-  }, [selectedOrder]);
-
   // ========= مسح QR لتجهيز المنتج =========
-  const handleBarcodeScan = useCallback(async (barcodeValue) => {
-    const currentOrder = selectedOrderRef.current;
-    if (!currentOrder || !barcodeValue || !barcodeValue.trim()) return;
+  const handleBarcodeScan = async (barcodeValue) => {
+    if (!selectedOrder || !barcodeValue || !barcodeValue.trim()) return;
+
+    // المسح يتطلب تحقق من السيرفر — لا يمكن تنفيذه بدون اتصال
+    if (!navigator.onLine) {
+      playScanBeep(false);
+      showToast('لا يمكن مسح وتجهيز المنتجات بدون اتصال بالإنترنت. تأكد من الاتصال أولاً 📡', 'error');
+      setScannerFeedback('لا يوجد اتصال بالإنترنت 📡');
+      return;
+    }
 
     const cleanCode = barcodeValue.trim();
     setIsScanning(true);
     try {
-      const result = await orderApi.scanOrderItem(currentOrder.id, cleanCode);
+      const result = await orderApi.scanOrderItem(selectedOrder.id, cleanCode);
       playScanBeep(true);
-      const arabicStatus = mapStatusToArabic(result?.status) || currentOrder.status;
+      const arabicStatus = mapStatusToArabic(result?.status) || selectedOrder.status;
       const targetVariantId = result?.variant_id;
       const successMsg = result?.message || 'تم مسح وتجهيز الصنف بنجاح';
       showToast(successMsg, 'success');
@@ -568,7 +568,7 @@ const handleScanProduct = async (barcodeValue) => {
         };
       });
 
-      setOrders(prev => prev.map(o => o.id === currentOrder.id ? { ...o, status: arabicStatus } : o));
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: arabicStatus } : o));
     } catch (err) {
       playScanBeep(false);
       if (isNetworkError(err)) {
@@ -582,18 +582,23 @@ const handleScanProduct = async (barcodeValue) => {
     } finally {
       setIsScanning(false);
     }
-  }, []);
+  };
 
   // ========= مسح يدوي لتجهيز المنتج =========
-  const handleManualScan = useCallback(async (variantId) => {
-    const currentOrder = selectedOrderRef.current;
-    if (!currentOrder || !variantId) return;
+  const handleManualScan = async (variantId) => {
+    if (!selectedOrder || !variantId) return;
+
+    if (!navigator.onLine) {
+      playScanBeep(false);
+      showToast('لا يمكن التجهيز اليدوي بدون اتصال بالإنترنت 📡', 'error');
+      return;
+    }
 
     setIsScanning(true);
     try {
-      const result = await orderApi.scanOrderItemManual(currentOrder.id, variantId);
+      const result = await orderApi.scanOrderItemManual(selectedOrder.id, variantId);
       playScanBeep(true);
-      const arabicStatus = mapStatusToArabic(result?.status) || currentOrder.status;
+      const arabicStatus = mapStatusToArabic(result?.status) || selectedOrder.status;
       showToast(result?.message || 'تم المسح اليدوي وتجهيز القطعة بنجاح', 'success');
 
       setSelectedOrder(prev => {
@@ -615,7 +620,7 @@ const handleScanProduct = async (barcodeValue) => {
           progress_percentage: totalOrdered ? (totalPicked / totalOrdered) * 100 : 0,
         };
       });
-      setOrders(prev => prev.map(o => o.id === currentOrder.id ? { ...o, status: arabicStatus } : o));
+      setOrders(prev => prev.map(o => o.id === selectedOrder.id ? { ...o, status: arabicStatus } : o));
     } catch (err) {
       playScanBeep(false);
       if (isNetworkError(err)) {
@@ -627,7 +632,7 @@ const handleScanProduct = async (barcodeValue) => {
     } finally {
       setIsScanning(false);
     }
-  }, []);
+  };
 
   // ========= إدارة كاميرا الماسح الضوئي داخل الطلب =========
   const stopOrderScanner = useCallback(async () => {

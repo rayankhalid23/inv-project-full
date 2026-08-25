@@ -4,7 +4,6 @@ import {
   Loader2, User, Phone, ArrowRight, Printer, Zap, Camera
 } from 'lucide-react';
 import { orderApi } from '../api/orderApi';
-import { catalogApi } from '../api/catalogApi';
 import { toast } from 'react-hot-toast';
 import { Html5Qrcode } from 'html5-qrcode';
 import ProductPicker from '../components/products/ProductPicker';
@@ -148,20 +147,15 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
     }, 1);
   }, [handleAddVariant]);
 
-  // دالة البحث والتعامل مع الكود الممسوح فوراً وبدقة تامة
-  const handleProcessCode = useCallback(async (scannedText) => {
+  // دالة البحث والتعامل مع الكود الممسوح فوراً
+  const handleProcessCode = useCallback((scannedText) => {
     if (!scannedText) return;
     const code = String(scannedText).trim();
     if (!code) return;
 
     const cleanCode = code.replace(/^0+/, '');
 
-    // 1. فحص كود الـ QR المطبوع VAR:{variant_id}
-    const varMatch = code.match(/^VAR:(\d+)/i);
-    const varIdFromQr = varMatch ? parseInt(varMatch[1]) : null;
-
-    let matched = allVariantsList.current.find(v => {
-      if (varIdFromQr && v.variant_id === varIdFromQr) return true;
+    const matched = allVariantsList.current.find(v => {
       const vSku = String(v.sku || '').toLowerCase();
       const vQr = String(v.qr_code || '').toLowerCase();
       const vId = String(v.variant_id);
@@ -174,31 +168,6 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
              pCode === code.toLowerCase() ||
              (cleanCode && cleanPCode === cleanCode);
     });
-
-    // 2. إذا لم يُعثر عليه في القائمة المحلية المحملة مسبقاً، استدعاء محلل السيرفر الموحد
-    if (!matched) {
-      try {
-        const resolved = await catalogApi.resolveScannedCode(code);
-        if (resolved && resolved.variant_id) {
-          matched = {
-            variant_id: resolved.variant_id,
-            product_id: resolved.product_id,
-            product_name: resolved.product_name || "منتج",
-            product_code: resolved.product_code || "—",
-            main_image: resolved.main_image,
-            color_name: resolved.color_name,
-            color_image: resolved.color_image,
-            size_name: resolved.size_name || "افتراضي",
-            quantity_available: resolved.quantity_available ?? 0,
-            selling_price: Number(resolved.selling_price || 0),
-            qr_code: resolved.qr_code,
-            sku: resolved.variant_sku || String(resolved.variant_id)
-          };
-        }
-      } catch (e) {
-        // خطأ البحث من السيرفر
-      }
-    }
 
     if (matched) {
       playScanBeep();
@@ -252,14 +221,14 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
           setScanCooldown(true);
           setLastScannedFeedback('جاري معالجة الكود...');
 
-          Promise.resolve(handleProcessCode(decodedText)).finally(() => {
-            setTimeout(() => {
-              isProcessingScanRef.current = false;
-              scanCooldownRef.current = false;
-              setScanCooldown(false);
-              setLastScannedFeedback('');
-            }, 1600);
-          });
+          handleProcessCode(decodedText);
+
+          setTimeout(() => {
+            isProcessingScanRef.current = false;
+            scanCooldownRef.current = false;
+            setScanCooldown(false);
+            setLastScannedFeedback('');
+          }, 1600);
         },
         () => {
           // parse error on frame - normal behaviour
