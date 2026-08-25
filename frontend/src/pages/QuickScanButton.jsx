@@ -204,38 +204,12 @@ export default function QuickScanPage({ isOpen, onClose }) {
     try {
       await stopCamera();
 
-      let retries = 6;
-      let container = document.getElementById("quick-scan-camera-reader");
-      while (!container && retries > 0) {
-        await new Promise(r => setTimeout(r, 100));
-        container = document.getElementById("quick-scan-camera-reader");
-        retries--;
-      }
-
-      if (!container) {
-        setCameraStatus('error');
-        setCameraErrorMsg('تعذر فتح الكاميرا المباشرة.');
-        return;
-      }
-
       const html5QrCode = new Html5Qrcode("quick-scan-camera-reader");
       html5QrCodeRef.current = html5QrCode;
 
-      const cameraConfig = {
-        fps: 15,
-        qrbox: (viewfinderWidth, viewfinderHeight) => {
-          const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-          const qrSize = Math.floor(minEdge * 0.75);
-          return {
-            width: Math.max(160, Math.min(qrSize, 240)),
-            height: Math.max(160, Math.min(qrSize, 240)),
-          };
-        },
-      };
-
       await html5QrCode.start(
         { facingMode: "environment" },
-        cameraConfig,
+        { fps: 10, qrbox: { width: 220, height: 220 } },
         (decodedText) => {
           if (!decodedText || isProcessingScanRef.current || scanCooldownRef.current) return;
           const now = Date.now();

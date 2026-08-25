@@ -4,7 +4,6 @@ import {
   Loader2, User, Phone, ArrowRight, Printer, Zap, Camera
 } from 'lucide-react';
 import { orderApi } from '../api/orderApi';
-import { catalogApi } from '../api/catalogApi';
 import { toast } from 'react-hot-toast';
 import { Html5Qrcode } from 'html5-qrcode';
 import ProductPicker from '../components/products/ProductPicker';
@@ -149,25 +148,14 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
   }, [handleAddVariant]);
 
   // دالة البحث والتعامل مع الكود الممسوح فوراً
-  const handleProcessCode = useCallback(async (scannedText) => {
+  const handleProcessCode = useCallback((scannedText) => {
     if (!scannedText) return;
     const code = String(scannedText).trim();
     if (!code) return;
 
-    // 1. محاولة مطابقة سريعة عبر استخراج ID إذا كان بصيغة VAR:id|SKU:code
-    let targetVariantId = null;
-    const varMatch = code.match(/VAR:(\d+)/i);
-    if (varMatch) {
-      targetVariantId = parseInt(varMatch[1], 10);
-    }
-
     const cleanCode = code.replace(/^0+/, '');
 
-    // 2. البحث في القائمة المحملة محلياً أولاً
-    let matched = allVariantsList.current.find(v => {
-      if (targetVariantId && (Number(v.variant_id) === targetVariantId || Number(v.id) === targetVariantId)) {
-        return true;
-      }
+    const matched = allVariantsList.current.find(v => {
       const vSku = String(v.sku || '').toLowerCase();
       const vQr = String(v.qr_code || '').toLowerCase();
       const vId = String(v.variant_id);
@@ -180,28 +168,6 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
              pCode === code.toLowerCase() ||
              (cleanCode && cleanPCode === cleanCode);
     });
-
-    // 3. إذا لم يطابق محلياً، نستخدم الخادم الموحد لحل الكود فوراً
-    if (!matched) {
-      try {
-        const resolved = await catalogApi.resolveScannedCode(code);
-        if (resolved && resolved.variant_id) {
-          matched = {
-            variant_id: resolved.variant_id,
-            product_name: resolved.product_name,
-            color_name: resolved.color_name,
-            size_name: resolved.size_name,
-            color_image: null,
-            main_image: resolved.main_image || null,
-            quantity_available: resolved.quantity_available || 0,
-            selling_price: Number(resolved.selling_price || 0),
-            sku: resolved.product_code || code,
-          };
-        }
-      } catch (e) {
-        // Fallback
-      }
-    }
 
     if (matched) {
       playScanBeep();
@@ -228,18 +194,9 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
         } catch (e) {
           // ignore stop error
         }
-        html5QrCodeRef.current = null;
       }
 
-      // انتظر حتى يكتمل إدراج عنصر الـ DOM بعد الرندر
-      let retries = 6;
-      let qrContainer = document.getElementById("quick-sale-camera-reader");
-      while (!qrContainer && retries > 0) {
-        await new Promise(r => setTimeout(r, 100));
-        qrContainer = document.getElementById("quick-sale-camera-reader");
-        retries--;
-      }
-
+      const qrContainer = document.getElementById("quick-sale-camera-reader");
       if (!qrContainer) {
         setCameraLoading(false);
         return;
@@ -248,17 +205,7 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
       const html5QrCode = new Html5Qrcode("quick-sale-camera-reader");
       html5QrCodeRef.current = html5QrCode;
 
-      const cameraConfig = {
-        fps: 15,
-        qrbox: (viewfinderWidth, viewfinderHeight) => {
-          const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-          const qrSize = Math.floor(minEdge * 0.75);
-          return {
-            width: Math.max(160, Math.min(qrSize, 240)),
-            height: Math.max(160, Math.min(qrSize, 240)),
-          };
-        },
-      };
+      const cameraConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
 
       await html5QrCode.start(
         { facingMode: "environment" },
@@ -274,14 +221,14 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
           setScanCooldown(true);
           setLastScannedFeedback('جاري معالجة الكود...');
 
-          Promise.resolve(handleProcessCode(decodedText)).finally(() => {
-            setTimeout(() => {
-              isProcessingScanRef.current = false;
-              scanCooldownRef.current = false;
-              setScanCooldown(false);
-              setLastScannedFeedback('');
-            }, 1600);
-          });
+          handleProcessCode(decodedText);
+
+          setTimeout(() => {
+            isProcessingScanRef.current = false;
+            scanCooldownRef.current = false;
+            setScanCooldown(false);
+            setLastScannedFeedback('');
+          }, 1600);
         },
         () => {
           // parse error on frame - normal behaviour
