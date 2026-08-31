@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { 
   Package, Box, ShoppingCart, Clock, CheckCircle, 
-  ListTodo, AlertTriangle, RefreshCw, Percent 
+  ListTodo, AlertTriangle, RefreshCw, Percent,
+  Wallet, Banknote, TrendingUp, TrendingDown
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useAuth } from '../context/AuthContext';
@@ -46,10 +47,43 @@ const StatCard = ({ title, value, icon: Icon, colorClass, isFullWidth }) => (
   </div>
 );
 
+// المبالغ بالدينار الليبي: نعرضها بفاصل آلاف وخانتين عشريتين حتى تُقرأ بسرعة
+const formatLYD = (value) => {
+  const num = Number(value ?? 0);
+  if (!Number.isFinite(num)) return '0.00 د.ل';
+  return `${num.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} د.ل`;
+};
+
+/**
+ * بطاقة مالية — أعرض من البطاقة الرقمية لأن المبالغ نص طويل،
+ * فتأخذ نصف الشبكة على الشاشات المتوسطة وعموداً كاملاً على الهاتف.
+ */
+const MoneyCard = ({ title, value, hint, icon: Icon, colorClass }) => (
+  <div className="bg-white rounded-[1rem] border border-slate-100 shadow-sm p-4 flex items-center gap-3 transition-all hover:shadow-md">
+    <div className={cn("rounded-2xl flex items-center justify-center shrink-0 p-3", colorClass)}>
+      <Icon className="w-5 h-5" />
+    </div>
+    <div className="w-full min-w-0">
+      <p className="text-slate-500 text-[10px] sm:text-xs font-bold tracking-tight truncate">{title}</p>
+      <h3 className="font-black text-slate-900 leading-none tracking-tight mt-1.5 text-lg sm:text-xl truncate" dir="ltr">
+        {value}
+      </h3>
+      {hint && <p className="text-slate-400 text-[9px] font-bold mt-1 truncate">{hint}</p>}
+    </div>
+  </div>
+);
+
 const Dashboard = () => {
   const { user } = useAuth();
   const [stats, setStats] = useState(null);
+  const [financials, setFinancials] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // الأرقام المالية للمسؤول وحده (دور 1) — نفس القيد المطبَّق على الخادم
+  const isOwner = Number(user?.role_id) === 1;
 
   useEffect(() => {
     const fetchData = async () => {
@@ -69,6 +103,16 @@ const Dashboard = () => {
     };
     fetchData();
   }, []);
+
+  // نداء منفصل حتى لا يُعطّل فشلُه (أو رفضُه بـ403) بقيةَ إحصائيات الصفحة
+  useEffect(() => {
+    if (!isOwner) return;
+    let cancelled = false;
+    catalogApi.getDashboardFinancials()
+      .then((data) => { if (!cancelled) setFinancials(data); })
+      .catch(() => { /* getDashboardFinancials تُعيد null بدل الرمي */ });
+    return () => { cancelled = true; };
+  }, [isOwner]);
 
   if (loading) {
     return (
@@ -91,7 +135,66 @@ const Dashboard = () => {
 
       {/* الشبكة الرئيسية الثابتة بـ 3 أعمدة دائماً */}
       <div className="grid grid-cols-3 gap-3 sm:gap-6">
-        
+
+        {/* الملخّص المالي — يظهر للمسؤول وحده، والخادم يفرض نفس القيد */}
+        {isOwner && financials && (
+          <>
+            <div className="col-span-3 relative py-2">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-300"></div>
+              </div>
+              <div className="relative flex justify-center">
+                <span className="bg-[#f8fafc] px-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                  الملخّص المالي
+                </span>
+              </div>
+            </div>
+
+            <div className="col-span-3 grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6">
+            <MoneyCard
+              title="إجمالي مبلغ المخزون (بالتكلفة)"
+              value={formatLYD(financials.stock_cost_value)}
+              hint={`${financials.units?.in_stock ?? 0} قطعة بالمخزن`}
+              icon={Wallet}
+              colorClass="bg-slate-100 text-slate-700"
+            />
+            <MoneyCard
+              title="إجمالي المبيعات (بسعر البيع)"
+              value={formatLYD(financials.sold_revenue)}
+              hint={`${financials.units?.sold ?? 0} قطعة مباعة`}
+              icon={Banknote}
+              colorClass="bg-emerald-50 text-emerald-700"
+            />
+            <MoneyCard
+              title="إجمالي الربح"
+              value={formatLYD(financials.gross_profit)}
+              hint={`صافي بعد التوالف: ${formatLYD(financials.net_profit_after_damage)}`}
+              icon={TrendingUp}
+              colorClass="bg-indigo-50 text-indigo-700"
+            />
+            <MoneyCard
+              title="خسارة التوالف (بالتكلفة)"
+              value={formatLYD(financials.damaged_cost_loss)}
+              hint={`${financials.units?.damaged ?? 0} قطعة تالفة`}
+              icon={TrendingDown}
+              colorClass="bg-red-50 text-red-600"
+            />
+            </div>
+
+            <div className="col-span-3 relative py-2 mt-1">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-300"></div>
+              </div>
+              <div className="relative flex justify-center">
+                <span className="bg-[#f8fafc] px-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                  المخزون والكميات
+                </span>
+              </div>
+            </div>
+          </>
+        )}
+
+
         {/* السطر الأول: إجمالي المنتجات */}
         <StatCard 
           title="إجمالي المنتجات المسجلة" 

@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   X, ScanLine, Search, Trash2, CheckCircle2,
   Loader2, User, Phone, ArrowRight, Printer, Zap, Camera
 } from 'lucide-react';
 import { orderApi } from '../api/orderApi';
 import { toast } from 'react-hot-toast';
-import { Html5Qrcode } from 'html5-qrcode';
+import useQrScanner from '../hooks/useQrScanner';
+import { catalogApi } from '../api/catalogApi';
 import ProductPicker from '../components/products/ProductPicker';
 import { saveOfflineAction } from '../utils/idbStorage';
 import { isNetworkError } from '../utils/netErrors';
@@ -41,18 +42,13 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
   const [completedOrder, setCompletedOrder] = useState(null);
 
   // حالات الكاميرا المباشرة
+  // isCameraActive هي الرغبة (هل نريد الكاميرا؟)، أما حالة التشغيل الفعلية
+  // وخطأ الكاميرا وفاصل منع التكرار فيديرها useQrScanner.
   const [isCameraActive, setIsCameraActive] = useState(true);
-  const [cameraError, setCameraError] = useState('');
-  const [cameraLoading, setCameraLoading] = useState(false);
   const [lastScanned, setLastScanned] = useState(null);
-  const [scanCooldown, setScanCooldown] = useState(false);
   const [lastScannedFeedback, setLastScannedFeedback] = useState('');
 
   const barcodeInputRef = useRef(null);
-  const html5QrCodeRef = useRef(null);
-  const lastScanTimeRef = useRef(0);
-  const isProcessingScanRef = useRef(false);
-  const scanCooldownRef = useRef(false);
 
   // تصفية وتجميع المتغيرات المتاحة مع بيانات المنتجات الأب
   const allVariantsList = useRef([]);
@@ -147,27 +143,67 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
     }, 1);
   }, [handleAddVariant]);
 
-  // دالة البحث والتعامل مع الكود الممسوح فوراً
-  const handleProcessCode = useCallback((scannedText) => {
-    if (!scannedText) return;
-    const code = String(scannedText).trim();
-    if (!code) return;
-
+  /** مطابقة محلية سريعة داخل قائمة الأصناف المحمّلة (بدون نداء شبكة) */
+  const matchLocally = useCallback((code) => {
+    const lower = code.toLowerCase();
     const cleanCode = code.replace(/^0+/, '');
 
-    const matched = allVariantsList.current.find(v => {
+    return allVariantsList.current.find(v => {
       const vSku = String(v.sku || '').toLowerCase();
       const vQr = String(v.qr_code || '').toLowerCase();
       const vId = String(v.variant_id);
       const pCode = String(v.product_code || '').toLowerCase();
       const cleanPCode = pCode.replace(/^0+/, '');
 
-      return vSku === code.toLowerCase() ||
-             vQr.includes(code.toLowerCase()) ||
+      return vSku === lower ||
+             (vQr && vQr.includes(lower)) ||
              vId === code ||
-             pCode === code.toLowerCase() ||
+             pCode === lower ||
              (cleanCode && cleanPCode === cleanCode);
     });
+  }, []);
+
+  // دالة البحث والتعامل مع الكود الممسوح فوراً
+  //
+  // كانت المطابقة محلية فقط، فتفشل مع أغلب المنتجات: نص الـ QR المطبوع بصيغة
+  // (VAR:id|SKU:code) لا يطابق أي عمود نصياً، وعمود qr_code يخزّن مسار صورة
+  // الرمز لا نصه. لذلك كان "البيع المباشر" لا يتعرّف على أي كود تقريباً بينما
+  // تعمل شاشة الرواجع/التوالف — لأنها تستعمل محلّل الخادم.
+  // الآن: مطابقة محلية سريعة أولاً (فورية وتعمل دون شبكة)، وإن فشلت نسأل
+  // نفس المحلّل الذي يستخدمه الخادم عند التنفيذ، فلا تختلف الشاشة عنه أبداً.
+  const handleProcessCode = useCallback(async (scannedText) => {
+    if (!scannedText) return;
+    const code = String(scannedText).trim();
+    if (!code) return;
+
+    let matched = matchLocally(code);
+
+    if (!matched) {
+      setLastScannedFeedback('جاري معالجة الكود...');
+      try {
+        const resolved = await catalogApi.resolveScannedCode(code);
+        if (resolved?.variant_id) {
+          // نفضّل نسخة القائمة المحلية إن وُجدت لأنها تحمل الصور والسعر
+          // المسطّح؛ وإلا نبني الصنف من رد المحلّل مباشرة.
+          matched = allVariantsList.current.find(
+            v => String(v.variant_id) === String(resolved.variant_id)
+          ) || {
+            variant_id: resolved.variant_id,
+            product_name: resolved.product_name,
+            product_code: resolved.product_code,
+            color_name: resolved.color_name,
+            size_name: resolved.size_name,
+            quantity_available: resolved.quantity_available ?? 0,
+            selling_price: Number(resolved.selling_price ?? 0),
+            qr_code: resolved.qr_code,
+            main_image: null,
+            color_image: null,
+          };
+        }
+      } catch {
+        /* المحلّل لم يجد الصنف — نعرض رسالة "غير مسجل" أدناه */
+      }
+    }
 
     if (matched) {
       playScanBeep();
@@ -180,101 +216,37 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
       setLastScannedFeedback(notFoundMsg);
       toast.error(notFoundMsg);
     }
-  }, [handleAddVariant]);
+  }, [handleAddVariant, matchLocally]);
 
-  // تشغيل ماسح الكاميرا الحية المباشرة عبر Html5Qrcode
-  const startCameraScanner = useCallback(async () => {
-    setCameraLoading(true);
-    setCameraError('');
+  // ماسح الكاميرا — موحّد عبر useQrScanner مع بقية شاشات المسح.
+  //
+  // النسخة السابقة كانت تعاني من تشغيل مزدوج: زر التبديل ينادي
+  // startCameraScanner() مباشرة، وهي بدورها تضبط setIsCameraActive(true)
+  // فيُعاد تشغيل التأثير الذي ينادي startCameraScanner() مرة ثانية، فتُقتل
+  // الكاميرا الأولى وتُبنى نسخة Html5Qrcode ثانية على نفس العنصر — وهذا سبب
+  // عدم المسح إطلاقاً في البيع المباشر. الآن الحالة (isCameraActive) هي
+  // مصدر الحقيقة الوحيد، والهوك يتبعها.
+  const cameraShouldRun = isOpen && step === 1 && isCameraActive;
 
-    try {
-      if (html5QrCodeRef.current) {
-        try {
-          await html5QrCodeRef.current.stop();
-        } catch (e) {
-          // ignore stop error
-        }
-      }
+  const {
+    status: cameraStatus,
+    cameraError,
+    isCoolingDown: scanCooldown,
+    restart: startCameraScanner,
+  } = useQrScanner({
+    elementId: 'quick-sale-camera-reader',
+    active: cameraShouldRun,
+    onScan: handleProcessCode,
+    errorMessage: 'تعذر فتح الكاميرا المباشرة تلقائياً. تأكد من إعطاء إذن الكاميرا أو استخدم قارئ الباركود/البحث أدناه.',
+  });
 
-      const qrContainer = document.getElementById("quick-sale-camera-reader");
-      if (!qrContainer) {
-        setCameraLoading(false);
-        return;
-      }
+  const cameraLoading = cameraStatus === 'loading';
 
-      const html5QrCode = new Html5Qrcode("quick-sale-camera-reader");
-      html5QrCodeRef.current = html5QrCode;
-
-      const cameraConfig = { fps: 10, qrbox: { width: 220, height: 220 } };
-
-      await html5QrCode.start(
-        { facingMode: "environment" },
-        cameraConfig,
-        (decodedText) => {
-          if (!decodedText || isProcessingScanRef.current || scanCooldownRef.current) return;
-          const now = Date.now();
-          if (now - lastScanTimeRef.current < 1800) return;
-
-          lastScanTimeRef.current = now;
-          isProcessingScanRef.current = true;
-          scanCooldownRef.current = true;
-          setScanCooldown(true);
-          setLastScannedFeedback('جاري معالجة الكود...');
-
-          handleProcessCode(decodedText);
-
-          setTimeout(() => {
-            isProcessingScanRef.current = false;
-            scanCooldownRef.current = false;
-            setScanCooldown(false);
-            setLastScannedFeedback('');
-          }, 1600);
-        },
-        () => {
-          // parse error on frame - normal behaviour
-        }
-      );
-
-      setCameraLoading(false);
-      setIsCameraActive(true);
-    } catch (err) {
-      console.warn("Html5Qrcode Camera Start Error:", err);
-      setCameraLoading(false);
-      setCameraError('تعذر فتح الكاميرا المباشرة تلقائياً. تأكد من إعطاء إذن الكاميرا أو استخدام قارئ الباركود/البحث أدناه.');
-      setIsCameraActive(false);
-    }
-  }, [handleProcessCode]);
-
-  // إيقاف الكاميرا بنظافة
-  const stopCameraScanner = useCallback(async () => {
-    if (html5QrCodeRef.current) {
-      try {
-        await html5QrCodeRef.current.stop();
-        html5QrCodeRef.current.clear();
-      } catch (e) {
-        // ignore
-      }
-      html5QrCodeRef.current = null;
-    }
-    isProcessingScanRef.current = false;
-    scanCooldownRef.current = false;
-    setScanCooldown(false);
-    setLastScannedFeedback('');
-    setIsCameraActive(false);
-  }, []);
-
-  // إدارة دورة حياة الكاميرا عند الفتح أو التبديل
-  useEffect(() => {
-    if (isOpen && step === 1 && isCameraActive) {
-      startCameraScanner();
-    } else {
-      stopCameraScanner();
-    }
-
-    return () => {
-      stopCameraScanner();
-    };
-  }, [isOpen, step, isCameraActive, startCameraScanner, stopCameraScanner]);
+  /** إعادة المحاولة بعد فشل فتح الكاميرا: نعيد تفعيل الرغبة إن كانت مطفأة، وإلا نعيد التشغيل */
+  const retryCamera = useCallback(() => {
+    if (!isCameraActive) setIsCameraActive(true);
+    else startCameraScanner();
+  }, [isCameraActive, startCameraScanner]);
 
   // ملاحظة: البحث والفلترة والعرض تتم الآن داخل ProductPicker المشترك
   // (نفس المكوّن المستخدم في شاشة "طلب جديد")، فحُذف المنطق المكرر هنا.
@@ -428,7 +400,7 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
             </div>
           </div>
           <button
-            onClick={() => { stopCameraScanner(); onClose(); }}
+            onClick={onClose}
             className="p-1.5 rounded-full hover:bg-white/10 text-slate-300 hover:text-white transition-all"
           >
             <X className="h-5 w-5" />
@@ -523,10 +495,7 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        if (isCameraActive) stopCameraScanner();
-                        else startCameraScanner();
-                      }}
+                      onClick={() => setIsCameraActive(prev => !prev)}
                       className="bg-white/10 hover:bg-white/20 text-slate-200 text-[10px] px-2.5 py-1 rounded-lg font-bold transition-all flex items-center gap-1"
                     >
                       <Camera className="h-3 w-3" />
@@ -551,7 +520,7 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                       <Camera className="h-7 w-7 text-[#800000]" />
                       <button
                         type="button"
-                        onClick={startCameraScanner}
+                        onClick={retryCamera}
                         className="mt-1 px-4 py-2 bg-[#800000] hover:bg-[#990000] text-white rounded-xl text-xs font-bold transition-all shadow-md active:scale-95"
                       >
                         إعادة تشغيل الكاميرا
@@ -859,7 +828,7 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                   بيع جديد
                 </button>
                 <button
-                  onClick={() => { stopCameraScanner(); onClose(); }}
+                  onClick={onClose}
                   className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-5 py-2.5 rounded-xl text-xs font-bold transition-all"
                 >
                   إغلاق
@@ -886,7 +855,6 @@ export default function QuickSaleModal({ isOpen, onClose, availableProducts = []
                   toast.error('يرجى إشراك منتج واحد على الأقل بالسلة');
                   return;
                 }
-                stopCameraScanner();
                 setStep(2);
               }}
               disabled={selectedItems.length === 0 || !customerName.trim()}

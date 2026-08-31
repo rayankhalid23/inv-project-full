@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { X, ShoppingCart, RotateCcw, AlertTriangle, Camera, RefreshCw, Phone, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
-import { Html5Qrcode } from 'html5-qrcode';
+import useQrScanner from '../hooks/useQrScanner';
 
 import { catalogApi } from '../api/catalogApi';
 import { orderApi } from '../api/orderApi';
@@ -58,16 +58,9 @@ export default function QuickScanPage({ isOpen, onClose }) {
   // فارغ = مقبول (الحقل اختياري)؛ وإلا يجب أن يكون 10 أرقام تبدأ بـ 09
   const phoneInvalid = customerPhone.length > 0 && !/^09\d{8}$/.test(customerPhone);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [cameraStatus, setCameraStatus] = useState('idle'); // idle | loading | active | error
-  const [cameraErrorMsg, setCameraErrorMsg] = useState('');
   // في وضع البيع الكاميرا مخفية افتراضياً ويفتحها المستخدم عند الحاجة
   const [cameraEnabled, setCameraEnabled] = useState(false);
 
-  const html5QrCodeRef = useRef(null);
-  const lastScanTimeRef = useRef(0);
-  const isProcessingScanRef = useRef(false);
-  const scanCooldownRef = useRef(false);
-  const [scanCooldown, setScanCooldown] = useState(false);
   const [lastScannedFeedback, setLastScannedFeedback] = useState('');
 
   // لوحة البيع المدمجة + مرجع للنوع الحالي.
@@ -106,28 +99,11 @@ export default function QuickScanPage({ isOpen, onClose }) {
     } catch { /* تجاهل: القائمة الحالية تبقى صالحة */ }
   }, []);
 
-  // إيقاف بث الكاميرا بنظافة
-  const stopCamera = useCallback(async () => {
-    if (html5QrCodeRef.current) {
-      try {
-        await html5QrCodeRef.current.stop();
-        html5QrCodeRef.current.clear();
-      } catch (e) {}
-      html5QrCodeRef.current = null;
-    }
-    isProcessingScanRef.current = false;
-    scanCooldownRef.current = false;
-    setScanCooldown(false);
-    setLastScannedFeedback('');
-    setCameraStatus('idle');
-  }, []);
 
   /**
    * اختيار صنف من مُنتقي المنتجات في وضعي الرواجع والتالف.
    * الرواجع: يُسمح باختيار صنف مخزونه صفر (زبون يرجّع بضاعة نفدت).
    * التالف: يُمنع اختيار صنف مخزونه صفر (لا يوجد ما يُتلف).
-   * تُعرَّف بعد stopCamera لأنها تعتمد عليها — لو سبقتها لظهر خطأ
-   * ReferenceError: Cannot access 'stopCamera' before initialization.
    */
   const handlePickVariant = useCallback((variant, colorName, productName, sizeName, product) => {
     const available = variant.quantity_available ?? 0;
@@ -145,9 +121,9 @@ export default function QuickScanPage({ isOpen, onClose }) {
       qr_code: variant.qr_code || variant.sku || String(variant.id),
     });
     setError('');
-    stopCamera();
+    // الانتقال لخطوة التأكيد يُطفئ الكاميرا تلقائياً عبر cameraShouldRun
     setStep('confirm');
-  }, [stopCamera]);
+  }, []);
 
   // دالة التعامل مع الرمز الممسوح
   const processScannedCode = useCallback(async (scannedCode) => {
@@ -183,7 +159,6 @@ export default function QuickScanPage({ isOpen, onClose }) {
           qr_code: v.qr_code || cleanBarcode
         });
         setLastScannedFeedback(`تم التعرف على: ${v.product_name}`);
-        stopCamera();
         setStep('confirm');
       } else {
         setError(`لم يتم العثور على منتج للكود: ${cleanBarcode}`);
@@ -194,78 +169,36 @@ export default function QuickScanPage({ isOpen, onClose }) {
       setError(errMsg);
       setLastScannedFeedback(errMsg);
     }
-  }, [stopCamera]);
-
-  // تشغيل الكاميرا المباشرة والمسح التلقائي المباشر فور التعرف على الكود
-  const startCamera = useCallback(async () => {
-    setCameraStatus('loading');
-    setCameraErrorMsg('');
-
-    try {
-      await stopCamera();
-
-      const html5QrCode = new Html5Qrcode("quick-scan-camera-reader");
-      html5QrCodeRef.current = html5QrCode;
-
-      await html5QrCode.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 220, height: 220 } },
-        (decodedText) => {
-          if (!decodedText || isProcessingScanRef.current || scanCooldownRef.current) return;
-          const now = Date.now();
-          if (now - lastScanTimeRef.current < 1800) return;
-
-          lastScanTimeRef.current = now;
-          isProcessingScanRef.current = true;
-          scanCooldownRef.current = true;
-          setScanCooldown(true);
-          setLastScannedFeedback('جاري معالجة الكود...');
-
-          playScanBeep();
-          processScannedCode(decodedText).finally(() => {
-            // فاصل زمني هادئ يمنع التذبذب وتكرار المسح
-            setTimeout(() => {
-              isProcessingScanRef.current = false;
-              scanCooldownRef.current = false;
-              setScanCooldown(false);
-              setLastScannedFeedback('');
-            }, 1600);
-          });
-        },
-        () => {}
-      );
-
-      setCameraStatus('active');
-    } catch (err) {
-      console.warn("Camera start error:", err);
-      setCameraStatus('error');
-      setCameraErrorMsg('تعذر فتح الكاميرا المباشرة تلقائياً. أدخل الكود يدوياً أدناه.');
-    }
-  }, [stopCamera, processScannedCode]);
+  }, []);
 
   // في وضع البيع تبقى الكاميرا مغلقة حتى يطلبها المستخدم (الاختيار من القائمة
   // أسرع في الغالب)، بينما تُفتح تلقائياً في المرتجع والتالف لأن المسح هو
   // الإجراء الأساسي فيهما.
-  const cameraShouldRun = step === 'scanning' && (scanType !== 'sale' || cameraEnabled);
+  const cameraShouldRun = isVisible && step === 'scanning' && (scanType !== 'sale' || cameraEnabled);
 
+  // الماسح موحّد مع بقية الشاشات عبر useQrScanner: نفس سرعة التعرّف ونفس
+  // الحماية من تكرار قراءة الكود الواحد.
+  const {
+    status: cameraStatus,
+    cameraError: cameraErrorMsg,
+    isCoolingDown: scanCooldown,
+    restart: startCamera,
+  } = useQrScanner({
+    elementId: 'quick-scan-camera-reader',
+    active: cameraShouldRun,
+    onScan: (code) => {
+      playScanBeep();
+      setLastScannedFeedback('جاري معالجة الكود...');
+      return processScannedCode(code);
+    },
+    errorMessage: 'تعذر فتح الكاميرا المباشرة تلقائياً. أدخل الكود يدوياً أدناه.',
+  });
+
+  // قفل تمرير الصفحة خلف اللوحة طالما هي مفتوحة
   useEffect(() => {
-    if (isVisible) {
-      document.body.style.overflow = 'hidden';
-      if (cameraShouldRun) {
-        startCamera();
-      } else {
-        stopCamera();
-      }
-    } else {
-      document.body.style.overflow = 'unset';
-      stopCamera();
-    }
-
-    return () => {
-      document.body.style.overflow = 'unset';
-      stopCamera();
-    };
-  }, [isVisible, cameraShouldRun, startCamera, stopCamera]);
+    document.body.style.overflow = isVisible ? 'hidden' : 'unset';
+    return () => { document.body.style.overflow = 'unset'; };
+  }, [isVisible]);
 
   // إغلاق الكاميرا تلقائياً عند مغادرة تبويب البيع حتى لا تبقى تعمل بالخلفية
   useEffect(() => {
@@ -273,7 +206,6 @@ export default function QuickScanPage({ isOpen, onClose }) {
   }, [scanType]);
 
   const handleClose = () => {
-    stopCamera();
     setBarcode('');
     setError('');
     setScannedProduct(null);
@@ -425,12 +357,21 @@ export default function QuickScanPage({ isOpen, onClose }) {
           ) : (
             <button
               type="button"
-              onClick={startCamera}
+              onClick={() => {
+                // في وضع البيع الكاميرا مطفأة بالرغبة لا بالخطأ، فنفعّلها أولاً
+                if (!cameraShouldRun) setCameraEnabled(true);
+                else startCamera();
+              }}
               className="px-5 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
             >
               <Camera className="w-4 h-4" />
               <span>تشغيل الكاميرا</span>
             </button>
+          )}
+          {cameraStatus === 'error' && cameraErrorMsg && (
+            <p className="text-[11px] font-bold text-amber-300 text-center leading-relaxed max-w-[260px]">
+              {cameraErrorMsg}
+            </p>
           )}
         </div>
       )}
@@ -657,7 +598,7 @@ export default function QuickScanPage({ isOpen, onClose }) {
                 <div className="flex gap-2 pt-1">
                   <button
                     type="button"
-                    onClick={() => { setStep('scanning'); setError(''); setScannedProduct(null); startCamera(); }}
+                    onClick={() => { setStep('scanning'); setError(''); setScannedProduct(null); }}
                     className="flex-1 py-3 border border-slate-200 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl text-xs transition-colors"
                   >
                     إلغاء

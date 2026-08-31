@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'react-hot-toast';
-import { Html5Qrcode } from 'html5-qrcode';
 import { orderApi, mapStatusToArabic } from '../api/orderApi';
+import useQrScanner from '../hooks/useQrScanner';
 import {
   // الأيقونات الجديدة للإحصائيات والتنبيهات الحديثة
   Clock, PackageOpen, CheckCircle2, Truck, AlertCircle,
@@ -121,14 +121,9 @@ export default function SalesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
 
   // ---- States كاميرا ماسح التجهيز السريع للطلب ----
-  const [scannerCameraStatus, setScannerCameraStatus] = useState('idle'); // idle | loading | active | error
-  const [scannerCameraError, setScannerCameraError]   = useState('');
-  const [scannerCooldown, setScannerCooldown]         = useState(false);
+  // حالة الكاميرا ومنع التكرار يديرهما الآن هوك useQrScanner (أسفل الملف)،
+  // ولم يبقَ هنا إلا نص التغذية الراجعة المعروض للموظف.
   const [scannerFeedback, setScannerFeedback]         = useState('');
-  const orderScannerRef        = useRef(null);
-  const orderLastScanTimeRef   = useRef(0);
-  const isProcessingScanRef    = useRef(false);
-  const scannerCooldownRef     = useRef(false);
   const selectedOrderIdRef     = useRef(null);
 
   // ---- States إنشاء الطلب ----
@@ -537,6 +532,7 @@ const handleScanProduct = async (barcodeValue) => {
 
     const cleanCode = barcodeValue.trim();
     setIsScanning(true);
+    setScannerFeedback('جاري معالجة الصنف...');
     try {
       const result = await orderApi.scanOrderItem(selectedOrder.id, cleanCode);
       playScanBeep(true);
@@ -635,72 +631,22 @@ const handleScanProduct = async (barcodeValue) => {
   };
 
   // ========= إدارة كاميرا الماسح الضوئي داخل الطلب =========
-  const stopOrderScanner = useCallback(async () => {
-    if (orderScannerRef.current) {
-      try {
-        await orderScannerRef.current.stop();
-        orderScannerRef.current.clear();
-      } catch (e) {}
-      orderScannerRef.current = null;
-    }
-    isProcessingScanRef.current = false;
-    scannerCooldownRef.current = false;
-    setScannerCooldown(false);
-    setScannerFeedback('');
-    setScannerCameraStatus('idle');
-  }, []);
-
-  const startOrderScanner = useCallback(async () => {
-    setScannerCameraStatus('loading');
-    setScannerCameraError('');
-    try {
-      await stopOrderScanner();
-      const html5QrCode = new Html5Qrcode('order-camera-reader');
-      orderScannerRef.current = html5QrCode;
-      await html5QrCode.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 220, height: 220 } },
-        (decodedText) => {
-          if (!decodedText || isProcessingScanRef.current || scannerCooldownRef.current) return;
-          const now = Date.now();
-          if (now - orderLastScanTimeRef.current < 1800) return;
-
-          orderLastScanTimeRef.current = now;
-          isProcessingScanRef.current = true;
-          scannerCooldownRef.current = true;
-          setScannerCooldown(true);
-          setScannerFeedback('جاري معالجة الصنف...');
-
-          handleBarcodeScan(decodedText).finally(() => {
-            // فاصل زمني سلس (Cooldown) يمنع التذبذب والمسح المتكرر المفرط
-            setTimeout(() => {
-              isProcessingScanRef.current = false;
-              scannerCooldownRef.current = false;
-              setScannerCooldown(false);
-              setScannerFeedback('');
-            }, 1600);
-          });
-        },
-        () => {}
-      );
-      setScannerCameraStatus('active');
-    } catch (err) {
-      console.warn('Order camera start failed:', err);
-      setScannerCameraStatus('error');
-      setScannerCameraError('تعذر فتح الكاميرا المباشرة. يمكنك استخدام قارئ الباركود أو الإدخال اليدوي.');
-    }
-  }, [stopOrderScanner, handleBarcodeScan]);
-
-  useEffect(() => {
-    if (isScannerOpen) {
-      startOrderScanner();
-    } else {
-      stopOrderScanner();
-    }
-    return () => {
-      stopOrderScanner();
-    };
-  }, [isScannerOpen, startOrderScanner, stopOrderScanner]);
+  // الماسح موحّد الآن عبر useQrScanner. النسخة السابقة كانت تبني الكاميرا هنا
+  // وتضع handleBarcodeScan — وهي دالة تُنشأ من جديد مع كل رسم — ضمن اعتماديات
+  // التأثير، فكانت الكاميرا تُغلق وتُفتح مع كل تحديث حالة (وهي كثيرة في هذه
+  // الشاشة: تحديث الطلبات كل 45ث، مؤشر المسح، الإشعارات...) فلا تستقر أبداً
+  // لتقرأ إطاراً. الهوك يحتفظ بالمعالج في ref فتبقى الكاميرا حيّة.
+  const {
+    status: scannerCameraStatus,
+    cameraError: scannerCameraError,
+    isCoolingDown: scannerCooldown,
+    restart: startOrderScanner,
+  } = useQrScanner({
+    elementId: 'order-camera-reader',
+    active: isScannerOpen,
+    onScan: handleBarcodeScan,
+    errorMessage: 'تعذر فتح الكاميرا المباشرة. يمكنك استخدام قارئ الباركود أو الإدخال اليدوي.',
+  });
 
   const handleCreateOrder = async (e) => {
     e.preventDefault();
@@ -2530,14 +2476,21 @@ const updateEditVariantQty = (variantId, qty) => {
                         <span className="text-xs font-bold text-slate-300">جاري فتح الكاميرا...</span>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={startOrderScanner}
-                        className="px-5 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
-                      >
-                        <Camera className="w-4 h-4" />
-                        <span>تشغيل الكاميرا</span>
-                      </button>
+                      <>
+                        {scannerCameraError && (
+                          <p className="text-[11px] font-bold text-amber-300 text-center leading-relaxed max-w-[240px]">
+                            {scannerCameraError}
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={startOrderScanner}
+                          className="px-5 py-2.5 bg-[#800000] hover:bg-[#990000] text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-md active:scale-95"
+                        >
+                          <Camera className="w-4 h-4" />
+                          <span>تشغيل الكاميرا</span>
+                        </button>
+                      </>
                     )}
                   </div>
                 )}

@@ -123,6 +123,119 @@ export const runAutoSync = async (onProgressCallback) => {
             response = await axios.delete(`/variants/product/${item.payload.id}`, reqConfig);
             break;
 
+          // إنشاء/تعديل منتج أوفلاين: يعيد نفس تسلسل خطوات onActualSubmit
+          // (منتج → ألوان → مقاسات) التي بُنيت حمولتها مسبقاً في ProductFormDialog.
+          case 'ADD_PRODUCT': {
+            const { product, mainImageFile, variants } = item.payload;
+            const multipartHeaders = { ...reqConfig.headers, 'Content-Type': 'multipart/form-data' };
+
+            const productFormData = new FormData();
+            if (mainImageFile) productFormData.append('image_file', mainImageFile);
+            Object.entries(product || {}).forEach(([key, value]) => {
+              if (value !== undefined && value !== null) productFormData.append(key, value);
+            });
+
+            const productRes = await axios.post('/products/', productFormData, {
+              ...reqConfig, headers: multipartHeaders, timeout: 60000,
+            });
+            const createdProductId = productRes?.data?.id || productRes?.data?.data?.id;
+
+            for (const variant of (variants || [])) {
+              const colorFormData = new FormData();
+              colorFormData.append('product_id', String(createdProductId));
+              colorFormData.append('color_name', variant.colorName || 'لون جديد');
+              if (variant.colorImage) colorFormData.append('image_file', variant.colorImage);
+
+              const colorRes = await axios.post('/colors/', colorFormData, {
+                ...reqConfig, headers: multipartHeaders, timeout: 60000,
+              });
+              const createdColorId = colorRes?.data?.id || colorRes?.data?.data?.id;
+
+              if (createdColorId && variant.sizes?.length) {
+                const variantsArray = variant.sizes.map(s => ({
+                  size_id: s.size_id,
+                  qty: s.quantity,
+                  min_stock: parseInt(product?.min_stock_threshold || 5, 10),
+                }));
+                await axios.post('/variants/batch-create', variantsArray, {
+                  ...reqConfig, params: { product_color_id: createdColorId }, timeout: 30000,
+                });
+              }
+            }
+            response = productRes;
+            break;
+          }
+
+          case 'UPDATE_PRODUCT': {
+            const { productId, productFields, minStockThreshold, mainImageFile, variants } = item.payload;
+            const multipartHeaders = { ...reqConfig.headers, 'Content-Type': 'multipart/form-data' };
+
+            const formData = new FormData();
+            if (mainImageFile) formData.append('image_file', mainImageFile);
+            Object.entries(productFields || {}).forEach(([key, value]) => {
+              if (value !== undefined && value !== null) formData.append(key, value);
+            });
+            formData.append('min_stock_threshold', String(minStockThreshold));
+
+            const productRes = await axios.put(`/products/${productId}`, formData, {
+              ...reqConfig, headers: multipartHeaders, timeout: 60000,
+            });
+
+            for (const variant of (variants || [])) {
+              if (variant.mode === 'existing_color') {
+                const colorFormData = new FormData();
+                colorFormData.append('color_name', variant.colorName || '');
+                if (variant.colorImage) colorFormData.append('image_file', variant.colorImage);
+                await axios.put(`/colors/${variant.colorId}`, colorFormData, {
+                  ...reqConfig, headers: multipartHeaders, timeout: 60000,
+                });
+
+                for (const sizeItem of (variant.existingSizes || [])) {
+                  await axios.patch(`/variants/${sizeItem.id}`, {
+                    qty: sizeItem.quantity,
+                    quantity_available: sizeItem.quantity,
+                    min_stock: minStockThreshold,
+                    min_stock_threshold: minStockThreshold,
+                  }, reqConfig);
+                }
+
+                if (variant.newSizes?.length) {
+                  const variantsArray = variant.newSizes.map(s => ({
+                    size_id: s.size_id,
+                    qty: s.quantity,
+                    min_stock: minStockThreshold,
+                  }));
+                  await axios.post('/variants/batch-create', variantsArray, {
+                    ...reqConfig, params: { product_color_id: variant.colorId }, timeout: 30000,
+                  });
+                }
+              } else {
+                const colorFormData = new FormData();
+                colorFormData.append('product_id', String(productId));
+                colorFormData.append('color_name', variant.colorName || 'لون جديد');
+                if (variant.colorImage) colorFormData.append('image_file', variant.colorImage);
+
+                const colorRes = await axios.post('/colors/', colorFormData, {
+                  ...reqConfig, headers: multipartHeaders, timeout: 60000,
+                });
+                const createdColorId = colorRes?.data?.id || colorRes?.data?.data?.id;
+
+                if (createdColorId && variant.sizes?.length) {
+                  const variantsArray = variant.sizes.map(s => ({
+                    size_id: s.size_id,
+                    qty: s.quantity,
+                    min_stock: minStockThreshold,
+                  }));
+                  await axios.post('/variants/batch-create', variantsArray, {
+                    ...reqConfig, params: { product_color_id: createdColorId }, timeout: 30000,
+                  });
+                }
+              }
+            }
+            response = productRes;
+            break;
+          }
+
           case 'UPDATE_VARIANT_PARTIAL':
             response = await axios.patch(`/variants/${item.payload.id}`, item.payload.data, reqConfig);
             break;

@@ -62,9 +62,6 @@ def create_product(
         raise HTTPException(status_code=400, detail="اسم المنتج غير صالح أو فارغ")
     
     try:
-        if db.query(Product).filter(Product.name == name, Product.deleted_at == None).first():
-            raise HTTPException(status_code=400, detail="هذا الاسم موجود مسبقاً")
-        
         # حفظ الصورة
         if image_file and image_file.filename:
             try:
@@ -151,8 +148,6 @@ def update_product(
     try:
         # تحديث الاسم
         if name and name.strip().lower() != "string" and name.strip() != product.name:
-            if db.query(Product).filter(Product.name == name.strip(), Product.id != product_id, Product.deleted_at == None).first():
-                raise HTTPException(status_code=400, detail="الاسم مستخدم مسبقاً.")
             product.name = name.strip()
             has_actual_changes = True
 
@@ -345,9 +340,14 @@ def export_products_pdf(
         joinedload(Product.colors).joinedload(ProductColor.variants)
     )
 
-    if size_name:
+    clean_size_name = size_name.strip() if (size_name and isinstance(size_name, str)) else None
+    if clean_size_name:
         query = query.filter(Product.colors.any(ProductColor.variants.any(
-            and_(ProductVariant.size.has(name=size_name), ProductVariant.quantity_available > 0, ProductVariant.deleted_at == None)
+            and_(
+                ProductVariant.size.has(Size.name.ilike(clean_size_name)),
+                ProductVariant.quantity_available > 0,
+                ProductVariant.deleted_at == None
+            )
         )))
 
     if catalog_id:

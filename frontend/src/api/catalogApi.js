@@ -492,6 +492,22 @@ getInventoryStats: async (period = '7d') => {
 },
 
 /**
+ * الملخّص المالي للوحة الرئيسية (المسؤول فقط — دور 1).
+ * الخادم يرد 403 لأي دور آخر، والواجهة تُخفي البطاقات أصلاً، فنُعيد null
+ * بهدوء بدل رمي الخطأ حتى لا تتعطّل بقية إحصائيات الصفحة.
+ */
+getDashboardFinancials: async () => {
+    try {
+        const response = await api.get('/orders/dashboard/financials');
+        return response.data;
+    } catch (error) {
+        if (error?.response?.status === 403) return null;
+        console.error("Error fetching financials:", error);
+        return null;
+    }
+},
+
+/**
  * جلب جميع المنتجات النشطة مع كامل شجرة المتغيرات والإجماليات المخزنة.
  * يتوافق تماماً مع دالة الباك إند: get_products_with_variants_logic
  * @returns {Promise<Object>} يحتوي على قائمة المنتجات وإجمالي العدد الإيجابي

@@ -13,6 +13,7 @@ import { catalogApi as fallbackCatalogApi } from "../../../api/catalogApi";
 import { mediaUrl, IMAGE_FALLBACK, onImageError } from "../../../utils/media";
 import { isNetworkError } from "../../../utils/netErrors";
 import { compressImageFile } from "../../../utils/imageCompressor";
+import { saveOfflineAction } from "../../../utils/idbStorage";
 
 // --- Schema & Helpers ---
 const productSchema = z.object({
@@ -38,6 +39,99 @@ const productSchema = z.object({
 
 // روابط الصور تُبنى من المصدر الموحّد utils/media.js فقط.
 const getFullUrl = mediaUrl;
+
+/**
+ * يبني حمولة قابلة للتخزين في IndexedDB تحمل كل ما يلزم لإعادة تنفيذ نفس
+ * خطوات onActualSubmit لاحقاً من syncEngine (إنشاء/تحديث منتج ثم ألوانه
+ * ومقاساته)، بنفس منطق اشتقاق colorId والتمييز بين لون/مقاس جديد أو موجود.
+ * الصور تُضغط هنا (لا شبكة، عملية محلية بحتة) فيُخزَّن Blob صغير الحجم.
+ */
+async function buildOfflineProductPayload(data, processedMainFile, watchFn) {
+  if (data.id) {
+    const freshMinStock = watchFn("min_stock_threshold") || 5;
+    const productFields = {};
+    Object.keys(data).forEach((key) => {
+      if (key !== 'variants' && key !== 'image_file' && key !== 'min_stock_threshold') {
+        productFields[key] = data[key];
+      }
+    });
+
+    const variants = [];
+    for (const variant of (data.variants || [])) {
+      const rawColorId = variant.color_id || variant.color?.id || variant.id;
+      const parsedColorId = parseInt(rawColorId, 10);
+
+      if (rawColorId && !isNaN(parsedColorId)) {
+        const rawFile = variant.color_image instanceof File ? variant.color_image : null;
+        const colorImage = rawFile ? await compressImageFile(rawFile) : null;
+
+        variants.push({
+          mode: 'existing_color',
+          colorId: parsedColorId,
+          colorName: variant.color_name,
+          colorImage,
+          existingSizes: (variant.sizes || [])
+            .filter(s => s.id)
+            .map(s => ({ id: s.id, quantity: Number(s.quantity || 0) })),
+          newSizes: (variant.sizes || [])
+            .filter(s => !s.id && s.size_id)
+            .map(s => ({ size_id: Number(s.size_id), quantity: Number(s.quantity || 0) })),
+        });
+      } else {
+        const rawColorFile = variant.color_image instanceof File
+          ? variant.color_image
+          : (variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : null));
+        const colorImage = rawColorFile ? await compressImageFile(rawColorFile) : null;
+
+        variants.push({
+          mode: 'new_color',
+          colorName: variant.color_name || 'لون جديد',
+          colorImage,
+          sizes: (variant.sizes || []).map(s => ({
+            size_id: Number(s.size_id),
+            quantity: Number(s.quantity || 0),
+          })),
+        });
+      }
+    }
+
+    return {
+      productId: data.id,
+      productFields,
+      minStockThreshold: parseInt(freshMinStock, 10),
+      mainImageFile: processedMainFile || null,
+      variants,
+    };
+  }
+
+  const variants = [];
+  for (const variant of (data.variants || [])) {
+    const rawColorFile = variant.color_image?.file || (Array.isArray(variant.color_image) ? variant.color_image[0] : variant.color_image);
+    const colorImage = rawColorFile ? await compressImageFile(rawColorFile) : null;
+
+    variants.push({
+      colorName: variant.color_name,
+      colorImage,
+      sizes: (variant.sizes || []).map(s => ({
+        size_id: Number(s.size_id),
+        quantity: Number(s.quantity || 0),
+      })),
+    });
+  }
+
+  return {
+    product: {
+      name: data.name,
+      catalog_id: String(data.catalog_id),
+      selling_price: String(data.selling_price),
+      cost_price: String(data.cost_price || 0.0),
+      min_stock_threshold: String(data.min_stock_threshold || 5),
+      description: data.description || '',
+    },
+    mainImageFile: processedMainFile || null,
+    variants,
+  };
+}
 
 
 // --- Main Dialog Component ---
@@ -263,6 +357,27 @@ const handleAddNewSizeToDB = async (sizeName) => {
   
     try {
       const processedMainFile = selectedFile ? await compressImageFile(selectedFile) : null;
+
+      // أوفلاين: نبني حمولة كاملة تحمل كل خطوات الحفظ (منتج + ألوان + مقاسات)
+      // ونخزّنها ليعيد syncEngine تنفيذها بنفس الترتيب عند عودة الاتصال. لا
+      // فائدة من محاولة الإرسال المباشر هنا لأنه سيفشل من الخطوة الأولى.
+      if (!navigator.onLine) {
+        const offlinePayload = await buildOfflineProductPayload(data, processedMainFile, watch);
+        await saveOfflineAction(
+          data.id ? 'UPDATE_PRODUCT' : 'ADD_PRODUCT',
+          offlinePayload,
+          data.id ? `تعديل المنتج: ${data.name}` : `إضافة منتج جديد: ${data.name}`
+        );
+        triggerToast(
+          data.id
+            ? 'أوفلاين: تم حفظ تعديلات المنتج محلياً وسترفع للسيرفر عند الاتصال 📡'
+            : 'أوفلاين: تم حفظ المنتج الجديد محلياً وسيُرفع للسيرفر عند الاتصال 📡',
+          'warning'
+        );
+        onSaveSuccess();
+        onOpenChange(false);
+        return;
+      }
 
       if (data.id) {
         // --- أولاً: حالة التعديل الشامل ---

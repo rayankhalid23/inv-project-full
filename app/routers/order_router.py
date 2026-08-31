@@ -33,6 +33,7 @@ from app.services.order_service import (
     process_damage_logic,
     get_order_full_details_logic,
     get_inventory_dashboard_stats,
+    get_dashboard_financials,
     OrderInvoiceService,
     get_products_with_variants_logic,
     get_top_and_bottom_inventory_report_logic,
@@ -293,6 +294,21 @@ def test_inventory_stats(period: str = "all"):
             detail=f"Error calculating stats: {str(e)}"
         )
         
+
+@router.get("/dashboard/financials", tags=["Dashboard"])
+def dashboard_financials(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker([1])),   # المسؤول فقط
+):
+    """
+    الملخّص المالي للوحة الرئيسية: قيمة المخزون بالتكلفة، إجمالي المبيعات
+    بسعر البيع، الربح، وخسارة التوالف بسعر التكلفة.
+
+    نقطة منفصلة عن /inventory-stats عمداً: تلك مفتوحة لكل مستخدم مسجَّل،
+    وهذه أرقام مالية لا يجوز أن يراها الموظف — فتُحمى بدورها الخاص.
+    """
+    return get_dashboard_financials(db)
+
 
 # =====================================================================
 # تنظيف الطلبات المكتملة (للأدمن فقط)

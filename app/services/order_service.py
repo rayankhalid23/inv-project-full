@@ -1349,6 +1349,86 @@ def _get_cached_stats(key: str):
 def _set_cached_stats(key: str, data):
     _stats_cache[key] = {'data': data, 'ts': datetime.now()}
 
+def get_dashboard_financials(db: Session):
+    """
+    الملخّص المالي للوحة التحكم — للمسؤول فقط.
+
+    يُحسب على مستوى المتغيّر (variant) لا على أعمدة المنتج التجميعية، لأن
+    الكميات الحقيقية تعيش في المتغيّرات والأعمدة التجميعية في جدول المنتجات
+    مشتقّة منها وقد تتأخّر عن التحديث.
+
+    ما يُرجعه:
+      • stock_cost_value  : رأس المال المجمّد في المخزون الحالي (سعر التكلفة)
+      • sold_revenue      : إجمالي ما بيع بسعر البيع
+      • sold_cost         : تكلفة ما بيع (لازمة لاشتقاق الربح)
+      • gross_profit      : الربح الإجمالي = البيع − تكلفة المباع
+      • damaged_cost_loss : الخسارة من التوالف، بسعر التكلفة فقط كما هو مطلوب
+                            محاسبياً (التالف لم يُبع، فلا ربح ضائع يُحتسب فيه)
+
+    ملاحظة: التوالف والرواجع لا تُطرح من قيمة المخزون هنا لأن
+    quantity_available يعكس الرصيد بعد خصمها أصلاً.
+    """
+    cached = _get_cached_stats('dashboard_financials')
+    if cached:
+        return cached
+
+    # Numeric * Integer في MySQL يعيد Decimal — نحوّله لـ float عند البناء فقط
+    # حتى لا نفقد الدقة أثناء الجمع.
+    row = (
+        db.query(
+            func.coalesce(
+                func.sum(Product.cost_price * ProductVariant.quantity_available), 0
+            ).label("stock_cost_value"),
+            func.coalesce(
+                func.sum(Product.selling_price * ProductVariant.total_sold), 0
+            ).label("sold_revenue"),
+            func.coalesce(
+                func.sum(Product.cost_price * ProductVariant.total_sold), 0
+            ).label("sold_cost"),
+            func.coalesce(
+                func.sum(Product.cost_price * ProductVariant.damaged_quantity), 0
+            ).label("damaged_cost_loss"),
+            func.coalesce(func.sum(ProductVariant.quantity_available), 0).label("stock_units"),
+            func.coalesce(func.sum(ProductVariant.total_sold), 0).label("sold_units"),
+            func.coalesce(func.sum(ProductVariant.damaged_quantity), 0).label("damaged_units"),
+        )
+        .select_from(ProductVariant)
+        .join(ProductColor, ProductVariant.product_color_id == ProductColor.id)
+        .join(Product, ProductColor.product_id == Product.id)
+        .filter(
+            ProductVariant.deleted_at.is_(None),
+            Product.deleted_at.is_(None),
+        )
+        .first()
+    )
+
+    def _f(value):
+        return round(float(value or 0), 2)
+
+    stock_cost_value = _f(row.stock_cost_value if row else 0)
+    sold_revenue = _f(row.sold_revenue if row else 0)
+    sold_cost = _f(row.sold_cost if row else 0)
+    damaged_cost_loss = _f(row.damaged_cost_loss if row else 0)
+
+    result = {
+        "stock_cost_value": stock_cost_value,
+        "sold_revenue": sold_revenue,
+        "sold_cost": sold_cost,
+        "gross_profit": round(sold_revenue - sold_cost, 2),
+        "damaged_cost_loss": damaged_cost_loss,
+        # صافي الربح بعد خصم خسارة التوالف — الرقم الذي يهم المسؤول فعلياً
+        "net_profit_after_damage": round(sold_revenue - sold_cost - damaged_cost_loss, 2),
+        "currency": "LYD",
+        "units": {
+            "in_stock": int((row.stock_units if row else 0) or 0),
+            "sold": int((row.sold_units if row else 0) or 0),
+            "damaged": int((row.damaged_units if row else 0) or 0),
+        },
+    }
+    _set_cached_stats('dashboard_financials', result)
+    return result
+
+
 def get_inventory_dashboard_stats(db: Session, period: str = '7d'):
     try:
         # ✅ تحقق من الكاش أولاً قبل تشغيل أي استعلام
