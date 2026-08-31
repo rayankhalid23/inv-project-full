@@ -2,12 +2,21 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import basicSsl from '@vitejs/plugin-basic-ssl'
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+    // كاميرا الـ QR (getUserMedia) يرفضها المتصفح على أي origin مو "آمن" —
+    // و"آمن" يعني https:// أو localhost تحديداً. لما نفتح التطبيق من الهاتف
+    // عبر عنوان الشبكة المحلية (http://192.168.x.x:5173) هذا مو localhost
+    // ولا https، فـ navigator.mediaDevices ما يكون موجود إطلاقاً والكاميرا
+    // تفشل بصمت. هذا الـ plugin يفعّل HTTPS (بشهادة ذاتية) على سيرفر
+    // التطوير فقط، فتفتح الكاميرا من أي جهاز على نفس الشبكة (بعد قبول
+    // تحذير الشهادة غير الموثوقة مرة واحدة في متصفح الهاتف).
+    basicSsl(),
     VitePWA({
       // نعرض للمستخدم زر "تحديث" بدل إعادة التحميل المفاجئة أثناء العمل
       registerType: 'prompt',

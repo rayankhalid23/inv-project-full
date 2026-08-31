@@ -34,6 +34,58 @@ def get_absolute_path(relative_path):
     abs_path = os.path.join(BASE_DIR, clean_path)
     return abs_path if os.path.exists(abs_path) else None
 
+def wrap_sizes_lines(canvas_obj, sizes_list, prefix, max_width, font, font_size, max_lines=2):
+    """يلف قائمة المقاسات على عدة أسطر تبقى داخل حدود الكرت بدل ما تطلع برّا حدوده.
+    لو المقاسات كتيرة وما تكفيش max_lines سطر، يقتطع الباقي ويعرض "+N" بدل ما يفيض."""
+    if not sizes_list:
+        return [format_ar(prefix.strip())]
+
+    def width_of(text):
+        return canvas_obj.stringWidth(format_ar(text), font, font_size)
+
+    def render(items, is_first, suffix=""):
+        text = " - ".join(items) + suffix
+        return (prefix + text) if is_first else text
+
+    # لفّ طبيعي: كل سطر يمتلئ بأكبر عدد عناصر يدخل داخل العرض المتاح
+    lines_items = []
+    remaining = list(sizes_list)
+    while remaining:
+        is_first = len(lines_items) == 0
+        current = []
+        while remaining:
+            trial = current + [remaining[0]]
+            if current and width_of(render(trial, is_first)) > max_width:
+                break
+            current.append(remaining.pop(0))
+        lines_items.append(current)
+
+    if len(lines_items) <= max_lines:
+        return [format_ar(render(items, i == 0)) for i, items in enumerate(lines_items)]
+
+    # المقاسات أكتر من الأسطر المسموح بيها — نقتطع ونعرض "+N" بدل الفيضان برّا الكرت
+    kept = lines_items[:max_lines]
+    leftover_count = sum(len(items) for items in lines_items[max_lines:])
+
+    last_idx = max_lines - 1
+    last_items = kept[last_idx]
+    is_first_last = last_idx == 0
+    extra = leftover_count
+    while last_items and width_of(render(last_items, is_first_last, f" +{extra}")) > max_width:
+        last_items = last_items[:-1]
+        extra += 1
+
+    result = []
+    for i in range(max_lines):
+        if i == last_idx:
+            if last_items:
+                result.append(format_ar(render(last_items, is_first_last, f" +{extra}")))
+            else:
+                result.append(format_ar((prefix + f"+{extra}") if is_first_last else f"+{extra}"))
+        else:
+            result.append(format_ar(render(kept[i], i == 0)))
+    return result
+
 def generate_catalog_pdf(products, output_path):
     c = canvas.Canvas(output_path, pagesize=A4)
     width, height = A4
@@ -74,15 +126,14 @@ def generate_catalog_pdf(products, output_path):
             
             # تعديل: تنسيق المقاسات لتدعم العربي والأرقام بشكل سليم
             sizes_list = [v.size.name for v in available_variants if v.size]
-            sizes_str = " - ".join(sizes_list) 
-            
+
             # تحديد مسار الصورة
             img_path = getattr(color, 'color_image', None) or getattr(product, 'main_image', None)
-            
+
             display_list.append({
                 "name": getattr(product, 'name', 'N/A'),
                 "color_name": getattr(color, 'color_name', ''),
-                "sizes": sizes_str,
+                "sizes_list": sizes_list,
                 "price": getattr(product, 'selling_price', '0.00'),
                 "ref": getattr(product, 'reference', f"ID: {product.id}"),
                 "img": img_path
@@ -129,10 +180,15 @@ def generate_catalog_pdf(products, output_path):
         c.setFillColor(colors.grey)
         c.drawRightString(current_x + card_width - 0.5*cm, y_position - 7.5*cm, format_ar(f"اللون: {item['color_name']}"))
         
-        # 3. المقاسات (تعديل: دعم العربي والمحاذاة لليمين باللون العنابي)
+        # 3. المقاسات (تعديل: دعم العربي والمحاذاة لليمين باللون العنابي، مع لفّ
+        # النص على عدة أسطر داخل حدود الكرت بدل ما يطلع برّا حدوده أو يتداخل مع الكرت الجاور)
         c.setFillColor(MAROON_COLOR)
-        c.setFont(ARABIC_FONT, 10) 
-        c.drawRightString(current_x + card_width - 0.5*cm, y_position - 8.2*cm, format_ar(f"المقاسات: {item['sizes']}"))
+        c.setFont(ARABIC_FONT, 10)
+        sizes_max_width = card_width - 1 * cm
+        sizes_lines = wrap_sizes_lines(c, item['sizes_list'], "المقاسات: ", sizes_max_width, ARABIC_FONT, 10)
+        sizes_line_height = 0.45 * cm
+        for line_idx, line_text in enumerate(sizes_lines):
+            c.drawRightString(current_x + card_width - 0.5*cm, y_position - 8.2*cm - (line_idx * sizes_line_height), line_text)
 
         # 4. السعر
         c.setFillColor(colors.black)

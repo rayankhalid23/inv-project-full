@@ -345,7 +345,6 @@ def export_products_pdf(
         query = query.filter(Product.colors.any(ProductColor.variants.any(
             and_(
                 ProductVariant.size.has(Size.name.ilike(clean_size_name)),
-                ProductVariant.quantity_available > 0,
                 ProductVariant.deleted_at == None
             )
         )))

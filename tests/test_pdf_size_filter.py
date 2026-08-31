@@ -47,7 +47,7 @@ class TestPdfSizeFilter(unittest.TestCase):
         self.db.add_all([self.size_5_years, self.size_m, self.size_36])
         self.db.flush()
 
-        def make_product(name, code, size):
+        def make_product(name, code, size, quantity_available=5):
             p = Product(
                 name=name, code=code, catalog_id=catalog.id,
                 description="", cost_price=0, selling_price=10,
@@ -57,7 +57,7 @@ class TestPdfSizeFilter(unittest.TestCase):
             color = ProductColor(product_id=p.id, color_name="أحمر")
             self.db.add(color)
             self.db.flush()
-            variant = ProductVariant(product_color_id=color.id, size_id=size.id, quantity_available=5)
+            variant = ProductVariant(product_color_id=color.id, size_id=size.id, quantity_available=quantity_available)
             self.db.add(variant)
             self.db.flush()
             return p
@@ -65,6 +65,9 @@ class TestPdfSizeFilter(unittest.TestCase):
         self.product_kids = make_product("قميص أطفال", "P-KIDS", self.size_5_years)
         self.product_m = make_product("قميص كبار", "P-M", self.size_m)
         self.product_shoe = make_product("حذاء", "P-SHOE", self.size_36)
+        # منتج موجود فعلاً بهذا المقاس لكن نفدت كميته حالياً (0 متوفر) — يجب أن
+        # يظهر في تصدير PDF لأنه منتج حقيقي في الكتالوج، وليس فلترة "متوفر للبيع فقط"
+        self.product_out_of_stock = make_product("فستان نفدت كميته", "P-OOS", self.size_5_years, quantity_available=0)
         self.db.commit()
 
     def tearDown(self):
@@ -84,17 +87,24 @@ class TestPdfSizeFilter(unittest.TestCase):
             query = query.filter(Product.colors.any(ProductColor.variants.any(
                 and_(
                     ProductVariant.size.has(Size.name.ilike(clean_size_name)),
-                    ProductVariant.quantity_available > 0,
                     ProductVariant.deleted_at == None
                 )
             )))
         return query.all()
 
     def test_filters_by_alphanumeric_size_name(self):
-        """مقاس يحتوي على حروف وأرقام معاً مثل '5 سنوات' يجب أن يعمل بشكل صحيح."""
+        """مقاس يحتوي على حروف وأرقام معاً مثل '5 سنوات' يجب أن يعمل بشكل صحيح،
+        ويشمل المنتجات التي نفدت كميتها المتوفرة (0) طالما هي موجودة فعلاً بهذا المقاس."""
         results = self._query_by_size("5 سنوات")
         names = {p.name for p in results}
-        self.assertEqual(names, {"قميص أطفال"})
+        self.assertEqual(names, {"قميص أطفال", "فستان نفدت كميته"})
+
+    def test_filter_includes_out_of_stock_products(self):
+        """قبل الإصلاح: كان الفلتر يستبعد أي منتج قيمة quantity_available فيه = 0،
+        فيظهر 'لا توجد منتجات' رغم وجود المنتج فعلياً بهذا المقاس في الكتالوج."""
+        results = self._query_by_size("5 سنوات")
+        names = {p.name for p in results}
+        self.assertIn("فستان نفدت كميته", names)
 
     def test_filters_by_pure_letters_size(self):
         results = self._query_by_size("M")
@@ -114,7 +124,7 @@ class TestPdfSizeFilter(unittest.TestCase):
     def test_no_filter_returns_all_products(self):
         results = self._query_by_size(None)
         names = {p.name for p in results}
-        self.assertEqual(names, {"قميص أطفال", "قميص كبار", "حذاء"})
+        self.assertEqual(names, {"قميص أطفال", "قميص كبار", "حذاء", "فستان نفدت كميته"})
 
     def test_duplicate_product_names_are_allowed(self):
         """لا يجب رفض إنشاء منتج بنفس اسم منتج آخر — القيد أُزيل من create_product/update_product."""

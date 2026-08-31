@@ -66,6 +66,47 @@ const CAMERA_CONSTRAINTS = {
   height: { ideal: 720 },
 };
 
+// رسالة الكاميرا الافتراضية العامة — تُستعمل فقط لو تعذّر تصنيف سبب الفشل
+// بدقة أكبر عبر resolveCameraErrorMessage أدناه.
+const DEFAULT_ERROR_MESSAGE = 'تعذّر فتح الكاميرا. تأكد من إعطاء إذن الكاميرا، أو استخدم البحث/الإدخال اليدوي.';
+
+/**
+ * رسالة دقيقة لكل سبب فشل بدل رسالة "إذن الكاميرا" العامة لكل الحالات —
+ * كانت تضلّل التشخيص: مستخدم بلا كاميرا، ومستخدم رفض الإذن، ومستخدم يفتح
+ * التطبيق من غير origin آمن (http على عنوان شبكة بدل https/localhost)
+ * كانوا كلهم يشوفوا نفس الرسالة "امنح إذن الكاميرا" رغم اختلاف الحل الفعلي.
+ */
+export function resolveCameraErrorMessage(err, fallback) {
+  // لا يوجد navigator.mediaDevices إطلاقاً إلا على origin آمن (https:// أو
+  // localhost). فتح الرابط من الهاتف عبر عنوان IP على الشبكة المحلية
+  // بـ http:// عادي يقع في هذه الحالة بالضبط — والحل هو HTTPS لا إعادة منح الإذن.
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    return 'الكاميرا تحتاج اتصال آمن (HTTPS). افتح التطبيق عبر رابط https أو من localhost، لا عبر عنوان http عادي.';
+  }
+  if (typeof navigator !== 'undefined' && !navigator.mediaDevices) {
+    return 'المتصفح لا يوفّر واجهة الكاميرا على هذا الاتصال. جرّب فتح التطبيق عبر رابط https، أو استخدم متصفحاً حديثاً.';
+  }
+  const name = err?.name;
+  switch (name) {
+    case 'NotAllowedError':
+    case 'PermissionDeniedError':
+      return 'تم رفض إذن الكاميرا. فعّله من إعدادات المتصفح لهذا الموقع ثم أعد المحاولة.';
+    case 'NotFoundError':
+    case 'DevicesNotFoundError':
+      return 'لم يتم العثور على كاميرا في هذا الجهاز.';
+    case 'NotReadableError':
+    case 'TrackStartError':
+      return 'تعذّر تشغيل الكاميرا — قد تكون مستخدَمة من تطبيق آخر حالياً.';
+    case 'OverconstrainedError':
+    case 'ConstraintNotSatisfiedError':
+      return 'كاميرا الجهاز لا تدعم الإعدادات المطلوبة للمسح.';
+    case 'SecurityError':
+      return 'الكاميرا تحتاج اتصال آمن (HTTPS) على هذا المتصفح.';
+    default:
+      return fallback;
+  }
+}
+
 export default function useQrScanner({
   elementId,
   active,
@@ -73,7 +114,7 @@ export default function useQrScanner({
   minGapMs = DEFAULT_MIN_GAP_MS,
   sameCodeCooldownMs = DEFAULT_SAME_CODE_MS,
   onError,
-  errorMessage = 'تعذّر فتح الكاميرا. تأكد من إعطاء إذن الكاميرا، أو استخدم البحث/الإدخال اليدوي.',
+  errorMessage = DEFAULT_ERROR_MESSAGE,
 }) {
   const [status, setStatus] = useState('idle');   // idle | loading | active | error
   const [cameraError, setCameraError] = useState('');
@@ -194,6 +235,16 @@ export default function useQrScanner({
       if (isStale()) return;
       if (!container) throw new Error('Scanner container not found: ' + elementId);
 
+      // العنصر موجود في الـ DOM لا يعني أنه مرئي فعلاً بحجم حقيقي — لو كان
+      // لا يزال ضمن أنيميشن الفتح (opacity/transform) أو داخل صندوق منهار
+      // القياس، تحسب html5-qrcode أبعاد الفيديو صفر فيخرج المسح أسود مجمّداً
+      // لا يقرأ شيئاً أبداً دون أي خطأ ظاهر. ننتظر حتى يصبح للحاوية حجم فعلي.
+      for (let i = 0; i < 20 && container.offsetWidth < 10; i += 1) {
+        if (isStale()) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (isStale()) return;
+
       const html5QrCode = new Html5Qrcode(elementId, {
         formatsToSupport: SUPPORTED_FORMATS,
         // المفكّك الأصلي في المتصفح (BarcodeDetector) أسرع وأدق بكثير من
@@ -248,7 +299,7 @@ export default function useQrScanner({
       console.warn('Camera start failed:', err);
       scannerRef.current = null;
       setStatus('error');
-      setCameraError(errorMessage);
+      setCameraError(resolveCameraErrorMessage(err, errorMessage));
       onErrorRef.current?.(err);
     }
   }, [elementId, stop, handleDecoded, errorMessage]);
