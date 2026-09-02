@@ -93,10 +93,8 @@ def build_catalog_display_list(products, size_name=None):
     تملكه فعلاً. بدونه كان تصدير "فلترة حسب المقاس" يخرج بكل مقاسات المنتج،
     فيبدو الفلتر كأنه لم يُطبَّق إطلاقاً.
 
-    ملاحظة مقصودة: لا نستبعد المقاسات التي نفدت كميتها (quantity_available = 0).
-    استعلام الفلترة في export_products_pdf يشملها لأنها منتجات حقيقية في
-    الكتالوج، وكان استبعادها هنا يُخرج ملف PDF فارغاً (ترويسة بلا كروت) دون أي
-    رسالة خطأ تشرح السبب.
+    ملاحظة: نستبعد المقاسات التي نفدت كميتها (quantity_available <= 0)
+    لأن الكتالوج يجب أن يعكس فقط ما هو متوفر للبيع فعلاً.
     """
     wanted_size = size_name.strip().casefold() if isinstance(size_name, str) and size_name.strip() else None
 
@@ -106,8 +104,10 @@ def build_catalog_display_list(products, size_name=None):
             if getattr(color, 'deleted_at', None):
                 continue
 
+            # نستبعد المتغيرات المحذوفة أو التي نفدت كميتها
             variants = [v for v in getattr(color, 'variants', [])
-                        if not getattr(v, 'deleted_at', None)]
+                        if not getattr(v, 'deleted_at', None)
+                        and (getattr(v, 'quantity_available', 0) or 0) > 0]
 
             if wanted_size:
                 variants = [v for v in variants

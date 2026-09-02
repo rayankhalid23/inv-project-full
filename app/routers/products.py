@@ -261,13 +261,21 @@ def get_products_dashboard(
             )
             
             if valid_size_id:
-                query = query.filter(ProductVariant.size_id == valid_size_id)
+                query = query.filter(
+                    ProductVariant.size_id == valid_size_id,
+                    # لا نُظهر المنتج إلا إذا كان المقاس المطلوب متوفراً بكمية > 0
+                    ProductVariant.quantity_available > 0
+                )
 
             if clean_size_name:
                 query = query.join(
                     Size,
                     and_(ProductVariant.size_id == Size.id, Size.deleted_at == None)
-                ).filter(Size.name.ilike(clean_size_name))
+                ).filter(
+                    Size.name.ilike(clean_size_name),
+                    # لا نُظهر المنتج إلا إذا كان المقاس المطلوب متوفراً بكمية > 0
+                    ProductVariant.quantity_available > 0
+                )
 
             if low_stock is True:
                 query = query.filter(
@@ -476,12 +484,14 @@ def export_products_pdf(
         counts["after_size"] = counts["after_text"] = 0
         fail("catalog")
 
-    # 2) المقاس
+    # 2) المقاس — نشترط وجود variant بالمقاس المطلوب وكميته > 0
     if clean_size_name:
         query = query.filter(Product.colors.any(ProductColor.variants.any(
             and_(
                 ProductVariant.size.has(Size.name.ilike(clean_size_name)),
-                ProductVariant.deleted_at == None
+                ProductVariant.deleted_at == None,
+                # لا يُشمَل المنتج إلا إذا كان هذا المقاس متوفراً بكمية > 0
+                ProductVariant.quantity_available > 0
             )
         )))
     counts["after_size"] = query.count()

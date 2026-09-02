@@ -307,6 +307,8 @@ exportAllActiveQRs: async () => {
     try {
         const response = await api.get('/products/all', {
             responseType: 'blob', // مهم جداً للتعامل مع ملفات PDF
+            // تصدير جميع QR يستغرق وقتاً — نرفع الـ timeout إلى 120s
+            timeout: 120_000,
         });
         
         const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -335,6 +337,8 @@ exportProductsPdf: async (filters) => {
         const response = await api.get('/products/export-pdf', {
             params: cleanFilters, // نرسل فقط القيم المملوءة
             responseType: 'blob',
+            // توليد PDF يحتاج وقتاً أطول من المهلة الافتراضية (25s) — نرفعها إلى 120s
+            timeout: 120_000,
         });
         
         const url = window.URL.createObjectURL(new Blob([response.data]));
