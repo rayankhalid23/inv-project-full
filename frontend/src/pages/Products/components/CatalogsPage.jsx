@@ -7,7 +7,7 @@ import {
 import { catalogApi } from "../../../api/catalogApi";
 import ProductCard from "./ProductCard"; 
 import { saveOfflineAction } from "../../../utils/idbStorage";
-import { isNetworkError } from "../../../utils/netErrors"; 
+import { isNetworkError, describeApiError } from "../../../utils/netErrors"; 
 
 // حجم صفحة نتائج البحث/الفلترة — يطابق الحد الافتراضي في /products/dashboard
 const SEARCH_PAGE_SIZE = 20;
@@ -294,16 +294,24 @@ const CatalogsPage = ({
     setPdfLoading(true);
     setErrors(null);
     setSuccessMsg('');
-    try {
-      const cleanFilters = {};
-      if (pdfFilters.size_name) cleanFilters.size_name = pdfFilters.size_name;
-      if (pdfFilters.catalog_id) cleanFilters.catalog_id = pdfFilters.catalog_id;
+    const cleanFilters = {};
+    if (pdfFilters.size_name) cleanFilters.size_name = pdfFilters.size_name;
+    // Number() صراحةً: الخادم يتوقع catalog_id عدداً صحيحاً، وإرساله نصاً يعطي 422
+    if (pdfFilters.catalog_id) cleanFilters.catalog_id = Number(pdfFilters.catalog_id);
 
+    try {
       await catalogApi.exportProductsPdf(cleanFilters);
       setSuccessMsg("تم تجهيز ملف PDF بنجاح");
       setTimeout(() => { setIsPdfModalOpen(false); }, 1000); 
     } catch (err) {
-      setErrors({ pdf: err.response?.data?.detail || "لا توجد منتجات تطابق هذه الفلاتر حالياً" });
+      // التفاصيل الخام في الـ console للمطوّر، والرسالة الدقيقة للمستخدم
+      console.error("PDF export failed:", {
+        status: err?.response?.status,
+        detail: err?.response?.data?.detail,
+        filters: cleanFilters,
+        error: err,
+      });
+      setErrors({ pdf: describeApiError(err, "تعذّر تصدير الملف لسبب غير معروف") });
     } finally {
       setPdfLoading(false);
     }
@@ -795,9 +803,25 @@ useEffect(() => {
 
               <div className="pt-2">
                 {errors?.pdf && (
-                  <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-2xl flex items-center gap-3 text-red-600 text-xs font-bold animate-in fade-in">
-                    <AlertCircle size={16} className="shrink-0" />
-                    <span>{errors.pdf}</span>
+                  <div className="mb-4 p-4 bg-red-50 border border-red-100 rounded-2xl text-red-700 animate-in fade-in">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 text-xs font-black">
+                        <AlertCircle size={16} className="shrink-0" />
+                        <span>تفاصيل الخطأ</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(errors.pdf)}
+                        className="text-[10px] font-bold px-2 py-1 rounded-lg bg-white border border-red-100 hover:bg-red-50 transition-colors shrink-0"
+                      >
+                        نسخ
+                      </button>
+                    </div>
+                    {/* whitespace-pre-line ضروري: رسالة الخادم متعددة الأسطر وتشرح
+                        الخطوة التي انقطعت عندها النتائج — بدونه تُدمج في سطر واحد */}
+                    <div className="whitespace-pre-line text-[11px] font-bold leading-relaxed max-h-56 overflow-y-auto text-right">
+                      {errors.pdf}
+                    </div>
                   </div>
                 )}
 

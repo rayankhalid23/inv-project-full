@@ -42,3 +42,48 @@ export const isNetworkError = (err) => {
 /** المهلة الافتراضية لكل طلبات الـ API (بالمللي ثانية) */
 export const API_TIMEOUT_MS = 25000;
 
+/**
+ * =====================================================================
+ * رسالة خطأ تشخيصية دقيقة
+ * =====================================================================
+ * تُحوّل أي خطأ من axios إلى نص يقول **بالضبط** أين وقع العطل: رمز الحالة،
+ * والمسار، ورسالة الخادم كاملة (بأسطرها).
+ *
+ * لماذا؟ كانت الشاشات تعرض رسالة ثابتة واحدة لكل الحالات ("لا توجد منتجات
+ * مطابقة")، فيستحيل التمييز بين: فلتر لم يطابق شيئاً، وخطأ 500 في الخادم،
+ * وخطأ 422 لأن قيمة الفلتر وصلت بنوع خاطئ، وانقطاع شبكة. أربع مشاكل مختلفة
+ * تماماً بأربعة حلول مختلفة — وكلها كانت تبدو واحدة.
+ */
+export const describeApiError = (err, fallback = 'حدث خطأ غير متوقع') => {
+  if (!err) return fallback;
+
+  if (isNetworkError(err)) {
+    return 'تعذّر الوصول إلى الخادم (انقطاع شبكة أو انتهاء المهلة).\n'
+      + 'تأكد من الاتصال ثم أعد المحاولة.';
+  }
+
+  const status = err.response?.status;
+  const url = err.config?.url;
+  const detail = err.response?.data?.detail ?? err.response?.data?.message;
+
+  let body;
+  if (typeof detail === 'string' && detail.trim()) {
+    body = detail;
+  } else if (Array.isArray(detail)) {
+    // صيغة أخطاء التحقق في FastAPI (422): قائمة كائنات loc/msg
+    body = detail
+      .map((d) => {
+        const where = Array.isArray(d.loc) ? d.loc.filter((x) => x !== 'query').join('.') : '';
+        return `• ${where ? where + ': ' : ''}${d.msg || JSON.stringify(d)}`;
+      })
+      .join('\n');
+    body = 'قيمة أحد الفلاتر غير مقبولة من الخادم:\n' + body;
+  } else if (detail) {
+    body = JSON.stringify(detail);
+  } else {
+    body = fallback;
+  }
+
+  const head = status ? `[HTTP ${status}${url ? ` — ${url}` : ''}]` : '';
+  return head ? `${head}\n${body}` : body;
+};

@@ -6,6 +6,7 @@ import arabic_reshaper
 from bidi.algorithm import get_display
 from app.core.database import SessionLocal
 import io
+import traceback
 from  app.schemas.PD import VariantSchema,ColorSchema,ProductFullDetailSchema
 from datetime import datetime
 from typing import Optional, List
@@ -22,7 +23,7 @@ from app.services.order_service import get_inventory_dashboard_stats
 from app.core.database import get_db
 from app.core.deps import RoleChecker
 from app.models.user import User
-from app.models.inventory import Product, ProductColor, ProductVariant, Size
+from app.models.inventory import Product, ProductColor, ProductVariant, Size, Catalog
 from app.schemas.product_display import PaginatedProductDashboard, ProductDeepDiveOut, ProductDashboardItem 
 from app.schemas.inventory import VariantUpdatePartial
 from app.services.qr_service import QRGeneratorService
@@ -327,19 +328,109 @@ def get_products_dashboard(
 
 
 
-def _no_pdf_match_message(size_name):
-    """رسالة تشرح سبب عدم وجود نتائج بدل "لا توجد منتجات" المبهمة.
+def _describe_filters(catalog_name, catalog_id, size_name, product_name, product_ref):
+    """سطور تعرض الفلاتر كما وصلت للخادم فعلاً — أول ما يجب التأكد منه:
+    أحياناً لا تصل قيمة الفلتر أصلاً من الواجهة."""
+    lines = []
+    if catalog_id is not None:
+        label = f"{catalog_id}" + (f" ({catalog_name})" if catalog_name else " (⚠ لا يوجد كتالوج بهذا المعرّف)")
+        lines.append(f"  • الكتالوج: {label}")
+    else:
+        lines.append("  • الكتالوج: (لم يُحدَّد)")
+    lines.append(f"  • المقاس: {size_name}" if size_name else "  • المقاس: (لم يُحدَّد)")
+    if product_name:
+        lines.append(f"  • اسم المنتج: {product_name}")
+    if product_ref:
+        lines.append(f"  • مرجع المنتج: {product_ref}")
+    return lines
 
-    أشهر سبب فعلي: المقاس موجود في القائمة لكن كل مقاساته في المنتجات محذوفة
-    (المقاس يُنشأ في قاعدة البيانات لحظة كتابته في نموذج المنتج، فيبقى في
-    القائمة حتى لو لم يُربط بأي منتج).
+
+def _explain_unrenderable(products, size_name):
+    """لماذا لم يخرج أي كرت رغم مطابقة المنتجات للفلاتر؟
+
+    كرت الـ PDF يحتاج: منتج ← لون غير محذوف ← مقاس (متغيّر) غير محذوف.
+    كثير من المنتجات في النظام أُنشئت بلا ألوان أو بألوان بلا مقاسات، فتُطابق
+    الفلتر ولا يوجد فيها ما يُرسَم — وكان الناتج ملف PDF فيه الترويسة فقط.
     """
-    if size_name:
-        return (
-            f"لا يوجد أي منتج مرتبط بالمقاس '{size_name}' حالياً. "
-            "تأكد أن المقاس مُضاف فعلاً داخل أحد المنتجات وليس في قائمة المقاسات فقط."
-        )
-    return "لا توجد منتجات مطابقة للفلاتر المختارة لتصديرها"
+    wanted = size_name.strip().casefold() if size_name else None
+    no_colors = []
+    colors_without_sizes = []
+    size_mismatch = []
+
+    for p in products:
+        live_colors = [c for c in getattr(p, 'colors', []) if not getattr(c, 'deleted_at', None)]
+        if not live_colors:
+            no_colors.append(p.code or str(p.id))
+            continue
+
+        live_variants = [v for c in live_colors for v in getattr(c, 'variants', [])
+                         if not getattr(v, 'deleted_at', None)]
+        if not live_variants:
+            colors_without_sizes.append(p.code or str(p.id))
+            continue
+
+        if wanted and not any(v.size and (v.size.name or '').strip().casefold() == wanted
+                              for v in live_variants):
+            size_mismatch.append(p.code or str(p.id))
+
+    def sample(codes):
+        head = "، ".join(codes[:5])
+        return head + (f" ... (+{len(codes) - 5})" if len(codes) > 5 else "")
+
+    lines = []
+    if no_colors:
+        lines.append(f"  • {len(no_colors)} منتج بلا أي لون: {sample(no_colors)}")
+    if colors_without_sizes:
+        lines.append(f"  • {len(colors_without_sizes)} منتج له ألوان بلا مقاسات: {sample(colors_without_sizes)}")
+    if size_mismatch:
+        lines.append(f"  • {len(size_mismatch)} منتج مقاساته الحيّة لا تشمل المقاس المطلوب: {sample(size_mismatch)}")
+    if not lines:
+        lines.append("  • كل الألوان أو المقاسات محذوفة (deleted_at) في المنتجات المطابقة")
+    return lines
+
+
+def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None):
+    """رسالة تشخيص تحدّد **الخطوة** التي انقطعت عندها النتائج، بالأرقام.
+
+    الرسالة العامة السابقة (\"لا توجد منتجات مطابقة\") كانت تتّهم آخر فلتر مهما
+    كان السبب الحقيقي — مثلاً تقول \"المقاس غير موجود\" بينما الكتالوج المختار
+    فارغ أصلاً.
+    """
+    marker = " ← ✗ هنا انقطعت النتائج"
+    steps = [
+        f"  1. كل المنتجات غير المحذوفة: {counts['total']}"
+            + (marker if stage == 'total' else ''),
+        f"  2. بعد فلتر الكتالوج: {counts['after_catalog']}"
+            + (marker if stage == 'catalog' else ''),
+        f"  3. بعد فلتر المقاس: {counts['after_size']}"
+            + (marker if stage == 'size' else ''),
+        f"  4. بعد فلاتر الاسم/المرجع: {counts['after_text']}"
+            + (marker if stage == 'text' else ''),
+        f"  5. المنتجات القابلة للرسم (لون + مقاس): {counts['renderable']}"
+            + (marker if stage == 'render' else ''),
+    ]
+    reasons = {
+        'total': "لا يوجد أي منتج غير محذوف في قاعدة البيانات.",
+        'catalog': "الكتالوج المختار لا يحتوي على أي منتج غير محذوف. اختر كتالوجاً آخر.",
+        'size': "لا يوجد أي منتج (ضمن الفلاتر الأخرى) فيه هذا المقاس. المقاس قد يكون موجوداً في قائمة المقاسات فقط دون أن يُضاف داخل أي منتج.",
+        'text': "فلتر الاسم أو المرجع لم يطابق أي منتج.",
+        'render': "المنتجات موجودة فعلاً ومطابقة للفلاتر، لكن لا يوجد فيها ما يُطبع (كرت الـ PDF يحتاج لوناً ومقاساً واحداً على الأقل).",
+    }
+
+    parts = [
+        "تعذّر إنشاء ملف PDF — لا يوجد ما يُرسَم.",
+        "",
+        "الفلاتر كما وصلت للخادم:",
+        *filter_lines,
+        "",
+        "مسار التصفية خطوة بخطوة:",
+        *steps,
+        "",
+        f"سبب التوقف: {reasons[stage]}",
+    ]
+    if extra_lines:
+        parts += ["", "التفصيل:", *extra_lines]
+    return "\n".join(parts)
 
 
 @router.get("/export-pdf")
@@ -351,11 +442,41 @@ def export_products_pdf(
     db: Session = Depends(get_db),
     current_user = Depends(RoleChecker([1, 2, 3]))
 ):
-    query = db.query(Product).filter(Product.deleted_at == None).options(
-        joinedload(Product.colors).joinedload(ProductColor.variants)
-    )
-
     clean_size_name = size_name.strip() if (size_name and isinstance(size_name, str)) else None
+
+    # عدّاد لكل خطوة تصفية: هو ما يسمح للرسالة أن تقول **أين** انقطعت النتائج
+    # بدل أن تتّهم آخر فلتر مهما كان السبب.
+    base = db.query(Product).filter(Product.deleted_at == None)
+    counts = {"total": base.count(), "after_catalog": None, "after_size": None,
+              "after_text": None, "renderable": 0}
+
+    catalog_name = None
+    if catalog_id:
+        catalog_row = db.query(Catalog).filter(Catalog.id == catalog_id).first()
+        catalog_name = catalog_row.name if catalog_row else None
+
+    filter_lines = _describe_filters(catalog_name, catalog_id, clean_size_name,
+                                     product_name, product_ref)
+
+    def fail(stage, extra_lines=None):
+        raise HTTPException(status_code=404, detail=_pdf_export_failure_detail(
+            stage=stage, counts=counts, filter_lines=filter_lines, extra_lines=extra_lines))
+
+    if counts["total"] == 0:
+        counts["after_catalog"] = counts["after_size"] = counts["after_text"] = 0
+        fail("total")
+
+    query = base.options(joinedload(Product.colors).joinedload(ProductColor.variants))
+
+    # 1) الكتالوج
+    if catalog_id:
+        query = query.filter(Product.catalog_id == catalog_id)
+    counts["after_catalog"] = query.count()
+    if counts["after_catalog"] == 0:
+        counts["after_size"] = counts["after_text"] = 0
+        fail("catalog")
+
+    # 2) المقاس
     if clean_size_name:
         query = query.filter(Product.colors.any(ProductColor.variants.any(
             and_(
@@ -363,24 +484,28 @@ def export_products_pdf(
                 ProductVariant.deleted_at == None
             )
         )))
+    counts["after_size"] = query.count()
+    if counts["after_size"] == 0:
+        counts["after_text"] = 0
+        fail("size")
 
-    if catalog_id:
-        query = query.filter(Product.catalog_id == catalog_id)
-
+    # 3) الاسم والمرجع
     if product_name:
         query = query.filter(Product.name.icontains(product_name))
-
     if product_ref:
         query = query.filter(Product.reference == product_ref)
+    counts["after_text"] = query.count()
+    if counts["after_text"] == 0:
+        fail("text")
 
     products_data = query.all()
-    if not products_data:
-        raise HTTPException(status_code=404, detail=_no_pdf_match_message(clean_size_name))
 
-    # المنتج قد يطابق الفلتر بينما لا يوجد فيه لون واحد صالح للرسم (كل ألوانه
-    # محذوفة مثلاً). بدون هذا الفحص كان الرد ملف PDF فيه ترويسة فقط بلا كروت.
-    if not build_catalog_display_list(products_data, clean_size_name):
-        raise HTTPException(status_code=404, detail=_no_pdf_match_message(clean_size_name))
+    # 4) هل يوجد فعلاً ما يُرسم؟ المنتج قد يطابق كل الفلاتر وهو بلا ألوان أو
+    # بألوان بلا مقاسات — وكان الناتج ملف PDF فيه الترويسة فقط بلا أي تفسير.
+    cards = build_catalog_display_list(products_data, clean_size_name)
+    counts["renderable"] = len(cards)
+    if not cards:
+        fail("render", _explain_unrenderable(products_data, clean_size_name))
 
     try:
         buffer = io.BytesIO()
@@ -388,22 +513,31 @@ def export_products_pdf(
         buffer.seek(0)
         create_system_audit_log(
           db=db,
-          user_id=current_user.id, # ستحتاج لإضافة current_user كـ Depends في هذه الدالة
+          user_id=current_user.id,
           action_target="report",
           target_id=0,
           action_type="export_pdf",
-          details={"type": "catalog"}
+          details={"type": "catalog", "catalog_id": catalog_id,
+                   "size_name": clean_size_name, "cards": len(cards)}
           )
 
         return StreamingResponse(
-            buffer, 
+            buffer,
             media_type="application/pdf",
             headers={"Content-Disposition": "attachment; filename=BELLAGIO_Catalog.pdf"}
 
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail="فشل في توليد ملف الـ PDF")
-
+        # الرسالة العامة "فشل في توليد الـ PDF" كانت تبتلع السبب الحقيقي تماماً،
+        # فيستحيل تشخيص العطل من الواجهة. نُبقي التتبّع الكامل في سجل الخادم
+        # ونمرّر نوع الخطأ ونصّه للواجهة.
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=(
+            "فشل توليد ملف الـ PDF أثناء الرسم (المنتجات وُجدت والفلاتر صحيحة).\n"
+            f"نوع الخطأ: {type(e).__name__}\n"
+            f"الرسالة: {e}\n"
+            f"عدد الكروت التي كانت ستُرسم: {len(cards)}"
+        ))
 
 
 @router.get("/variant/{variant_id}")
