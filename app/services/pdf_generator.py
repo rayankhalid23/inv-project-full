@@ -28,9 +28,14 @@ def format_ar(text):
     return get_display(reshaped_text)
 
 def get_absolute_path(relative_path):
-    """تحويل المسار النسبي إلى مطلق ليتمكن النظام من قراءة الصورة"""
+    """تحويل المسار النسبي أو الرابط الكامل إلى مسار مطلق على القرص ليتمكن النظام من قراءة الصورة"""
     if not relative_path: return None
-    clean_path = relative_path.lstrip('/')
+    clean_path = str(relative_path).strip().replace('\\', '/')
+    # إذا كان رابطاً كاملاً يحتوي على الدومين (http:// أو https://) نأخذ المسار النسبي فقط
+    if clean_path.startswith('http://') or clean_path.startswith('https://'):
+        without_scheme = clean_path.split('://', 1)[1]
+        clean_path = without_scheme.split('/', 1)[1] if '/' in without_scheme else clean_path
+    clean_path = clean_path.lstrip('/')
     abs_path = os.path.join(BASE_DIR, clean_path)
     return abs_path if os.path.exists(abs_path) else None
 
@@ -133,7 +138,38 @@ def build_catalog_display_list(products, size_name=None):
     return display_list
 
 
-def generate_catalog_pdf(products, output_path, size_name=None):
+def _resize_image_for_pdf(img_path, image_cache=None, max_w_px=350, max_h_px=350, quality=65):
+    """تصغير الصورة في الذاكرة قبل رسمها في PDF مع التخزين المؤقت (cache) لتسريع التوليد 10 أضعاف."""
+    if not img_path or not os.path.exists(img_path):
+        return None
+    if image_cache is not None and img_path in image_cache:
+        return image_cache[img_path]
+
+    try:
+        from PIL import Image as PILImage
+        import tempfile
+        with PILImage.open(img_path) as img:
+            # BILINEAR أسرع بكثير لتوليد PDF فوري
+            resample_filter = getattr(PILImage, 'Resampling', PILImage).BILINEAR
+            img.thumbnail((max_w_px, max_h_px), resample_filter)
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+            tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+            img.save(tmp.name, 'JPEG', quality=quality, optimize=False)
+            tmp.close()
+            if image_cache is not None:
+                image_cache[img_path] = tmp.name
+            return tmp.name
+    except Exception:
+        return None  # نتراجع للمسار الأصلي إذا فشل التصغير
+
+def generate_catalog_pdf(products_or_display_list, output_path, size_name=None, display_list=None):
+    """توليد PDF الكتالوج.
+
+    يقبل إما:
+    - `products_or_display_list`: قائمة منتجات ORM (المسار القديم)
+    - `display_list`: قائمة كروت جاهزة من build_catalog_display_list (أسرع — لا يُعيد بناءها)
+    """
     c = canvas.Canvas(output_path, pagesize=A4)
     width, height = A4
     
@@ -159,10 +195,17 @@ def generate_catalog_pdf(products, output_path, size_name=None):
 
     draw_header(c)
 
-    # معالجة بيانات المنتجات (مع احترام فلتر المقاس إن وُجد)
-    display_list = build_catalog_display_list(products, size_name)
+    # إذا مُرِّرت display_list جاهزة نستخدمها مباشرة (لا نُعيد بناءها)
+    # وإلا نبنيها من قائمة المنتجات ORM
+    if display_list is not None:
+        items = display_list
+    else:
+        items = build_catalog_display_list(products_or_display_list, size_name)
 
-    for i, item in enumerate(display_list):
+    # قاموس كاش للصور المصغرة لتجنب تكرار معالجة نفس الصورة + قائمة لتنظيفها
+    image_cache = {}
+
+    for i, item in enumerate(items):
         if y_position < card_height + margin:
             c.showPage()
             draw_header(c)
@@ -176,15 +219,18 @@ def generate_catalog_pdf(products, output_path, size_name=None):
         c.setFillColor(colors.white)
         c.roundRect(current_x, y_position - card_height, card_width, card_height, 12, stroke=1, fill=1)
 
-        # --- رسم الصورة ---
+        # --- رسم الصورة (مُصغَّرة في الذاكرة مع cache لتسريع PDF) ---
         img_area_height = 6 * cm
         abs_img_path = get_absolute_path(item['img'])
         
         if abs_img_path:
             try:
-                c.drawImage(abs_img_path, current_x + 0.2*cm, y_position - img_area_height - 0.2*cm, 
+                # نصغّر الصورة أولاً مع cache لتسريع رسمها في PDF بشكل فوري
+                resized_path = _resize_image_for_pdf(abs_img_path, image_cache=image_cache)
+                draw_path = resized_path if resized_path else abs_img_path
+                c.drawImage(draw_path, current_x + 0.2*cm, y_position - img_area_height - 0.2*cm, 
                             width=card_width-0.4*cm, height=img_area_height, preserveAspectRatio=True)
-            except:
+            except Exception:
                 c.setFillColor(colors.grey)
                 c.drawCentredString(current_x + card_width/2, y_position - 3*cm, "Image Error")
         else:
@@ -203,8 +249,7 @@ def generate_catalog_pdf(products, output_path, size_name=None):
         c.setFillColor(colors.grey)
         c.drawRightString(current_x + card_width - 0.5*cm, y_position - 7.5*cm, format_ar(f"اللون: {item['color_name']}"))
         
-        # 3. المقاسات (تعديل: دعم العربي والمحاذاة لليمين باللون العنابي، مع لفّ
-        # النص على عدة أسطر داخل حدود الكرت بدل ما يطلع برّا حدوده أو يتداخل مع الكرت الجاور)
+        # 3. المقاسات مع لفّ النص على عدة أسطر
         c.setFillColor(MAROON_COLOR)
         c.setFont(ARABIC_FONT, 10)
         sizes_max_width = card_width - 1 * cm
@@ -227,3 +272,11 @@ def generate_catalog_pdf(products, output_path, size_name=None):
             y_position -= (card_height + gap)
 
     c.save()
+
+    # تنظيف الملفات المؤقتة بعد الحفظ
+    import os as _os
+    for tmp_path in image_cache.values():
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass

@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # =============================================================================
 # سكريبت التثبيت والنشر التلقائي لنظام Bellagio على سيرفر Ubuntu 22.04 LTS
 # السيرفر: srv1.bellagio.ly (102.203.201.65)
@@ -69,7 +69,7 @@ After=network.target mysql.service
 [Service]
 User=root
 WorkingDirectory=/var/www/bellagio
-ExecStart=/var/www/bellagio/venv/bin/gunicorn main:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8000 --access-logfile - --error-logfile -
+ExecStart=/var/www/bellagio/venv/bin/gunicorn main:app -w 2 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8000 --timeout 180 --access-logfile - --error-logfile -
 Restart=always
 RestartSec=5
 EnvironmentFile=/var/www/bellagio/.env
@@ -110,6 +110,12 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+
+        # مهلة مخصصة لتوليد تقارير الـ PDF بدون انقطاع
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
     }
 }
 EOF_NGINX

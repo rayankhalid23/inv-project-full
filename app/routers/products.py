@@ -470,45 +470,58 @@ def export_products_pdf(
         raise HTTPException(status_code=404, detail=_pdf_export_failure_detail(
             stage=stage, counts=counts, filter_lines=filter_lines, extra_lines=extra_lines))
 
-    if counts["total"] == 0:
-        counts["after_catalog"] = counts["after_size"] = counts["after_text"] = 0
-        fail("total")
-
-    query = base.options(joinedload(Product.colors).joinedload(ProductColor.variants))
+    query = base
 
     # 1) الكتالوج
     if catalog_id:
         query = query.filter(Product.catalog_id == catalog_id)
-    counts["after_catalog"] = query.count()
-    if counts["after_catalog"] == 0:
-        counts["after_size"] = counts["after_text"] = 0
-        fail("catalog")
 
-    # 2) المقاس — نشترط وجود variant بالمقاس المطلوب وكميته > 0
+    # 2) المقاس — استعلام فرعي سريع جداً بدلاً من correlated EXISTS المتكررة
     if clean_size_name:
-        query = query.filter(Product.colors.any(ProductColor.variants.any(
-            and_(
-                ProductVariant.size.has(Size.name.ilike(clean_size_name)),
-                ProductVariant.deleted_at == None,
-                # لا يُشمَل المنتج إلا إذا كان هذا المقاس متوفراً بكمية > 0
+        matching_product_ids = (
+            db.query(ProductColor.product_id)
+            .join(ProductVariant, ProductVariant.product_color_id == ProductColor.id)
+            .join(Size, Size.id == ProductVariant.size_id)
+            .filter(
+                ProductColor.deleted_at.is_(None),
+                ProductVariant.deleted_at.is_(None),
+                Size.deleted_at.is_(None),
+                Size.name.ilike(clean_size_name),
                 ProductVariant.quantity_available > 0
             )
-        )))
-    counts["after_size"] = query.count()
-    if counts["after_size"] == 0:
-        counts["after_text"] = 0
-        fail("size")
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(Product.id.in_(matching_product_ids))
 
     # 3) الاسم والمرجع
     if product_name:
         query = query.filter(Product.name.icontains(product_name))
     if product_ref:
         query = query.filter(Product.reference == product_ref)
-    counts["after_text"] = query.count()
-    if counts["after_text"] == 0:
-        fail("text")
+
+    # تحميل كامل شجرة المتغيرات والمقاسات دفعة واحدة بـ selectinload لمنع N+1 query
+    query = query.options(
+        selectinload(Product.colors)
+        .selectinload(ProductColor.variants)
+        .selectinload(ProductVariant.size)
+    )
 
     products_data = query.all()
+
+    # تشخيص الخطأ فقط إذا كانت النتيجة فارغة (حتى لا نبطئ الطلبات الناجحة بعدادات متكررة)
+    if not products_data:
+        counts["total"] = base.count()
+        if counts["total"] == 0:
+            fail("total")
+        if catalog_id:
+            counts["after_catalog"] = base.filter(Product.catalog_id == catalog_id).count()
+            if counts["after_catalog"] == 0:
+                fail("catalog")
+        if clean_size_name:
+            counts["after_size"] = 0
+            fail("size")
+        fail("text")
 
     # 4) هل يوجد فعلاً ما يُرسم؟ المنتج قد يطابق كل الفلاتر وهو بلا ألوان أو
     # بألوان بلا مقاسات — وكان الناتج ملف PDF فيه الترويسة فقط بلا أي تفسير.
@@ -519,7 +532,9 @@ def export_products_pdf(
 
     try:
         buffer = io.BytesIO()
-        generate_catalog_pdf(products_data, buffer, size_name=clean_size_name)
+        # نمرّر display_list الجاهزة مباشرة لمنع إعادة بنائها داخل generate_catalog_pdf
+        # (كانت تُبنى مرتين: مرة هنا للتحقق من الكروت، ومرة داخل generate_catalog_pdf)
+        generate_catalog_pdf(products_data, buffer, size_name=clean_size_name, display_list=cards)
         buffer.seek(0)
         create_system_audit_log(
           db=db,
