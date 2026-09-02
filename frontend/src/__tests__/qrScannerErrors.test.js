@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { resolveCameraErrorMessage } from '../hooks/useQrScanner';
 
 /**
@@ -52,6 +52,43 @@ describe('resolveCameraErrorMessage — دقة رسالة فشل الكامير�
     const err = Object.assign(new Error('busy'), { name: 'NotReadableError' });
     const msg = resolveCameraErrorMessage(err, 'fallback');
     expect(msg).toMatch(/مستخدَمة/);
+  });
+
+  /**
+   * html5-qrcode لا ترمي DOMException إطلاقاً — كل مسارات الفشل فيها ترفض
+   * بنصوص عادية. الاعتماد على err.name وحده كان يجعل كل التصنيفات أعلاه كوداً
+   * ميتاً، فيرى المستخدم الرسالة العامة مهما كان السبب الحقيقي.
+   */
+  describe('أخطاء html5-qrcode النصية (لا كائنات DOMException)', () => {
+    beforeEach(() => {
+      Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
+      Object.defineProperty(navigator, 'mediaDevices', { value: {}, configurable: true });
+    });
+
+    it('يستخرج رفض الإذن من نص "Error getting userMedia"', () => {
+      const err = 'Error getting userMedia, error = NotAllowedError: Permission denied';
+      expect(resolveCameraErrorMessage(err, 'fallback')).toMatch(/رفض/);
+    });
+
+    it('يستخرج غياب الكاميرا من النص', () => {
+      const err = 'Error getting userMedia, error = NotFoundError: Requested device not found';
+      expect(resolveCameraErrorMessage(err, 'fallback')).toMatch(/لم يتم العثور/);
+    });
+
+    it('يستخرج "مستخدَمة من تطبيق آخر" من النص', () => {
+      const err = 'Error getting userMedia, error = NotReadableError: Could not start video source';
+      expect(resolveCameraErrorMessage(err, 'fallback')).toMatch(/مستخدَمة/);
+    });
+
+    it('يقرأ السبب من err.message أيضاً لا من err.name فقط', () => {
+      const err = new Error('Error getting userMedia, error = OverconstrainedError: width');
+      expect(resolveCameraErrorMessage(err, 'fallback')).toMatch(/لا تدعم الإعدادات/);
+    });
+
+    it('نص غير مصنَّف يبقى على الرسالة الافتراضية', () => {
+      const err = 'Cannot transition to a new state, already under transition';
+      expect(resolveCameraErrorMessage(err, 'fallback-message')).toBe('fallback-message');
+    });
   });
 
   it('يرجع للرسالة الافتراضية لسبب غير مصنَّف', () => {

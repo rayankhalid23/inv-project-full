@@ -12,24 +12,101 @@ import { mediaUrl, onImageError } from '../../utils/media';
  */
 
 /**
- * تطابق نصي متسامح مع الأصفار البادئة:
- * كتابة "8" تجد الكود "0000008" — مفيد لقارئ الباركود.
+ * الرقم الصافي داخل نص: "PROD-00003" → "3"، "0000008" → "8".
+ * يوحّد صيغ الأكواد المختلفة في النظام (PROD-000NN، وأرقام مجرّدة، وأكواد قديمة)
+ * فيجد كتابةُ "3" أو "00003" نفس المنتج.
  */
-const matches = (value, query, cleanQuery) => {
-  if (value === undefined || value === null) return false;
+const numericCore = (value) => {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (!digits) return '';
+  const trimmed = digits.replace(/^0+/, '');
+  return trimmed || '0';
+};
+
+const contains = (value, query) =>
+  value !== undefined && value !== null && String(value).toLowerCase().includes(query);
+
+/**
+ * تطابق متسامح مع الأصفار البادئة — يُستعمل كملاذ أخير فقط.
+ * كان هو *كل* منطق البحث سابقاً، وهذه كانت المشكلة: كتابة "00003" تُجرَّد إلى
+ * "3" فيطابق أي كود أو اسم فيه الرقم 3، أي كل المنتجات تقريباً.
+ */
+const looseMatch = (value, cleanQuery) => {
+  if (!cleanQuery || value === undefined || value === null) return false;
   const str = String(value).toLowerCase();
-  if (query && str.includes(query)) return true;
-  if (cleanQuery) {
-    const cleanStr = str.replace(/^0+/, '');
-    if (cleanStr && cleanStr.includes(cleanQuery)) return true;
-    const digitsOnly = str.replace(/^[^\d]+/, '').replace(/^0+/, '');
-    if (digitsOnly && digitsOnly.includes(cleanQuery)) return true;
-  }
-  return false;
+  const cleanStr = str.replace(/^0+/, '');
+  if (cleanStr && cleanStr.includes(cleanQuery)) return true;
+  const digitsOnly = str.replace(/^[^\d]+/, '').replace(/^0+/, '');
+  return Boolean(digitsOnly && digitsOnly.includes(cleanQuery));
+};
+
+// درجات المطابقة: الأعلى يظهر أولاً. المطابقة الدقيقة للكود يجب أن تسبق دائماً
+// أي مطابقة فضفاضة، وإلا دُفن المنتج المقصود خلف عشرات النتائج العشوائية.
+const SCORE = {
+  CODE_EXACT: 100,
+  CODE_NUMERIC: 90,
+  CODE_SUBSTRING: 70,
+  NAME_PREFIX: 60,
+  NAME_SUBSTRING: 50,
+  VARIANT: 30,
+  CATALOG: 20,
+  LOOSE: 5,
 };
 
 /**
- * يفلتر قائمة المنتجات مرة واحدة في الأب.
+ * درجة مطابقة منتج واحد لنص البحث — 0 يعني لا مطابقة.
+ * تُصدَّر للاختبار المباشر لترتيب النتائج.
+ */
+export const scoreProduct = (p, query, cleanQuery) => {
+  const code = String(p.code ?? '').toLowerCase();
+  const name = String(p.name ?? '').toLowerCase();
+
+  if (code && code === query) return SCORE.CODE_EXACT;
+
+  // "00003" و"3" و"PROD-00003" كلها تشير لنفس المنتج
+  const queryCore = numericCore(query);
+  if (queryCore && numericCore(code) === queryCore) return SCORE.CODE_NUMERIC;
+
+  if (code && code.includes(query)) return SCORE.CODE_SUBSTRING;
+  if (name && name.startsWith(query)) return SCORE.NAME_PREFIX;
+  if (name && name.includes(query)) return SCORE.NAME_SUBSTRING;
+
+  const variantHit = p.colors?.some((c) =>
+    contains(c.color_name, query) ||
+    c.variants?.some((v) =>
+      contains(v.sku, query) ||
+      (queryCore && numericCore(v.sku) === queryCore) ||
+      contains(v.size_name || v.size, query) ||
+      contains(v.qr_code, query)
+    )
+  );
+  if (variantHit) return SCORE.VARIANT;
+
+  if (contains(p.catalog_name, query)) return SCORE.CATALOG;
+
+  // الملاذ الأخير: لا نُسقط أي نتيجة كانت تظهر سابقاً، لكن نضعها في آخر الترتيب
+  const looseHit =
+    looseMatch(p.name, cleanQuery) ||
+    looseMatch(p.code, cleanQuery) ||
+    looseMatch(p.catalog_name, cleanQuery) ||
+    p.colors?.some((c) =>
+      looseMatch(c.color_name, cleanQuery) ||
+      c.variants?.some((v) =>
+        looseMatch(v.sku, cleanQuery) ||
+        looseMatch(v.size_name || v.size, cleanQuery) ||
+        looseMatch(v.qr_code, cleanQuery)
+      )
+    );
+  return looseHit ? SCORE.LOOSE : 0;
+};
+
+/**
+ * يفلتر قائمة المنتجات **ويرتّبها بقوة المطابقة** مرة واحدة في الأب.
+ *
+ * الترتيب هو الإصلاح الجوهري: القائمة تصل مرتّبة بالأحدث، وكان البحث الفضفاض
+ * يُبقي مئات المنتجات مطابقة ثم يُقتطع العرض عند حدّ ثابت — فيظهر منتج جديد
+ * مثل 00080 ويختفي منتج قديم مثل 00003 رغم أن كوده هو المكتوب حرفياً.
+ *
  * مهم للأداء: بدونه كان كل عنصر يفحص نفسه في كل ضغطة مفتاح.
  */
 export const filterProducts = (products, rawQuery) => {
@@ -37,19 +114,12 @@ export const filterProducts = (products, rawQuery) => {
   if (!query) return products;
   const cleanQuery = query.replace(/^0+/, '');
 
-  return products.filter((p) =>
-    matches(p.name, query, cleanQuery) ||
-    matches(p.code, query, cleanQuery) ||
-    matches(p.catalog_name, query, cleanQuery) ||
-    p.colors?.some((c) =>
-      matches(c.color_name, query, cleanQuery) ||
-      c.variants?.some((v) =>
-        matches(v.sku, query, cleanQuery) ||
-        matches(v.size_name || v.size, query, cleanQuery) ||
-        matches(v.qr_code, query, cleanQuery)
-      )
-    )
-  );
+  return products
+    .map((p, index) => ({ p, index, score: scoreProduct(p, query, cleanQuery) }))
+    .filter((entry) => entry.score > 0)
+    // ترتيب ثابت: الأقوى مطابقةً أولاً، وعند التساوي يُحفظ ترتيب المصدر (الأحدث أولاً)
+    .sort((a, b) => (b.score - a.score) || (a.index - b.index))
+    .map((entry) => entry.p);
 };
 
 /**
@@ -165,9 +235,15 @@ export default function ProductPicker({
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => filterProducts(products, query), [products, query]);
 
-  const displayProducts = useMemo(() => {
-    return query ? filtered.slice(0, 60) : filtered.slice(0, 35);
-  }, [filtered, query]);
+  // النتائج مرتّبة بقوة المطابقة، فالمقصود دائماً في الأعلى ولا يقطعه الحدّ.
+  // نُبقي حداً للأداء (القائمة تُعرض داخل نافذة صغيرة) لكن نُخبر المستخدم صراحةً
+  // حين يُقتطع شيء، بدل الاختفاء الصامت الذي كان يبدو وكأن المنتج غير موجود.
+  const DISPLAY_LIMIT = query ? 60 : 35;
+  const displayProducts = useMemo(
+    () => filtered.slice(0, DISPLAY_LIMIT),
+    [filtered, DISPLAY_LIMIT],
+  );
+  const hiddenCount = filtered.length - displayProducts.length;
 
   return (
     <div className="space-y-2 border border-slate-200 rounded-xl p-2 bg-white">
@@ -197,15 +273,22 @@ export default function ProductPicker({
         ) : filtered.length === 0 ? (
           <div className="text-center py-4 text-xs text-slate-400">لا توجد نتائج مطابقة لبحثك</div>
         ) : (
-          displayProducts.map((product) => (
-            <ProductSelector
-              key={product.id}
-              product={product}
-              onAddVariant={onAddVariant}
-              showPrice={showPrice}
-              allowZeroStock={allowZeroStock}
-            />
-          ))
+          <>
+            {displayProducts.map((product) => (
+              <ProductSelector
+                key={product.id}
+                product={product}
+                onAddVariant={onAddVariant}
+                showPrice={showPrice}
+                allowZeroStock={allowZeroStock}
+              />
+            ))}
+            {hiddenCount > 0 && (
+              <p className="text-center py-2 text-[10px] font-bold text-slate-400">
+                و{hiddenCount} نتيجة أخرى — أضف حروفاً للبحث لتضييق النتائج
+              </p>
+            )}
+          </>
         )}
       </div>
     </div>

@@ -20,6 +20,32 @@ api.interceptors.request.use((config) => {
     return config;
 });
 
+/**
+ * الطلبات التي تنتظر ملفاً (responseType: 'blob') تعيد جسم الخطأ أيضاً كـ Blob،
+ * فـ `error.response.data.detail` يكون undefined دائماً مهما كان سبب الفشل
+ * (404، 500، انقطاع شبكة). النتيجة: المستخدم يرى رسالة واحدة عامة "لا توجد
+ * منتجات مطابقة" حتى حين يكون السبب خطأً في السيرفر تماماً.
+ *
+ * هذه الدالة تفكّ الـ Blob وتضع محتواه مكان `response.data` قبل إعادة رمي
+ * الخطأ، فتصل رسالة الباك اند الحقيقية إلى الواجهة كما لو كان الرد JSON عادياً.
+ */
+async function unwrapBlobError(error) {
+    const data = error?.response?.data;
+    if (typeof Blob === 'undefined' || !(data instanceof Blob)) return error;
+    try {
+        const text = await data.text();
+        try {
+            error.response.data = JSON.parse(text);
+        } catch {
+            // الرد ليس JSON (صفحة خطأ أو نص عادي) — نمرّره كـ detail نصي
+            error.response.data = { detail: text?.trim() || undefined };
+        }
+    } catch {
+        /* تعذّرت قراءة الـ Blob — نترك الخطأ كما هو */
+    }
+    return error;
+}
+
 export const catalogApi = {
     // --- قسم إدارة الكتالوجات (CRUD) ---
     
@@ -293,7 +319,7 @@ exportAllActiveQRs: async () => {
         window.URL.revokeObjectURL(url);
     } catch (error) {
         console.error("Error exporting all QRs:", error);
-        throw error;
+        throw await unwrapBlobError(error);
     }
 },
 
@@ -318,9 +344,10 @@ exportProductsPdf: async (filters) => {
         document.body.appendChild(link);
         link.click();
         link.remove();
+        window.URL.revokeObjectURL(url);
     } catch (error) {
         console.error("PDF Export failed:", error);
-        throw error;
+        throw await unwrapBlobError(error);
     }
 },
 // حذف المنتج نهائياً (شامل الألوان والمقاسات والمخزن)

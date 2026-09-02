@@ -6,7 +6,9 @@
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import io
 import unittest
+from datetime import datetime
 from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker, joinedload
 
@@ -14,6 +16,7 @@ from app.models.base import Base
 from app.models.inventory import Product, ProductColor, ProductVariant, Size, Catalog
 from app.models.user import User
 from app.models.role import Role
+from app.services.pdf_generator import build_catalog_display_list, generate_catalog_pdf
 
 
 class TestPdfSizeFilter(unittest.TestCase):
@@ -139,6 +142,106 @@ class TestPdfSizeFilter(unittest.TestCase):
 
         same_name_products = self.db.query(Product).filter(Product.name == "قميص أطفال").all()
         self.assertEqual(len(same_name_products), 2)
+
+
+class TestPdfOutputRespectsSizeFilter(unittest.TestCase):
+    """قبل الإصلاح: استعلام الفلترة كان يختار المنتجات الصحيحة، لكن مُولّد الـ PDF
+    يرسم *كل* مقاسات المنتج ويستبعد أي مقاس كميته صفر — فيخرج الملف إمّا بمقاسات
+    لم يطلبها المستخدم، أو فارغاً تماماً (ترويسة بلا كروت) دون أي رسالة خطأ."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(cls.engine)
+        cls.Session = sessionmaker(bind=cls.engine)
+
+    def setUp(self):
+        self.db = self.Session()
+
+        role = Role(name="admin")
+        self.db.add(role)
+        self.db.flush()
+        user = User(name="tester", phone="0900000001", password_hash="x", role_id=role.id)
+        self.db.add(user)
+        self.db.flush()
+        catalog = Catalog(name="كتالوج", created_by=user.id)
+        self.db.add(catalog)
+        self.db.flush()
+
+        self.size_6y = Size(name="6 سنوات")
+        self.size_xl = Size(name="XL")
+        self.db.add_all([self.size_6y, self.size_xl])
+        self.db.flush()
+
+        self.product = Product(
+            name="فستان", code="P-1", catalog_id=catalog.id,
+            description="", cost_price=0, selling_price=20,
+        )
+        self.db.add(self.product)
+        self.db.flush()
+        self.color = ProductColor(product_id=self.product.id, color_name="أحمر")
+        self.db.add(self.color)
+        self.db.flush()
+        self.db.add_all([
+            ProductVariant(product_color_id=self.color.id, size_id=self.size_6y.id, quantity_available=0),
+            ProductVariant(product_color_id=self.color.id, size_id=self.size_xl.id, quantity_available=7),
+        ])
+        self.db.commit()
+        self.db.refresh(self.product)
+
+    def tearDown(self):
+        self.db.rollback()
+        for table in reversed(Base.metadata.sorted_tables):
+            self.db.execute(table.delete())
+        self.db.commit()
+        self.db.close()
+
+    def test_output_contains_only_the_filtered_size(self):
+        cards = build_catalog_display_list([self.product], size_name="6 سنوات")
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["sizes_list"], ["6 سنوات"])
+        self.assertNotIn("XL", cards[0]["sizes_list"])
+
+    def test_zero_stock_size_still_renders_a_card(self):
+        """المقاس المطلوب كميته صفر — كان يُستبعد فيخرج PDF فارغ بلا تفسير."""
+        cards = build_catalog_display_list([self.product], size_name="6 سنوات")
+        self.assertEqual(len(cards), 1)
+
+    def test_size_match_ignores_case_and_whitespace(self):
+        cards = build_catalog_display_list([self.product], size_name="  xl  ")
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["sizes_list"], ["XL"])
+
+    def test_without_filter_all_sizes_are_rendered(self):
+        cards = build_catalog_display_list([self.product])
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(sorted(cards[0]["sizes_list"]), ["6 سنوات", "XL"])
+
+    def test_unknown_size_yields_no_cards(self):
+        """صفر كروت هو ما يجعل الراوتر يردّ 404 برسالة مفهومة بدل ملف فارغ."""
+        self.assertEqual(build_catalog_display_list([self.product], size_name="مقاس غير موجود"), [])
+
+    def test_deleted_variant_is_excluded(self):
+        variant = self.db.query(ProductVariant).filter(
+            ProductVariant.size_id == self.size_xl.id
+        ).first()
+        variant.deleted_at = datetime(2026, 1, 1)
+        self.db.commit()
+        self.db.refresh(self.product)
+        self.assertEqual(build_catalog_display_list([self.product], size_name="XL"), [])
+
+    def test_deleted_color_is_excluded(self):
+        self.color.deleted_at = datetime(2026, 1, 1)
+        self.db.commit()
+        self.db.refresh(self.product)
+        self.assertEqual(build_catalog_display_list([self.product]), [])
+
+    def test_generated_pdf_is_a_valid_non_empty_file(self):
+        buffer = io.BytesIO()
+        generate_catalog_pdf([self.product], buffer, size_name="6 سنوات")
+        data = buffer.getvalue()
+        self.assertTrue(data.startswith(b"%PDF"))
+        self.assertGreater(len(data), 1000)
 
 
 if __name__ == "__main__":

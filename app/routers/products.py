@@ -26,7 +26,7 @@ from app.models.inventory import Product, ProductColor, ProductVariant, Size
 from app.schemas.product_display import PaginatedProductDashboard, ProductDeepDiveOut, ProductDashboardItem 
 from app.schemas.inventory import VariantUpdatePartial
 from app.services.qr_service import QRGeneratorService
-from app.services.pdf_generator import generate_catalog_pdf
+from app.services.pdf_generator import generate_catalog_pdf, build_catalog_display_list
 from app.crud.inventory_sync import sync_product_metrics
 from app.utils import delete_old_image, save_upload_sync
 
@@ -327,6 +327,21 @@ def get_products_dashboard(
 
 
 
+def _no_pdf_match_message(size_name):
+    """رسالة تشرح سبب عدم وجود نتائج بدل "لا توجد منتجات" المبهمة.
+
+    أشهر سبب فعلي: المقاس موجود في القائمة لكن كل مقاساته في المنتجات محذوفة
+    (المقاس يُنشأ في قاعدة البيانات لحظة كتابته في نموذج المنتج، فيبقى في
+    القائمة حتى لو لم يُربط بأي منتج).
+    """
+    if size_name:
+        return (
+            f"لا يوجد أي منتج مرتبط بالمقاس '{size_name}' حالياً. "
+            "تأكد أن المقاس مُضاف فعلاً داخل أحد المنتجات وليس في قائمة المقاسات فقط."
+        )
+    return "لا توجد منتجات مطابقة للفلاتر المختارة لتصديرها"
+
+
 @router.get("/export-pdf")
 def export_products_pdf(
     size_name: str = Query(None),
@@ -360,11 +375,16 @@ def export_products_pdf(
 
     products_data = query.all()
     if not products_data:
-        raise HTTPException(status_code=404, detail="لا توجد منتجات مطابقة للبحث لتصديرها")
+        raise HTTPException(status_code=404, detail=_no_pdf_match_message(clean_size_name))
+
+    # المنتج قد يطابق الفلتر بينما لا يوجد فيه لون واحد صالح للرسم (كل ألوانه
+    # محذوفة مثلاً). بدون هذا الفحص كان الرد ملف PDF فيه ترويسة فقط بلا كروت.
+    if not build_catalog_display_list(products_data, clean_size_name):
+        raise HTTPException(status_code=404, detail=_no_pdf_match_message(clean_size_name))
 
     try:
         buffer = io.BytesIO()
-        generate_catalog_pdf(products_data, buffer)
+        generate_catalog_pdf(products_data, buffer, size_name=clean_size_name)
         buffer.seek(0)
         create_system_audit_log(
           db=db,

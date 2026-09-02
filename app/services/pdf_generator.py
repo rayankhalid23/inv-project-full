@@ -86,7 +86,54 @@ def wrap_sizes_lines(canvas_obj, sizes_list, prefix, max_width, font, font_size,
             result.append(format_ar(render(kept[i], i == 0)))
     return result
 
-def generate_catalog_pdf(products, output_path):
+def build_catalog_display_list(products, size_name=None):
+    """يبني قائمة الكروت المراد رسمها في الـ PDF.
+
+    `size_name`: حين يُمرَّر، يُرسم المقاس المطلوب فقط ولا تظهر إلا الألوان التي
+    تملكه فعلاً. بدونه كان تصدير "فلترة حسب المقاس" يخرج بكل مقاسات المنتج،
+    فيبدو الفلتر كأنه لم يُطبَّق إطلاقاً.
+
+    ملاحظة مقصودة: لا نستبعد المقاسات التي نفدت كميتها (quantity_available = 0).
+    استعلام الفلترة في export_products_pdf يشملها لأنها منتجات حقيقية في
+    الكتالوج، وكان استبعادها هنا يُخرج ملف PDF فارغاً (ترويسة بلا كروت) دون أي
+    رسالة خطأ تشرح السبب.
+    """
+    wanted_size = size_name.strip().casefold() if isinstance(size_name, str) and size_name.strip() else None
+
+    display_list = []
+    for product in products:
+        for color in getattr(product, 'colors', []):
+            if getattr(color, 'deleted_at', None):
+                continue
+
+            variants = [v for v in getattr(color, 'variants', [])
+                        if not getattr(v, 'deleted_at', None)]
+
+            if wanted_size:
+                variants = [v for v in variants
+                            if v.size and (v.size.name or '').strip().casefold() == wanted_size]
+
+            if not variants:
+                continue
+
+            sizes_list = [v.size.name for v in variants if v.size]
+
+            # تحديد مسار الصورة
+            img_path = getattr(color, 'color_image', None) or getattr(product, 'main_image', None)
+
+            display_list.append({
+                "name": getattr(product, 'name', 'N/A'),
+                "color_name": getattr(color, 'color_name', ''),
+                "sizes_list": sizes_list,
+                "price": getattr(product, 'selling_price', '0.00'),
+                "ref": getattr(product, 'reference', f"ID: {product.id}"),
+                "img": img_path
+            })
+
+    return display_list
+
+
+def generate_catalog_pdf(products, output_path, size_name=None):
     c = canvas.Canvas(output_path, pagesize=A4)
     width, height = A4
     
@@ -112,32 +159,8 @@ def generate_catalog_pdf(products, output_path):
 
     draw_header(c)
 
-    # معالجة بيانات المنتجات
-    display_list = []
-    for product in products:
-        for color in getattr(product, 'colors', []):
-            if getattr(color, 'deleted_at', None): continue
-            
-            # جلب المقاسات المتاحة لهذا اللون
-            available_variants = [v for v in getattr(color, 'variants', []) 
-                                if v.quantity_available > 0 and not getattr(v, 'deleted_at', None)]
-            
-            if not available_variants: continue
-            
-            # تعديل: تنسيق المقاسات لتدعم العربي والأرقام بشكل سليم
-            sizes_list = [v.size.name for v in available_variants if v.size]
-
-            # تحديد مسار الصورة
-            img_path = getattr(color, 'color_image', None) or getattr(product, 'main_image', None)
-
-            display_list.append({
-                "name": getattr(product, 'name', 'N/A'),
-                "color_name": getattr(color, 'color_name', ''),
-                "sizes_list": sizes_list,
-                "price": getattr(product, 'selling_price', '0.00'),
-                "ref": getattr(product, 'reference', f"ID: {product.id}"),
-                "img": img_path
-            })
+    # معالجة بيانات المنتجات (مع احترام فلتر المقاس إن وُجد)
+    display_list = build_catalog_display_list(products, size_name)
 
     for i, item in enumerate(display_list):
         if y_position < card_height + margin:

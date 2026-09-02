@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   LayoutGrid, MoreVertical, Loader2, Plus, Search, 
   FileDown, Edit2, Power, X, CheckCircle2, AlertCircle,
@@ -8,6 +8,9 @@ import { catalogApi } from "../../../api/catalogApi";
 import ProductCard from "./ProductCard"; 
 import { saveOfflineAction } from "../../../utils/idbStorage";
 import { isNetworkError } from "../../../utils/netErrors"; 
+
+// حجم صفحة نتائج البحث/الفلترة — يطابق الحد الافتراضي في /products/dashboard
+const SEARCH_PAGE_SIZE = 20;
 
 
 
@@ -55,6 +58,11 @@ const CatalogsPage = ({
   // حالات جديدة لإدارة جلب المنتجات من الباك إند مباشرة أثناء البحث
   const [searchedProducts, setSearchedProducts] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  // التحميل التدريجي لنتائج البحث/الفلترة: بدونه كان الطلب يجلب أول 20 منتجاً
+  // فقط (الحد الافتراضي في getProductsDashboard) مرتّبة بالأحدث، فتظهر آخر
+  // المنتجات وحدها ويستحيل الوصول للأقدم مهما نزل المستخدم بالصفحة.
+  const [searchLoadingMore, setSearchLoadingMore] = useState(false);
+  const [searchHasMore, setSearchHasMore] = useState(true);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
@@ -103,42 +111,78 @@ const CatalogsPage = ({
     fetchInitialSizes();
   }, []);
 
-  // الاتصال المباشر بالباك إند للبحث الشامل عن المنتجات فوراً عند الكتابة أو تغيير الفلتر
-  useEffect(() => {
-    const delayDebounceFn = setTimeout(async () => {
-      if (searchTerm.trim() || selectedSizeFilter) {
-        setSearchLoading(true);
-        try {
-          // جلب المنتجات مباشرة من السيرفر بناءً على نص البحث وفلتر المقاس بدقة
-          const params = {};
-          if (searchTerm.trim()) params.search = searchTerm.trim();
-          if (selectedSizeId) params.size_id = selectedSizeId;
-          if (selectedSizeFilter) params.size_name = selectedSizeFilter;
+  // نحتفظ بأعلام التحميل في refs حتى لا تدخل ضمن اعتماديات مراقب التمرير،
+  // فيُعاد بناؤه مع كل تغيّر حالة ويفقد إحداثيات الصفحة الحالية (نفس العلة
+  // التي عولجت في CatalogProductsView).
+  const searchLoadingRef = useRef(searchLoading);
+  const searchLoadingMoreRef = useRef(searchLoadingMore);
+  const searchHasMoreRef = useRef(searchHasMore);
+  const searchedCountRef = useRef(0);
+  useEffect(() => { searchLoadingRef.current = searchLoading; }, [searchLoading]);
+  useEffect(() => { searchLoadingMoreRef.current = searchLoadingMore; }, [searchLoadingMore]);
+  useEffect(() => { searchHasMoreRef.current = searchHasMore; }, [searchHasMore]);
+  useEffect(() => { searchedCountRef.current = searchedProducts.length; }, [searchedProducts.length]);
 
-          const data = await catalogApi.getProductsDashboard(params);
-          
-          if (Array.isArray(data)) {
-            setSearchedProducts(data);
-          } else if (data && data.products) {
-            setSearchedProducts(data.products);
-          } else if (data && data.results) {
-            setSearchedProducts(data.results);
-          } else {
-            setSearchedProducts([]);
-          }
-        } catch (err) {
-          console.error("Error global searching products:", err);
-          setSearchedProducts([]);
-        } finally {
-          setSearchLoading(false);
-        }
-      } else {
-        setSearchedProducts([]);
-      }
+  const extractProductList = (data) => {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.products)) return data.products;
+    if (data && Array.isArray(data.results)) return data.results;
+    return [];
+  };
+
+  // الاتصال المباشر بالباك إند للبحث الشامل عن المنتجات فوراً عند الكتابة أو تغيير الفلتر
+  const fetchSearchPage = useCallback(async (offset, isReset) => {
+    if (isReset) setSearchLoading(true); else setSearchLoadingMore(true);
+    try {
+      // جلب المنتجات مباشرة من السيرفر بناءً على نص البحث وفلتر المقاس بدقة
+      const params = { offset, limit: SEARCH_PAGE_SIZE };
+      if (searchTerm.trim()) params.search = searchTerm.trim();
+      if (selectedSizeId) params.size_id = selectedSizeId;
+      if (selectedSizeFilter) params.size_name = selectedSizeFilter;
+
+      const data = await catalogApi.getProductsDashboard(params);
+      const list = extractProductList(data);
+      setSearchedProducts(prev => (isReset ? list : [...prev, ...list]));
+      setSearchHasMore(list.length === SEARCH_PAGE_SIZE);
+    } catch (err) {
+      console.error("Error global searching products:", err);
+      if (isReset) setSearchedProducts([]);
+      setSearchHasMore(false);
+    } finally {
+      if (isReset) setSearchLoading(false); else setSearchLoadingMore(false);
+    }
+  }, [searchTerm, selectedSizeFilter, selectedSizeId]);
+
+  useEffect(() => {
+    if (!searchTerm.trim() && !selectedSizeFilter) {
+      setSearchedProducts([]);
+      setSearchHasMore(true);
+      return undefined;
+    }
+    const delayDebounceFn = setTimeout(() => {
+      setSearchHasMore(true);
+      fetchSearchPage(0, true);
     }, 400); // تأخير بسيط 400ms لحماية السيرفر من كثرة الطلبات أثناء الكتابة السريعة
 
     return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm, selectedSizeFilter, selectedSizeId]);
+  }, [searchTerm, selectedSizeFilter, selectedSizeId, fetchSearchPage]);
+
+  // مرجع لآخر بطاقة في نتائج البحث: ظهورها في الشاشة يجلب الصفحة التالية،
+  // فتُحمَّل المنتجات الأقدم تلقائياً بدل التوقف عند أول 20 نتيجة.
+  const searchObserverRef = useRef();
+  const lastSearchedProductRef = useCallback((node) => {
+    if (searchObserverRef.current) searchObserverRef.current.disconnect();
+    if (!node) return;
+    searchObserverRef.current = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting
+        && searchHasMoreRef.current
+        && !searchLoadingRef.current
+        && !searchLoadingMoreRef.current) {
+        fetchSearchPage(searchedCountRef.current, false);
+      }
+    });
+    searchObserverRef.current.observe(node);
+  }, [fetchSearchPage]);
 
   const filteredCatalogs = useMemo(() => {
     return catalogs.filter(catalog => {
@@ -572,19 +616,36 @@ useEffect(() => {
             <Loader2 className="animate-spin text-[#800000]" size={30} />
           </div>
         ) : searchedProducts.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 animate-in fade-in duration-200">
-            {searchedProducts.map((product) => (
-              <ProductCard 
-                key={product.id} 
-                product={product}
-                canManage={canManage}
-                onEdit={canManage ? onEditProduct : undefined}
-                onDownloadQR={onDownloadQR}
-                onDelete={canManage ? () => onRefresh(statusFilter) : undefined}
-                onEditSuccess={() => onRefresh(statusFilter)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 animate-in fade-in duration-200">
+              {searchedProducts.map((product, index) => (
+                <div
+                  key={product.id}
+                  ref={index === searchedProducts.length - 1 ? lastSearchedProductRef : undefined}
+                >
+                  <ProductCard 
+                    product={product}
+                    canManage={canManage}
+                    onEdit={canManage ? onEditProduct : undefined}
+                    onDownloadQR={onDownloadQR}
+                    onDelete={canManage ? () => onRefresh(statusFilter) : undefined}
+                    onEditSuccess={() => onRefresh(statusFilter)}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {searchLoadingMore && (
+              <div className="flex justify-center items-center py-8 w-full">
+                <Loader2 className="animate-spin text-[#800000]" size={24} />
+              </div>
+            )}
+            {!searchHasMore && searchedProducts.length > SEARCH_PAGE_SIZE && (
+              <p className="text-center text-[11px] font-bold text-slate-300 py-6">
+                لا مزيد من المنتجات
+              </p>
+            )}
+          </>
         ) : (
           <div className="flex flex-col items-center justify-center py-20 text-slate-300">
             <AlertCircle size={40} strokeWidth={1} />

@@ -65,8 +65,10 @@ class VariantFilterItemResponse(BaseModel):
     product_code: str
     color_id: int
     color_name: Optional[str] = None
-    size_id: int
-    size_name: str
+    # المتغيّر قد يكون بلا مقاس (size_id nullable في الجدول) أو مقاسه مؤرشف،
+    # ولا يجوز أن يُسقطه ذلك من النتائج — لذا الحقلان اختياريان.
+    size_id: Optional[int] = None
+    size_name: Optional[str] = None
     quantity_available: int
     min_stock_threshold: int
     quantity_reserved: int

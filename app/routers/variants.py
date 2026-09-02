@@ -504,13 +504,16 @@ def filter_product_variants(
         ProductColor, ProductVariant.product_color_id == ProductColor.id
     ).join(
         Product, ProductColor.product_id == Product.id
-    ).join(
+    ).outerjoin(
+        # OUTER لا INNER عن قصد: الربط الداخلي مع شرط Size.deleted_at == None كان
+        # يُخفي المتغيّر بالكامل لمجرد أن *المقاس* أُرشِف، رغم أن المنتج والمتغيّر
+        # حيّان ولهما مخزون فعلي — فتختفي منتجات كاملة من شاشات التوالف والرواجع
+        # والبيع دون أي سبب ظاهر. المقاس المؤرشف يبقى اسمه معروضاً كما هو.
         Size, ProductVariant.size_id == Size.id
     ).filter(
         ProductVariant.deleted_at == None,
         ProductColor.deleted_at == None,
-        Product.deleted_at == None,
-        Size.deleted_at == None
+        Product.deleted_at == None
     )
 
     # 2. فلتر الكتالوج (إذا كان None أو لم يرسل، يتخطى الشرط تلقائياً ويعرض الكل)

@@ -59,16 +59,59 @@ const buildQrBox = (viewfinderWidth, viewfinderHeight) => {
   return { width: side, height: side };
 };
 
-// دقة أعلى = تفاصيل أكثر في الإطار = تعرّف أسهل على الأكواد الصغيرة المطبوعة
-const CAMERA_CONSTRAINTS = {
+// دقة أعلى = تفاصيل أكثر في الإطار = تعرّف أسهل على الأكواد الصغيرة المطبوعة.
+//
+// ⚠️ هذه القيود تُمرَّر عبر `videoConstraints` داخل إعدادات المسح، **لا** كوسيط
+// أول لـ start(). الوسيط الأول (cameraIdOrConfig) تتحقق منه المكتبة بصرامة:
+// يقبل نصاً (deviceId) أو كائناً بمفتاح **واحد** فقط هو facingMode أو deviceId،
+// وقيمة facingMode يجب أن تكون نصاً أو { exact }. تمرير كائن بثلاثة مفاتيح أو
+// { ideal } يجعل createVideoConstraints ترمي نصاً قبل أن تُلغى معاملة تغيير
+// الحالة داخل المكتبة، فيبقى الماسح عالقاً ولا تفتح الكاميرا إطلاقاً.
+export const VIDEO_CONSTRAINTS = {
   facingMode: { ideal: 'environment' },
   width: { ideal: 1280 },
   height: { ideal: 720 },
 };
 
+// الوسيط الأول الصالح لـ start(): مفتاح واحد وقيمة نصية — الصيغة الوحيدة
+// التي تقبلها html5-qrcode لاختيار الكاميرا الخلفية.
+export const REAR_CAMERA_SELECTOR = { facingMode: 'environment' };
+
 // رسالة الكاميرا الافتراضية العامة — تُستعمل فقط لو تعذّر تصنيف سبب الفشل
 // بدقة أكبر عبر resolveCameraErrorMessage أدناه.
 const DEFAULT_ERROR_MESSAGE = 'تعذّر فتح الكاميرا. تأكد من إعطاء إذن الكاميرا، أو استخدم البحث/الإدخال اليدوي.';
+
+/**
+ * أسماء أخطاء الكاميرا القياسية كما تظهر داخل نصوص html5-qrcode.
+ * الترتيب مهم: NotAllowedError قبل NotReadableError وهكذا لا يهم هنا لأن
+ * الأسماء لا تتداخل، لكن نُبقيها قائمة صريحة بدل regex فضفاض.
+ */
+const KNOWN_ERROR_NAMES = [
+  'NotAllowedError', 'PermissionDeniedError',
+  'NotFoundError', 'DevicesNotFoundError',
+  'NotReadableError', 'TrackStartError',
+  'OverconstrainedError', 'ConstraintNotSatisfiedError',
+  'SecurityError',
+];
+
+/**
+ * استخراج اسم سبب الفشل من الخطأ مهما كان شكله.
+ *
+ * html5-qrcode **لا ترمي كائنات DOMException إطلاقاً** — كل مسارات الفشل فيها
+ * ترفض بنصوص عادية، مثل:
+ *   "Error getting userMedia, error = NotAllowedError: Permission denied"
+ *   "Camera streaming not supported by the browser."
+ *   "Cannot transition to a new state, already under transition"
+ * فالاعتماد على `err.name` وحده كان يجعل كل حالات التصنيف أدناه كوداً ميتاً،
+ * ويعرض الرسالة العامة مهما كان السبب الحقيقي.
+ */
+function extractErrorName(err) {
+  if (!err) return undefined;
+  if (typeof err.name === 'string' && err.name && err.name !== 'Error') return err.name;
+  const text = typeof err === 'string' ? err : (typeof err.message === 'string' ? err.message : '');
+  if (!text) return undefined;
+  return KNOWN_ERROR_NAMES.find((n) => text.includes(n));
+}
 
 /**
  * رسالة دقيقة لكل سبب فشل بدل رسالة "إذن الكاميرا" العامة لكل الحالات —
@@ -86,7 +129,7 @@ export function resolveCameraErrorMessage(err, fallback) {
   if (typeof navigator !== 'undefined' && !navigator.mediaDevices) {
     return 'المتصفح لا يوفّر واجهة الكاميرا على هذا الاتصال. جرّب فتح التطبيق عبر رابط https، أو استخدم متصفحاً حديثاً.';
   }
-  const name = err?.name;
+  const name = extractErrorName(err);
   switch (name) {
     case 'NotAllowedError':
     case 'PermissionDeniedError':
@@ -245,17 +288,6 @@ export default function useQrScanner({
       }
       if (isStale()) return;
 
-      const html5QrCode = new Html5Qrcode(elementId, {
-        formatsToSupport: SUPPORTED_FORMATS,
-        // المفكّك الأصلي في المتصفح (BarcodeDetector) أسرع وأدق بكثير من
-        // نسخة الجافاسكربت، ومدعوم على كروم أندرويد وهو جهاز الموظفين.
-        useBarCodeDetectorIfSupported: true,
-        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-        verbose: false,
-      });
-      if (isStale()) return;
-      scannerRef.current = html5QrCode;
-
       const scanConfig = {
         fps: 15,
         qrbox: buildQrBox,
@@ -263,25 +295,65 @@ export default function useQrScanner({
         disableFlip: false,
       };
 
+      /**
+       * محاولة تشغيل واحدة على نسخة Html5Qrcode **جديدة**.
+       *
+       * النسخة الجديدة لكل محاولة ليست ترفاً: عندما تفشل start() فشلاً مبكراً
+       * تبقى معاملة تغيير الحالة داخل المكتبة مفتوحة (لا تُلغى)، فأي محاولة
+       * تالية على *نفس* النسخة ترمي فوراً
+       * "Cannot transition to a new state, already under transition"
+       * فتضيع المحاولة الاحتياطية بلا سبب حقيقي.
+       */
+      const attemptStart = async (cameraIdOrConfig, videoConstraints) => {
+        const instance = new Html5Qrcode(elementId, {
+          formatsToSupport: SUPPORTED_FORMATS,
+          // المفكّك الأصلي في المتصفح (BarcodeDetector) أسرع وأدق بكثير من
+          // نسخة الجافاسكربت، ومدعوم على كروم أندرويد وهو جهاز الموظفين.
+          useBarCodeDetectorIfSupported: true,
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          verbose: false,
+        });
+        // نُسجّل النسخة قبل بدء البث: فك الترميز قد يلتقط كوداً قبل أن يُحلّ
+        // وعد start() بلحظة، وبوابة منع التكرار تحتاج pause() على نسخة حقيقية.
+        scannerRef.current = instance;
+        try {
+          await instance.start(
+            cameraIdOrConfig,
+            { ...scanConfig, videoConstraints },
+            handleDecoded,
+            () => {},
+          );
+          return instance;
+        } catch (err) {
+          // ننظّف النسخة الفاشلة فوراً حتى لا تترك عنصر <video> معلّقاً في الـ DOM
+          if (scannerRef.current === instance) scannerRef.current = null;
+          try { if (instance.isScanning) await instance.stop(); } catch { /* لم تبدأ أصلاً */ }
+          try { instance.clear(); } catch { /* لا شيء لتنظيفه */ }
+          throw err;
+        }
+      };
+
+      let html5QrCode;
       try {
-        await html5QrCode.start(CAMERA_CONSTRAINTS, scanConfig, handleDecoded, () => {});
+        // الكاميرا الخلفية بصيغة الوسيط الوحيدة التي تقبلها المكتبة،
+        // وقيود الدقة عبر videoConstraints (الموضع المدعوم فعلاً لها).
+        html5QrCode = await attemptStart(REAR_CAMERA_SELECTOR, VIDEO_CONSTRAINTS);
       } catch (primaryErr) {
+        if (isStale()) return;
         // بعض الأجهزة ترفض قيد facingMode. نعيد المحاولة باختيار الكاميرا
         // الخلفية بالاسم، ثم بأي كاميرا متاحة، قبل أن نعلن الفشل.
         const cameras = await Html5Qrcode.getCameras();
         if (!cameras || cameras.length === 0) throw primaryErr;
         const back = cameras.find((c) => /back|rear|environment/i.test(c.label || ''));
         const chosen = back || cameras[cameras.length - 1];
-        await html5QrCode.start(chosen.id, scanConfig, handleDecoded, () => {});
-      }
-
-      // تركيز مستمر يجعل الكود المطبوع الصغير يُقرأ دون أن يبعد الموظف يده
-      // ويقرّبها. غير مدعوم على كل الأجهزة، ففشله لا يعني فشل المسح.
-      try {
-        await html5QrCode.applyVideoConstraints({
-          advanced: [{ focusMode: 'continuous' }],
+        // videoConstraints يتجاوز الوسيط الأول متى كان صالحاً، فلا بد أن يحمل
+        // الـ deviceId بنفسه وإلا اختير غير الكاميرا التي انتقيناها.
+        html5QrCode = await attemptStart(chosen.id, {
+          deviceId: { exact: chosen.id },
+          width: VIDEO_CONSTRAINTS.width,
+          height: VIDEO_CONSTRAINTS.height,
         });
-      } catch { /* الجهاز لا يدعم التحكم بالتركيز */ }
+      }
 
       if (isStale()) {
         // محاولة أحدث سبقتنا: نغلق *نسختنا* تحديداً لا ما في scannerRef،
@@ -293,6 +365,16 @@ export default function useQrScanner({
         if (scannerRef.current === html5QrCode) scannerRef.current = null;
         return;
       }
+      scannerRef.current = html5QrCode;
+
+      // تركيز مستمر يجعل الكود المطبوع الصغير يُقرأ دون أن يبعد الموظف يده
+      // ويقرّبها. غير مدعوم على كل الأجهزة، ففشله لا يعني فشل المسح.
+      try {
+        await html5QrCode.applyVideoConstraints({
+          advanced: [{ focusMode: 'continuous' }],
+        });
+      } catch { /* الجهاز لا يدعم التحكم بالتركيز */ }
+
       setStatus('active');
     } catch (err) {
       if (isStale()) return;
