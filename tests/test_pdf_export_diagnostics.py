@@ -17,9 +17,11 @@ class _Size:
 
 
 class _Variant:
-    def __init__(self, size=None, deleted=False):
+    def __init__(self, size=None, deleted=False, qty=5):
         self.size = size
         self.deleted_at = 'x' if deleted else None
+        # الكمية جزء من شرط الرسم: كرت الـ PDF لا يُرسم لمقاس نفد
+        self.quantity_available = qty
 
 
 class _Color:
@@ -125,6 +127,45 @@ class TestUnrenderableExplanation(unittest.TestCase):
         products = [_Product(f'P-{i}') for i in range(9)]
         lines = _explain_unrenderable(products, None)
         self.assertTrue(any('+4' in l for l in lines))
+
+    def test_reports_out_of_stock_products_separately(self):
+        """قبل الإصلاح: منتج ألوانه ومقاساته سليمة لكن كميتها صفر كان يُصنَّف
+        تحت "كل الألوان أو المقاسات محذوفة" — تشخيص خاطئ يقود لبحث في المكان الغلط."""
+        p = _Product('P-OOS', [_Color(variants=[_Variant(_Size('XL'), qty=0)])])
+        lines = _explain_unrenderable([p], None)
+        self.assertTrue(any('كمية متاحة صفر' in l and 'P-OOS' in l for l in lines))
+        self.assertFalse(any('محذوفة' in l for l in lines))
+
+    def test_out_of_stock_is_scoped_to_the_requested_size(self):
+        """المقاس المطلوب نفد، ومقاس آخر في نفس المنتج متوفر — العبرة بالمطلوب."""
+        p = _Product('P-MIX', [_Color(variants=[
+            _Variant(_Size('XL'), qty=0), _Variant(_Size('S'), qty=9)])])
+        lines = _explain_unrenderable([p], 'XL')
+        self.assertTrue(any('كمية متاحة صفر' in l and 'P-MIX' in l for l in lines))
+
+    def test_size_mismatch_takes_priority_over_stock(self):
+        """المقاس غير موجود في المنتج أصلاً — لا معنى للحديث عن كميته."""
+        p = _Product('P-NOSIZE', [_Color(variants=[_Variant(_Size('S'), qty=0)])])
+        lines = _explain_unrenderable([p], 'XL')
+        self.assertTrue(any('لا تشمل المقاس المطلوب' in l for l in lines))
+        self.assertFalse(any('كمية متاحة صفر' in l for l in lines))
+
+    def test_in_stock_products_produce_no_stock_complaint(self):
+        p = _Product('P-OK', [_Color(variants=[_Variant(_Size('XL'), qty=3)])])
+        lines = _explain_unrenderable([p], 'XL')
+        self.assertFalse(any('كمية متاحة صفر' in l for l in lines))
+
+    def test_reason_can_be_overridden_with_a_precise_size_explanation(self):
+        """السبب الدقيق القادم من _size_availability_report يجب أن يحلّ محل النص العام."""
+        d = _pdf_export_failure_detail(
+            stage='size',
+            counts={'total': 44, 'after_catalog': 4, 'after_size': 0,
+                    'after_text': 0, 'renderable': 0},
+            filter_lines=_describe_filters('صيفي', 2, 'XL', None, None),
+            reason_override='المقاس «XL» موجود داخل الكتالوج «صيفي» لكن الكمية صفر.',
+        )
+        self.assertIn('الكمية صفر', d)
+        self.assertNotIn('قد يكون موجوداً في قائمة المقاسات فقط', d)
 
     def test_never_returns_an_empty_explanation(self):
         p = _Product('P-6', [_Color(variants=[_Variant(_Size('XL'))], deleted=True)])

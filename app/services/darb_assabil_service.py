@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import logging
 import requests
 from typing import Dict, Any, List, Optional, Tuple
@@ -118,11 +119,16 @@ class DarbAssabilService:
     تتحكم بجميع طلبات الـ API والتحقق من الهواتف وإنشاء الشحنات.
     """
 
+    # خريطة المدن/المناطق شبه ثابتة — نُخزّنها لتفادي إعادة بنائها عند كل طلب
+    _CITIES_CACHE_TTL = 6 * 60 * 60  # 6 ساعات
+
     def __init__(self):
         self._base_url = None
         self._api_key = None
         self._account_id = None
         self.timeout = 15
+        self._cities_cache: Optional[Dict[str, List[str]]] = None
+        self._cities_cache_at = 0.0
 
     @property
     def base_url(self) -> str:
@@ -195,9 +201,12 @@ class DarbAssabilService:
 
         return DEFAULT_SERVICES
 
-    def get_cities(self) -> List[Dict[str, Any]]:
-        """
-        2. جلب قائمة المدن من درب السبيل (GET /api/cities?countryCode=LBY).
+    def _fetch_cities_from_api(self) -> Optional[List[Dict[str, Any]]]:
+        """يعيد مدن الـ API، أو None حين لا يوفّرها الحساب/الخادم.
+
+        التفريق بين "جاءت من الـ API" و"جاءت من القائمة المحلية" ضروري: بدونه
+        كانت `get_cities_and_areas` تظن أن الـ API يعمل فتُطلق طلب مناطق لكل
+        مدينة (19 طلباً) وكلها تفشل بنفس السبب — 5 ثوانٍ انتظار مقابل لا شيء.
         """
         url = f"{self.base_url}/api/cities?countryCode=LBY"
         try:
@@ -216,10 +225,24 @@ class DarbAssabilService:
                         }
                         for c in results if c.get("name") or c.get("city")
                     ]
+            else:
+                logger.warning(
+                    f"[DARB ASSABIL] GET /api/cities أعاد {res.status_code}: {res.text[:200]}"
+                )
         except Exception as e:
             logger.warning(f"Failed to fetch Darb Assabil cities from API: {e}")
+        return None
 
-        return [{"id": f"city_{i}", "_id": f"city_{i}", "name": city, "nameEn": city, "countryCode": "LBY"} for i, city in enumerate(LIBYA_CITIES_AND_AREAS.keys())]
+    @staticmethod
+    def _local_cities() -> List[Dict[str, Any]]:
+        return [{"id": f"city_{i}", "_id": f"city_{i}", "name": city, "nameEn": city, "countryCode": "LBY"}
+                for i, city in enumerate(LIBYA_CITIES_AND_AREAS.keys())]
+
+    def get_cities(self) -> List[Dict[str, Any]]:
+        """
+        2. جلب قائمة المدن من درب السبيل (GET /api/cities?countryCode=LBY).
+        """
+        return self._fetch_cities_from_api() or self._local_cities()
 
     def get_areas(self, city: Optional[str] = None, city_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -252,9 +275,19 @@ class DarbAssabilService:
     def get_cities_and_areas(self) -> Dict[str, List[str]]:
         """
         جلب الخريطة المجمعة للمدن والمناطق المدعومة للتوصيل.
+
+        النتيجة مُخزَّنة مؤقتاً (`_CITIES_CACHE_TTL`): الخريطة شبه ثابتة وتُطلب
+        عند كل فتح لنافذة إنشاء طلب، فلا معنى لإعادة بنائها في كل مرة.
         """
+        now = time.time()
+        if self._cities_cache and (now - self._cities_cache_at) < self._CITIES_CACHE_TTL:
+            return self._cities_cache
+
+        result = LIBYA_CITIES_AND_AREAS
         try:
-            cities_list = self.get_cities()
+            cities_list = self._fetch_cities_from_api()
+            # بدون مدن حقيقية من الـ API لا فائدة من سؤاله عن المناطق:
+            # نفس نقطة النهاية هي التي فشلت للتو.
             if cities_list and len(cities_list) > 3:
                 api_map = {}
                 for c in cities_list:
@@ -263,11 +296,13 @@ class DarbAssabilService:
                         areas = self.get_areas(city=c_name, city_id=c.get("id"))
                         api_map[c_name] = [a.get("name") for a in areas if a.get("name")] or ["وسط المدينة"]
                 if api_map:
-                    return api_map
+                    result = api_map
         except Exception as e:
             logger.warning(f"Failed to aggregate cities and areas: {e}")
 
-        return LIBYA_CITIES_AND_AREAS
+        self._cities_cache = result
+        self._cities_cache_at = now
+        return result
 
     def create_contact_or_get_id(self, customer_phone: str, customer_name: str) -> Optional[str]:
         """

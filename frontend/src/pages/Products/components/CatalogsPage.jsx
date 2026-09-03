@@ -82,7 +82,31 @@ const CatalogsPage = ({
   const [isCatDropdownOpen, setIsCatDropdownOpen] = useState(false);
   const [isSizeDropdownOpen, setIsSizeDropdownOpen] = useState(false);
   const [isMainSizeDropdownOpen, setIsMainSizeDropdownOpen] = useState(false);
-  
+
+  // بحث داخل قائمتي الكتالوجات والمقاسات في نافذة الـ PDF: القائمتان تتجاوزان
+  // العشرين عنصراً، وبدون بحث كان الوصول لكتالوج بعينه يتطلب تمريراً أعمى
+  // داخل صندوق ارتفاعه 200px.
+  const [catSearch, setCatSearch] = useState('');
+  const [sizeSearch, setSizeSearch] = useState('');
+
+  const visibleCatalogs = useMemo(() => {
+    const q = catSearch.trim().toLowerCase();
+    const list = filterData.catalogs;
+    return q ? list.filter(c => String(c.name || '').toLowerCase().includes(q)) : list;
+  }, [filterData.catalogs, catSearch]);
+
+  const visibleSizes = useMemo(() => {
+    const q = sizeSearch.trim().toLowerCase();
+    const list = filterData.sizes;
+    return q ? list.filter(s => String(s.name || '').toLowerCase().includes(q)) : list;
+  }, [filterData.sizes, sizeSearch]);
+
+  const selectedCatalogObj = useMemo(
+    () => filterData.catalogs.find(c => String(c.id) === String(pdfFilters.catalog_id)),
+    [filterData.catalogs, pdfFilters.catalog_id]
+  );
+
+
   const dropdownRef = useRef(null);
   const mainSizeDropdownRef = useRef(null);
 
@@ -264,6 +288,8 @@ const CatalogsPage = ({
     setSuccessMsg('');
     setIsPdfModalOpen(true);
     setPdfLoading(true);
+    setCatSearch('');
+    setSizeSearch('');
     try {
       const [sizes, catNames] = await Promise.all([
         catalogApi.getSizeNames(),
@@ -271,13 +297,17 @@ const CatalogsPage = ({
       ]);
 
       const formattedCatalogs = Array.isArray(catNames) ? catNames.map((item, index) => {
-        if (typeof item === 'string') return { id: item, name: item }; 
-        return { 
-            id: item.id || item._id || index, 
-            name: item.name || item.title || item.catalog_name || "بدون اسم" 
+        if (typeof item === 'string') return { id: item, name: item };
+        return {
+            id: item.id || item._id || index,
+            name: item.name || item.title || item.catalog_name || "بدون اسم",
+            // العدّادان قادمان من /catalogs/names-only ويميّزان الكتالوج الفارغ
+            // أو النافد قبل اختياره — لا بعد فشل التصدير.
+            products_count: Number(item.products_count ?? 0),
+            in_stock_count: Number(item.in_stock_count ?? 0),
         };
       }) : [];
-      
+
       setFilterData({
         sizes: Array.isArray(sizes) ? sizes : [], 
         catalogs: formattedCatalogs
@@ -716,22 +746,25 @@ useEffect(() => {
 
       {isPdfModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl overflow-hidden border border-white/20 animate-in zoom-in-95 duration-300">
-            <div className="flex justify-between items-center px-8 py-6 bg-slate-50/50 border-b">
+          {/* الكرت كان overflow-hidden فتُقصّ قائمة الكتالوجات المنسدلة عند حافته
+              ولا يظهر منها إلا أول سطر. نُبقي القصّ على الترويسة وحدها (rounded)
+              ونجعل جسم النافذة قابلاً للتمرير حتى تظهر القائمة كاملة. */}
+          <div className="bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl border border-white/20 animate-in zoom-in-95 duration-300 flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center px-8 py-6 bg-slate-50/50 border-b rounded-t-[2.5rem] shrink-0">
               <h2 className="text-lg font-black text-slate-800">تصدير ملف PDF</h2>
               <button onClick={() => setIsPdfModalOpen(false)} className="p-2 hover:bg-white rounded-full text-slate-400 transition-colors">
                 <X size={20} />
               </button>
             </div>
 
-            <form onSubmit={handleExportPdf} className="p-8 space-y-6" ref={dropdownRef}>
+            <form onSubmit={handleExportPdf} className="p-8 space-y-6 overflow-y-auto custom-scrollbar" ref={dropdownRef}>
               <div className="space-y-5">
                 <div className="space-y-2 relative">
                   <label className="flex items-center gap-2 text-xs font-black text-slate-500 mr-1">
                     <LayoutGrid size={14} className="text-[#800000]" /> فلترة حسب المقاس
                   </label>
                   <div 
-                    onClick={() => { setIsSizeDropdownOpen(!isSizeDropdownOpen); setIsCatDropdownOpen(false); }}
+                    onClick={() => { setSizeSearch(''); setIsSizeDropdownOpen(!isSizeDropdownOpen); setIsCatDropdownOpen(false); }}
                     className="w-full px-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl flex justify-between items-center cursor-pointer hover:bg-white transition-all"
                   >
                     <span className="font-bold text-sm text-slate-700">
@@ -741,16 +774,30 @@ useEffect(() => {
                   </div>
                   
                   {isSizeDropdownOpen && (
-                    <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl z-[110] overflow-hidden animate-in fade-in slide-in-from-top-2">
-                      <div className="max-h-[200px] overflow-y-auto custom-scrollbar font-bold text-sm">
-                        <div 
+                    <div className="mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2">
+                      <div className="p-2 border-b border-slate-50 bg-slate-50/60">
+                        <div className="relative">
+                          <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            autoFocus
+                            value={sizeSearch}
+                            onChange={(e) => setSizeSearch(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            placeholder="ابحث عن مقاس..."
+                            className="w-full pr-9 pl-3 py-2 text-xs font-bold bg-white border border-slate-100 rounded-xl outline-none focus:border-[#80000050]"
+                          />
+                        </div>
+                      </div>
+                      <div className="max-h-[220px] overflow-y-auto custom-scrollbar font-bold text-sm">
+                        <div
                           onClick={() => { setPdfFilters({...pdfFilters, size_name: ''}); setIsSizeDropdownOpen(false); }}
                           className="px-5 py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 text-slate-400"
                         >
                           جميع المقاسات
                         </div>
-                        {filterData.sizes.map(size => (
-                          <div 
+                        {visibleSizes.map(size => (
+                          <div
                             key={size.id}
                             onClick={() => { setPdfFilters({...pdfFilters, size_name: size.name}); setIsSizeDropdownOpen(false); }}
                             className="px-5 py-3 hover:bg-[#80000008] hover:text-[#800000] cursor-pointer border-b border-slate-50 last:border-0"
@@ -758,43 +805,94 @@ useEffect(() => {
                             {size.name}
                           </div>
                         ))}
+                        {visibleSizes.length === 0 && (
+                          <div className="px-5 py-4 text-xs font-bold text-slate-400 text-center">
+                            لا يوجد مقاس مطابق لـ «{sizeSearch}»
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
                 </div>
 
                 <div className="space-y-2 relative">
-                  <label className="flex items-center gap-2 text-xs font-black text-slate-500 mr-1">
-                    <FolderOpen size={14} className="text-[#800000]" /> اختيار كتالوج محدد
+                  <label className="flex items-center justify-between gap-2 text-xs font-black text-slate-500 mr-1">
+                    <span className="flex items-center gap-2">
+                      <FolderOpen size={14} className="text-[#800000]" /> اختيار كتالوج محدد
+                    </span>
+                    {filterData.catalogs.length > 0 && (
+                      <span className="text-[10px] font-bold text-slate-400">
+                        {filterData.catalogs.length} كتالوج نشط
+                      </span>
+                    )}
                   </label>
-                  <div 
-                    onClick={() => { setIsCatDropdownOpen(!isCatDropdownOpen); setIsSizeDropdownOpen(false); }}
+                  <div
+                    onClick={() => { setCatSearch(''); setIsCatDropdownOpen(!isCatDropdownOpen); setIsSizeDropdownOpen(false); }}
                     className="w-full px-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl flex justify-between items-center cursor-pointer hover:bg-white transition-all"
                   >
                     <span className="font-bold text-sm text-slate-700 truncate ml-2">
-                      {filterData.catalogs.find(c => c.id == pdfFilters.catalog_id)?.name || "جميع الكتالوجات"}
+                      {selectedCatalogObj?.name || "جميع الكتالوجات"}
                     </span>
                     <ChevronDown size={18} className={`text-slate-400 transition-transform ${isCatDropdownOpen ? 'rotate-180' : ''}`} />
                   </div>
-                  
+
+                  {/* تحذير مبكر: الكتالوج مختار لكنه لن ينتج أي كرت — أفضل من
+                      اكتشاف ذلك بعد الضغط على "تحميل PDF" وانتظار رد الخادم. */}
+                  {selectedCatalogObj && selectedCatalogObj.in_stock_count === 0 && (
+                    <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600 mr-1">
+                      <AlertCircle size={13} className="shrink-0" />
+                      {selectedCatalogObj.products_count === 0
+                        ? 'هذا الكتالوج لا يحتوي على أي منتج — لن يخرج منه ملف.'
+                        : 'كل مقاسات هذا الكتالوج كميتها صفر — لن يخرج منه ملف.'}
+                    </p>
+                  )}
+
                   {isCatDropdownOpen && (
-                    <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl z-[110] overflow-hidden animate-in fade-in slide-in-from-top-2">
-                      <div className="max-h-[200px] overflow-y-auto custom-scrollbar font-bold text-sm">
-                        <div 
+                    <div className="mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2">
+                      <div className="p-2 border-b border-slate-50 bg-slate-50/60">
+                        <div className="relative">
+                          <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            autoFocus
+                            value={catSearch}
+                            onChange={(e) => setCatSearch(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            placeholder="ابحث عن كتالوج..."
+                            className="w-full pr-9 pl-3 py-2 text-xs font-bold bg-white border border-slate-100 rounded-xl outline-none focus:border-[#80000050]"
+                          />
+                        </div>
+                      </div>
+                      <div className="max-h-[260px] overflow-y-auto custom-scrollbar font-bold text-sm">
+                        <div
                           onClick={() => { setPdfFilters({...pdfFilters, catalog_id: ''}); setIsCatDropdownOpen(false); }}
                           className="px-5 py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 text-slate-400"
                         >
                           جميع الكتالوجات
                         </div>
-                        {filterData.catalogs.map(cat => (
-                          <div 
-                            key={cat.id}
-                            onClick={() => { setPdfFilters({...pdfFilters, catalog_id: cat.id}); setIsCatDropdownOpen(false); }}
-                            className="px-5 py-3 hover:bg-[#80000008] hover:text-[#800000] cursor-pointer border-b border-slate-50 last:border-0"
-                          >
-                            {cat.name}
+                        {visibleCatalogs.map(cat => {
+                          const empty = cat.in_stock_count === 0;
+                          return (
+                            <div
+                              key={cat.id}
+                              onClick={() => { setPdfFilters({...pdfFilters, catalog_id: cat.id}); setIsCatDropdownOpen(false); }}
+                              className="px-5 py-3 hover:bg-[#80000008] hover:text-[#800000] cursor-pointer border-b border-slate-50 last:border-0 flex items-center justify-between gap-2"
+                            >
+                              <span className={`truncate ${empty ? 'text-slate-400' : ''}`}>{cat.name}</span>
+                              {/* الشارة تقول مسبقاً هل سينتج هذا الكتالوج كروتاً أم لا */}
+                              <span className={`shrink-0 text-[10px] font-black px-2 py-0.5 rounded-full ${
+                                empty ? 'bg-slate-100 text-slate-400' : 'bg-[#80000010] text-[#800000]'
+                              }`}>
+                                {empty ? 'فارغ' : `${cat.in_stock_count} مقاس متوفر`}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        {visibleCatalogs.length === 0 && (
+                          <div className="px-5 py-4 text-xs font-bold text-slate-400 text-center">
+                            لا يوجد كتالوج مطابق لـ «{catSearch}»
                           </div>
-                        ))}
+                        )}
                       </div>
                     </div>
                   )}

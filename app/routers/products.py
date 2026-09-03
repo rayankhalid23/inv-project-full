@@ -356,14 +356,22 @@ def _describe_filters(catalog_name, catalog_id, size_name, product_name, product
 def _explain_unrenderable(products, size_name):
     """لماذا لم يخرج أي كرت رغم مطابقة المنتجات للفلاتر؟
 
-    كرت الـ PDF يحتاج: منتج ← لون غير محذوف ← مقاس (متغيّر) غير محذوف.
+    كرت الـ PDF يحتاج: منتج ← لون غير محذوف ← مقاس (متغيّر) غير محذوف ← كمية متاحة > 0.
     كثير من المنتجات في النظام أُنشئت بلا ألوان أو بألوان بلا مقاسات، فتُطابق
     الفلتر ولا يوجد فيها ما يُرسَم — وكان الناتج ملف PDF فيه الترويسة فقط.
+
+    شرط الكمية جزء من الفلترة (`build_catalog_display_list` يستبعد ما نفد)، ولذلك
+    يجب أن يُذكر هنا صراحةً: بدونه كانت المنتجات النافدة تُصنَّف خطأً تحت
+    "كل الألوان أو المقاسات محذوفة" رغم أن ألوانها ومقاساتها سليمة تماماً.
     """
     wanted = size_name.strip().casefold() if size_name else None
     no_colors = []
     colors_without_sizes = []
     size_mismatch = []
+    out_of_stock = []
+
+    def qty(v):
+        return getattr(v, 'quantity_available', 0) or 0
 
     for p in products:
         live_colors = [c for c in getattr(p, 'colors', []) if not getattr(c, 'deleted_at', None)]
@@ -377,9 +385,15 @@ def _explain_unrenderable(products, size_name):
             colors_without_sizes.append(p.code or str(p.id))
             continue
 
-        if wanted and not any(v.size and (v.size.name or '').strip().casefold() == wanted
-                              for v in live_variants):
-            size_mismatch.append(p.code or str(p.id))
+        if wanted:
+            matching = [v for v in live_variants
+                        if v.size and (v.size.name or '').strip().casefold() == wanted]
+            if not matching:
+                size_mismatch.append(p.code or str(p.id))
+            elif not any(qty(v) > 0 for v in matching):
+                out_of_stock.append(p.code or str(p.id))
+        elif not any(qty(v) > 0 for v in live_variants):
+            out_of_stock.append(p.code or str(p.id))
 
     def sample(codes):
         head = "، ".join(codes[:5])
@@ -392,12 +406,123 @@ def _explain_unrenderable(products, size_name):
         lines.append(f"  • {len(colors_without_sizes)} منتج له ألوان بلا مقاسات: {sample(colors_without_sizes)}")
     if size_mismatch:
         lines.append(f"  • {len(size_mismatch)} منتج مقاساته الحيّة لا تشمل المقاس المطلوب: {sample(size_mismatch)}")
+    if out_of_stock:
+        detail = f"المقاس «{size_name}» فيها" if size_name else "كل مقاساتها"
+        lines.append(f"  • {len(out_of_stock)} منتج {detail} بكمية متاحة صفر (نفدت): {sample(out_of_stock)}")
     if not lines:
         lines.append("  • كل الألوان أو المقاسات محذوفة (deleted_at) في المنتجات المطابقة")
     return lines
 
 
-def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None):
+def _size_availability_report(db, size_name, catalog_id=None, catalog_name=None):
+    """يشرح **بالضبط** لماذا لم يُطابق فلتر المقاس شيئاً، ويعيد (سبب، سطور تفصيل).
+
+    الرسالة السابقة كانت واحدة لكل الحالات ("المقاس قد يكون موجوداً في قائمة
+    المقاسات فقط") رغم أن الأسباب مختلفة جذرياً وحلولها مختلفة:
+      1. لا يوجد مقاس بهذا الاسم في النظام أصلاً (خطأ إملائي أو مقاس محذوف).
+      2. المقاس مُعرَّف لكنه لم يُضف داخل أي منتج.
+      3. المقاس مضاف لكن كميته المتاحة صفر في كل مكان (نفد).
+      4. المقاس متوفر بكمية — لكن في كتالوجات أخرى غير الكتالوج المختار.
+      5. المقاس موجود داخل الكتالوج المختار لكن كميته فيه صفر.
+    """
+    wanted = (size_name or '').strip()
+    if not wanted:
+        return None, []
+
+    # 1) هل الاسم موجود في جدول المقاسات أصلاً؟
+    size_exists = (
+        db.query(Size.id)
+        .filter(Size.deleted_at.is_(None), Size.name.ilike(wanted))
+        .first()
+    )
+    if not size_exists:
+        similar = (
+            db.query(Size.name)
+            .filter(Size.deleted_at.is_(None), Size.name.ilike(f"%{wanted}%"))
+            .limit(5).all()
+        )
+        lines = []
+        if similar:
+            lines.append("  • مقاسات مشابهة في النظام: " + "، ".join(s[0] for s in similar))
+        return (f"لا يوجد مقاس باسم «{wanted}» في قائمة المقاسات (قد يكون الاسم مكتوباً بشكل مختلف "
+                f"أو المقاس محذوف). راجع قائمة المقاسات وأعد الاختيار منها."), lines
+
+    # 2) أين يُستخدم هذا المقاس فعلاً، وبأي كمية؟
+    usage = (
+        db.query(
+            Catalog.id.label('catalog_id'),
+            Catalog.name.label('catalog_name'),
+            Product.code.label('product_code'),
+            func.sum(ProductVariant.quantity_available).label('qty'),
+        )
+        .join(ProductColor, ProductColor.product_id == Product.id)
+        .join(ProductVariant, ProductVariant.product_color_id == ProductColor.id)
+        .join(Size, Size.id == ProductVariant.size_id)
+        .outerjoin(Catalog, Catalog.id == Product.catalog_id)
+        .filter(
+            Product.deleted_at.is_(None),
+            ProductColor.deleted_at.is_(None),
+            ProductVariant.deleted_at.is_(None),
+            Size.deleted_at.is_(None),
+            Size.name.ilike(wanted),
+        )
+        .group_by(Catalog.id, Catalog.name, Product.code)
+        .all()
+    )
+
+    if not usage:
+        return (f"المقاس «{wanted}» مُعرَّف في قائمة المقاسات لكنه غير مضاف داخل أي منتج بعد. "
+                f"أضِفه إلى منتج (لون + مقاس + كمية) ثم أعد التصدير."), []
+
+    in_stock = [r for r in usage if (r.qty or 0) > 0]
+
+    def catalogs_of(rows):
+        names = []
+        for r in rows:
+            n = r.catalog_name or f"كتالوج #{r.catalog_id}"
+            if n not in names:
+                names.append(n)
+        return names
+
+    def fmt(names):
+        head = "، ".join(names[:5])
+        return head + (f" ... (+{len(names) - 5})" if len(names) > 5 else "")
+
+    # --- بدون فلتر كتالوج: يبقى سبب واحد محتمل وهو نفاد الكمية ---
+    if not catalog_id:
+        if not in_stock:
+            codes = [r.product_code for r in usage if r.product_code]
+            return (f"المقاس «{wanted}» مضاف في {len(usage)} منتج لكن الكمية المتاحة فيها كلها صفر (نفدت). "
+                    f"الكتالوج يعرض فقط ما هو متوفر للبيع، لذلك لا يوجد ما يُطبع."), \
+                   [f"  • المنتجات النافدة بهذا المقاس: {fmt(codes)}"]
+        return None, []
+
+    # --- مع فلتر كتالوج: نفرّق بين "غير موجود في الكتالوج" و"موجود لكن نفد" ---
+    label = catalog_name or f"#{catalog_id}"
+    rows_here = [r for r in usage if r.catalog_id == catalog_id]
+    elsewhere_in_stock = catalogs_of([r for r in in_stock if r.catalog_id != catalog_id])
+
+    if not rows_here:
+        lines = []
+        if elsewhere_in_stock:
+            lines.append(f"  • متوفر بكمية في الكتالوجات: {fmt(elsewhere_in_stock)}")
+        else:
+            lines.append("  • وهو غير متوفر بكمية في أي كتالوج آخر أيضاً (كل الكميات صفر)")
+        return (f"المقاس «{wanted}» غير مضاف إلى أي منتج داخل الكتالوج «{label}». "
+                f"اختر كتالوجاً يحتوي هذا المقاس، أو أضِف المقاس لمنتجات هذا الكتالوج."), lines
+
+    if not [r for r in rows_here if (r.qty or 0) > 0]:
+        codes = [r.product_code for r in rows_here if r.product_code]
+        lines = [f"  • المنتجات التي فيها هذا المقاس داخل «{label}» وكميتها صفر: {fmt(codes)}"]
+        if elsewhere_in_stock:
+            lines.append(f"  • نفس المقاس متوفر بكمية في: {fmt(elsewhere_in_stock)}")
+        return (f"المقاس «{wanted}» موجود داخل الكتالوج «{label}» في {len(rows_here)} منتج، "
+                f"لكن الكمية المتاحة فيها صفر (نفدت). أعد تعبئة المخزون أو اختر مقاساً آخر."), lines
+
+    return None, []
+
+
+def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None, reason_override=None):
     """رسالة تشخيص تحدّد **الخطوة** التي انقطعت عندها النتائج، بالأرقام.
 
     الرسالة العامة السابقة (\"لا توجد منتجات مطابقة\") كانت تتّهم آخر فلتر مهما
@@ -422,7 +547,8 @@ def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None)
         'catalog': "الكتالوج المختار لا يحتوي على أي منتج غير محذوف. اختر كتالوجاً آخر.",
         'size': "لا يوجد أي منتج (ضمن الفلاتر الأخرى) فيه هذا المقاس. المقاس قد يكون موجوداً في قائمة المقاسات فقط دون أن يُضاف داخل أي منتج.",
         'text': "فلتر الاسم أو المرجع لم يطابق أي منتج.",
-        'render': "المنتجات موجودة فعلاً ومطابقة للفلاتر، لكن لا يوجد فيها ما يُطبع (كرت الـ PDF يحتاج لوناً ومقاساً واحداً على الأقل).",
+        'render': ("المنتجات موجودة فعلاً ومطابقة للفلاتر، لكن لا يوجد فيها ما يُطبع "
+                   "(كرت الـ PDF يحتاج لوناً ومقاساً واحداً على الأقل بكمية متاحة أكبر من صفر)."),
     }
 
     parts = [
@@ -434,7 +560,7 @@ def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None)
         "مسار التصفية خطوة بخطوة:",
         *steps,
         "",
-        f"سبب التوقف: {reasons[stage]}",
+        f"سبب التوقف: {reason_override or reasons[stage]}",
     ]
     if extra_lines:
         parts += ["", "التفصيل:", *extra_lines]
@@ -466,9 +592,10 @@ def export_products_pdf(
     filter_lines = _describe_filters(catalog_name, catalog_id, clean_size_name,
                                      product_name, product_ref)
 
-    def fail(stage, extra_lines=None):
+    def fail(stage, extra_lines=None, reason_override=None):
         raise HTTPException(status_code=404, detail=_pdf_export_failure_detail(
-            stage=stage, counts=counts, filter_lines=filter_lines, extra_lines=extra_lines))
+            stage=stage, counts=counts, filter_lines=filter_lines,
+            extra_lines=extra_lines, reason_override=reason_override))
 
     query = base
 
@@ -520,15 +647,29 @@ def export_products_pdf(
                 fail("catalog")
         if clean_size_name:
             counts["after_size"] = 0
-            fail("size")
+            # سبب دقيق بدل الرسالة العامة: مقاس غير موجود؟ غير مضاف لأي منتج؟
+            # نفدت كميته؟ أم متوفر لكن في كتالوج آخر غير المختار؟
+            reason, extra = _size_availability_report(
+                db, clean_size_name, catalog_id=catalog_id, catalog_name=catalog_name)
+            fail("size", extra_lines=extra or None, reason_override=reason)
         fail("text")
 
     # 4) هل يوجد فعلاً ما يُرسم؟ المنتج قد يطابق كل الفلاتر وهو بلا ألوان أو
-    # بألوان بلا مقاسات — وكان الناتج ملف PDF فيه الترويسة فقط بلا أي تفسير.
+    # بألوان بلا مقاسات أو نفدت كميته — وكان الناتج ملف PDF فيه الترويسة فقط
+    # بلا أي تفسير.
     cards = build_catalog_display_list(products_data, clean_size_name)
     counts["renderable"] = len(cards)
     if not cards:
-        fail("render", _explain_unrenderable(products_data, clean_size_name))
+        # المنتجات وصلت لآخر خطوة، فكل العدّادات السابقة تساوي عدد النتائج —
+        # تركها None كان يُظهر "بعد فلتر الكتالوج: None" في مسار تشخيص مكتمل.
+        matched = len(products_data)
+        for key in ("after_catalog", "after_size", "after_text"):
+            counts[key] = matched
+        reason, extra = _size_availability_report(
+            db, clean_size_name, catalog_id=catalog_id, catalog_name=catalog_name)
+        fail("render",
+             extra_lines=_explain_unrenderable(products_data, clean_size_name) + (extra or []),
+             reason_override=reason)
 
     try:
         buffer = io.BytesIO()
