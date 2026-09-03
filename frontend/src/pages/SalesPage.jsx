@@ -18,6 +18,8 @@ import { fetchEmployeesApi } from '../api/userApi';
 import { saveOfflineAction } from '../utils/idbStorage';
 import { isNetworkError } from '../utils/netErrors';
 import ProductPicker from '../components/products/ProductPicker';
+import DestinationPicker from '../components/sales/DestinationPicker';
+import { parseOrderDestination, matchDestinationToCatalog } from '../utils/darbDestination';
 import { FALLBACK_DARB_SERVICES, FALLBACK_DARB_CITIES } from '../constants/darbAssabilFallback';
 
 const playScanBeep = (isSuccess = true) => {
@@ -147,7 +149,7 @@ export default function SalesPage() {
   const [loadingDarbData, setLoadingDarbData]             = useState(false);
   const [selectedDarbService, setSelectedDarbService]     = useState('67f19a776dabff22987169e9');
   const [selectedDarbCity, setSelectedDarbCity]           = useState('طرابلس');
-  const [selectedDarbArea, setSelectedDarbArea]           = useState('');
+  const [selectedDarbArea, setSelectedDarbArea]           = useState('وسط المدينة');
   const [selectedDarbPaymentBy, setSelectedDarbPaymentBy] = useState('receiver');
   const [deliveryGender, setDeliveryGender]               = useState('رجالي'); // 'رجالي' | 'نسائي'
   const [darbDetailedAddress, setDarbDetailedAddress]     = useState('');
@@ -158,9 +160,15 @@ export default function SalesPage() {
   const [isDarbModalOpen, setIsDarbModalOpen]             = useState(false);
   const [isSendingDarb, setIsSendingDarb]                 = useState(false);
 
+  // مرجع حي للوجهة المختارة — يمنع إعادة ضبطها بعد اكتمال جلب المدن
+  const darbDestRef = useRef({ city: 'طرابلس', area: 'وسط المدينة' });
+  useEffect(() => {
+    darbDestRef.current = { city: selectedDarbCity, area: selectedDarbArea };
+  }, [selectedDarbCity, selectedDarbArea]);
+
   // جلب بيانات باقات ومدن درب السبيل عند الحاجة
   const loadDarbDataIfNeeded = useCallback(async (force = false) => {
-    if (!force && darbServices.length > 0 && Object.keys(darbCitiesAreas).length > 0) return;
+    if (!force && darbServices.length > 0 && Object.keys(darbCitiesAreas).length > 0) return darbCitiesAreas;
     setLoadingDarbData(true);
 
     let fetchedServices = null;
@@ -199,126 +207,69 @@ export default function SalesPage() {
         : FALLBACK_DARB_CITIES;
 
     setDarbCitiesAreas(safeCities);
-    const cityKeys   = Object.keys(safeCities);
-    const initialCity = cityKeys.includes('طرابلس') ? 'طرابلس' : cityKeys[0];
-    if (initialCity) {
-      setSelectedDarbCity(initialCity);
-      const areas = safeCities[initialCity] || [];
-      if (areas.length > 0) setSelectedDarbArea(areas[0]);
-    }
+
+    // ضبط الوجهة الحالية على القائمة المُحمَّلة دون إلغاء اختيار المستخدم/الطلب المفتوح
+    const current = darbDestRef.current;
+    const matched = matchDestinationToCatalog(safeCities, current.city, current.area);
+    setSelectedDarbCity(matched.city);
+    setSelectedDarbArea(matched.area);
 
     setLoadingDarbData(false);
+    return safeCities;
   }, [darbServices.length, darbCitiesAreas]);
 
-  const handleDarbCityChange = (newCity) => {
-    setSelectedDarbCity(newCity);
-    const areas = darbCitiesAreas[newCity] || [];
-    if (areas.length > 0) {
-      setSelectedDarbArea(areas[0]);
-    } else {
-      setSelectedDarbArea('');
-    }
-  };
+  // اختيار الوجهة الموحّد (المدينة - المنطقة) من القائمة المنسدلة
+  const handleDarbDestinationChange = useCallback(({ city, area }) => {
+    setSelectedDarbCity(city);
+    setSelectedDarbArea(area || 'وسط المدينة');
+  }, []);
 
-  const sortedDarbCities = useMemo(() => {
-    return Object.keys(darbCitiesAreas).sort((a, b) => a.localeCompare(b, 'ar'));
-  }, [darbCitiesAreas]);
+  /**
+   * مزامنة وجهة درب السبيل (المدينة - المنطقة) والعنوان التفصيلي من بيانات الطلب نفسه،
+   * حتى يظهر للطلب دائماً نفس المدينة والمنطقة المحفوظة عند إرساله لدرب السبيل.
+   */
+  const syncDarbDestinationFromOrder = useCallback(async (order) => {
+    if (!order) return;
 
-  const availableAreasForSelectedCity = useMemo(() => {
-    const list = darbCitiesAreas[selectedDarbCity] || [];
-    return [...list].sort((a, b) => a.localeCompare(b, 'ar'));
-  }, [darbCitiesAreas, selectedDarbCity]);
+    // 1. استخراج الوجهة المحفوظة فعلياً في الطلب (address أولاً ثم delivery_info)
+    const { city, area, detailed } = parseOrderDestination(order);
+    setDarbDetailedAddress(detailed || order.address || '');
+    setSelectedDarbCity(city || 'طرابلس');
+    setSelectedDarbArea(area || 'وسط المدينة');
 
-  // تسميات المدن التوضيحية لتسهيل وصول التاجر للمناطق التابعة
-  const formatCityOptionLabel = (city) => {
-    switch (city) {
-      case 'قصر خيار':
-        return 'قصر خيار (القره بولي)';
-      case 'جالو اوجلة':
-        return 'جالو اوجلة (تازربو / الواحات)';
-      case 'البريقة':
-        return 'البريقة (مرسى البريقة / العقيلة / بشر)';
-      case 'الخمس':
-        return 'الخمس (زليتن / مسلاتة)';
-      case 'صبراتة':
-        return 'صبراتة (صرمان)';
-      case 'رأس لانوف':
-        return 'رأس لانوف (بن جواد)';
-      default:
-        return city;
-    }
-  };
+    // 2. ضبطها على المدن والمناطق المعتمدة لدى درب السبيل بعد اكتمال جلب القائمة
+    const map = (await loadDarbDataIfNeeded()) || darbCitiesAreas;
+    const matched = matchDestinationToCatalog(map, city, area);
+    setSelectedDarbCity(matched.city);
+    setSelectedDarbArea(matched.area);
+  }, [loadDarbDataIfNeeded, darbCitiesAreas]);
+
+  /**
+   * فتح نافذة طلب جديد بوجهة افتراضية نظيفة — حتى لا تتسرب وجهة آخر طلب تمّت معاينته
+   * إلى الطلب الجديد (الحقول مشتركة بين النافذتين).
+   */
+  const openCreateOrderModal = useCallback(async () => {
+    setIsCreateOpen(true);
+    fetchAvailableProducts();
+    setDarbDetailedAddress('');
+    const map = (await loadDarbDataIfNeeded()) || darbCitiesAreas;
+    const def = matchDestinationToCatalog(map, 'طرابلس', 'وسط المدينة');
+    setSelectedDarbCity(def.city);
+    setSelectedDarbArea(def.area);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadDarbDataIfNeeded, darbCitiesAreas]);
+
+  // عند فتح أي طلب (أو بعد تعديل عنوانه) تُضبط وجهة درب السبيل على وجهة الطلب نفسه
+  useEffect(() => {
+    if (!selectedOrder) return;
+    syncDarbDestinationFromOrder(selectedOrder);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrder?.id, selectedOrder?.address]);
 
   // فتح نافذة إسناد شحنة درب السبيل مع استخراج وتعبئة المدينة والمنطقة الفعلية من بيانات الطلب
   const openDarbModalForOrder = (order) => {
-    loadDarbDataIfNeeded();
     if (!order) return;
-
-    let detectedCity = '';
-    let detectedArea = '';
-    let detailed = '';
-
-    // 1. محاولة الاستخراج من delivery_info (مثال: "درب السبيل [رجالي] (بنغازي - الليثي)" أو "درب السبيل (البريقة - العقيلة)")
-    let parsedFromDelivery = false;
-    if (order.delivery_info && order.delivery_info.includes('(') && order.delivery_info.includes(')')) {
-      const match = order.delivery_info.match(/\(([^)]+)\)/);
-      if (match && match[1]) {
-        const segs = match[1].split('-').map(s => s.trim());
-        if (segs.length >= 2 && segs[0]) {
-          detectedCity = segs[0];
-          detectedArea = segs[1];
-          parsedFromDelivery = true;
-        } else if (segs.length === 1 && segs[0]) {
-          detectedCity = segs[0];
-          parsedFromDelivery = true;
-        }
-      }
-    }
-
-    // 2. إذا لم تكن في delivery_info، نفحص address إن كان مركباً: "المدينة - المنطقة - التفاصيل"
-    if (order.address && order.address.includes(' - ')) {
-      const parts = order.address.split(' - ').map(s => s.trim());
-      if (parts.length >= 2) {
-        if (!parsedFromDelivery) {
-          detectedCity = parts[0];
-          detectedArea = parts[1];
-        }
-        detailed = parts.slice(2).join(' - ').trim() || parts.slice(1).join(' - ').trim();
-      } else {
-        detailed = order.address;
-      }
-    } else {
-      detailed = order.address || '';
-    }
-
-    // مواءمة تحويل أسماء المناطق الشائعة لفرعها الرسمي في درب السبيل
-    if (detectedCity === 'القره بولي') {
-      detectedCity = 'قصر خيار';
-      detectedArea = 'القره بولي';
-    } else if (detectedCity === 'تازربو') {
-      detectedCity = 'جالو اوجلة';
-      detectedArea = 'تازربو';
-    } else if (detectedCity === 'زليتن') {
-      detectedCity = 'الخمس';
-      detectedArea = 'زليتن';
-    } else if (detectedCity === 'صرمان') {
-      detectedCity = 'صبراتة';
-      detectedArea = 'صرمان';
-    }
-
-    const finalCity = (detectedCity && darbCitiesAreas[detectedCity]) ? detectedCity : (selectedDarbCity || 'طرابلس');
-    setSelectedDarbCity(finalCity);
-
-    const cityAreas = darbCitiesAreas[finalCity] || [];
-    if (detectedArea && cityAreas.includes(detectedArea)) {
-      setSelectedDarbArea(detectedArea);
-    } else if (cityAreas.length > 0) {
-      setSelectedDarbArea(cityAreas[0]);
-    } else {
-      setSelectedDarbArea(detectedArea || 'وسط المدينة');
-    }
-
-    setDarbDetailedAddress(detailed || order.address || '');
+    syncDarbDestinationFromOrder(order);
     setIsDarbModalOpen(true);
   };
 
@@ -356,7 +307,11 @@ export default function SalesPage() {
     setShippingProvider('darb_assabil');
     setDeliveryGender('رجالي');
     setDarbDetailedAddress('');
-  }, []);
+    // إعادة الوجهة الافتراضية مع ضبطها على قائمة درب السبيل المحمّلة
+    const def = matchDestinationToCatalog(darbCitiesAreas, 'طرابلس', 'وسط المدينة');
+    setSelectedDarbCity(def.city);
+    setSelectedDarbArea(def.area);
+  }, [darbCitiesAreas]);
 
   // ---- States الشحن القديم والتعديل ----
   const [deliveryType, setDeliveryType] = useState('');
@@ -367,27 +322,17 @@ export default function SalesPage() {
   });
   const [editShippingProvider, setEditShippingProvider]       = useState('darb_assabil');
   const [editDarbCity, setEditDarbCity]                       = useState('طرابلس');
-  const [editDarbArea, setEditDarbArea]                       = useState('');
+  const [editDarbArea, setEditDarbArea]                       = useState('وسط المدينة');
   const [editDarbDetailedAddress, setEditDarbDetailedAddress] = useState('');
   const [editDarbService, setEditDarbService]                 = useState('67f19a776dabff22987169e9');
   const [editDarbPaymentBy, setEditDarbPaymentBy]             = useState('receiver');
   const [editSelectedVariants, setEditSelectedVariants]       = useState([]);
   const [editShowProductsSection, setEditShowProductsSection] = useState(false);
 
-  const handleEditDarbCityChange = (newCity) => {
-    setEditDarbCity(newCity);
-    const areas = darbCitiesAreas[newCity] || [];
-    if (areas.length > 0) {
-      setEditDarbArea(areas[0]);
-    } else {
-      setEditDarbArea('');
-    }
-  };
-
-  const availableAreasForEditCity = useMemo(() => {
-    const list = darbCitiesAreas[editDarbCity] || [];
-    return [...list].sort((a, b) => a.localeCompare(b, 'ar'));
-  }, [darbCitiesAreas, editDarbCity]);
+  const handleEditDestinationChange = useCallback(({ city, area }) => {
+    setEditDarbCity(city);
+    setEditDarbArea(area || 'وسط المدينة');
+  }, []);
 
   const handleEditPhoneChange = (index, value) => {
     const updated = [...editForm.customer_phones];
@@ -774,6 +719,12 @@ const handleScanProduct = async (barcodeValue) => {
     // 4. فحص إضافة منتجات للطلب
     if (selectedVariants.length === 0) {
       showToast('يرجى إضافة منتج واحد على الأقل للطلب', 'error');
+      return;
+    }
+
+    // 5. فحص اختيار منطقة التوصيل (المدينة - المنطقة) من قائمة درب السبيل
+    if (!selectedDarbCity || !selectedDarbArea) {
+      showToast('يرجى اختيار منطقة التوصيل (المدينة - المنطقة) من القائمة', 'error');
       return;
     }
 
@@ -1202,7 +1153,6 @@ const updateEditVariantQty = (variantId, qty) => {
     if (!selectedOrder) return;
 
     fetchAvailableProducts();
-    loadDarbDataIfNeeded();
 
     const phones = Array.isArray(selectedOrder.customer_phones) && selectedOrder.customer_phones.length > 0
       ? [...selectedOrder.customer_phones]
@@ -1210,22 +1160,20 @@ const updateEditVariantQty = (variantId, qty) => {
         ? [selectedOrder.customer_phones]
         : [''];
 
-    let city = selectedDarbCity || 'طرابلس';
-    let area = selectedDarbArea || '';
-    let detailed = selectedOrder.address || '';
+    // استخراج وجهة الطلب المحفوظة (نفس المنطق المستخدم عند الإرسال لدرب السبيل)
+    const { city, area, detailed } = parseOrderDestination(selectedOrder);
 
-    if (selectedOrder.address && selectedOrder.address.includes(' - ')) {
-      const parts = selectedOrder.address.split(' - ');
-      if (parts.length >= 2) {
-        city = parts[0].trim();
-        area = parts[1].trim();
-        detailed = parts.slice(2).join(' - ').trim() || parts[1].trim();
-      }
-    }
-
-    setEditDarbCity(city);
-    setEditDarbArea(area);
+    setEditDarbCity(city || 'طرابلس');
+    setEditDarbArea(area || 'وسط المدينة');
     setEditDarbDetailedAddress(detailed);
+
+    // بعد اكتمال جلب قائمة درب السبيل نضبط الوجهة على أقرب فرع/منطقة معتمدة
+    loadDarbDataIfNeeded().then(map => {
+      const matched = matchDestinationToCatalog(map || darbCitiesAreas, city, area);
+      setEditDarbCity(matched.city);
+      setEditDarbArea(matched.area);
+    });
+
     setEditShippingProvider(selectedOrder.shipping_provider || 'darb_assabil');
     setEditDarbService(selectedOrder.darb_service_id || selectedDarbService || '67f19a776dabff22987169e9');
     setEditDarbPaymentBy(selectedOrder.darb_payment_by || selectedDarbPaymentBy || 'receiver');
@@ -1279,6 +1227,11 @@ const updateEditVariantQty = (variantId, qty) => {
 
     if (editSelectedVariants.length === 0) {
       showToast('يرجى إضافة منتج واحد على الأقل للطلب', 'error');
+      return;
+    }
+
+    if (editShippingProvider === 'darb_assabil' && (!editDarbCity || !editDarbArea)) {
+      showToast('يرجى اختيار منطقة التوصيل (المدينة - المنطقة) من القائمة', 'error');
       return;
     }
 
@@ -1461,7 +1414,7 @@ const updateEditVariantQty = (variantId, qty) => {
             {/* زر "الوصول السريع (بيع مباشر)" انتقل إلى زر المسح في الشريط
                 الجانبي ضمن تبويب "بيع" — ليكون كل ما يخص البيع في مكان واحد. */}
             <button
-              onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); loadDarbDataIfNeeded(); }}
+              onClick={openCreateOrderModal}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-[#800000] text-white hover:bg-[#660000] active:scale-95 transition-all shadow-sm shadow-[#800000]/20"
             >
               <Plus className="h-4 w-4" />
@@ -1608,7 +1561,7 @@ const updateEditVariantQty = (variantId, qty) => {
                 </p>
               </div>
               <button
-                onClick={() => { setIsCreateOpen(true); fetchAvailableProducts(); loadDarbDataIfNeeded(); }}
+                onClick={openCreateOrderModal}
                 className="text-xs bg-[#6b1d2f] text-white border border-[#6b1d2f] px-4 py-2 rounded-lg font-bold transition-all hover:bg-[#541624]"
               >
                 إنشاء طلب جديد
@@ -1782,42 +1735,15 @@ const updateEditVariantQty = (variantId, qty) => {
                     </div>
                   ) : (
                     <>
-                      {/* المدينة والمنطقة المتسلسلة */}
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-bold text-slate-700 block">
-                            المدينة <span className="text-red-500">*</span>
-                          </label>
-                          <select
-                            value={selectedDarbCity}
-                            onChange={e => handleDarbCityChange(e.target.value)}
-                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
-                          >
-                            {sortedDarbCities.map(city => (
-                              <option key={city} value={city}>
-                                {formatCityOptionLabel(city)}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-bold text-slate-700 block">
-                            المنطقة <span className="text-red-500">*</span>
-                          </label>
-                          <select
-                            value={selectedDarbArea}
-                            onChange={e => setSelectedDarbArea(e.target.value)}
-                            className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
-                          >
-                            {availableAreasForSelectedCity.map(area => (
-                              <option key={area} value={area}>
-                                {area}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
+                      {/* المنطقة الموحّدة (المدينة - المنطقة) مع بحث سريع */}
+                      <DestinationPicker
+                        citiesAreas={darbCitiesAreas}
+                        city={selectedDarbCity}
+                        area={selectedDarbArea}
+                        onChange={handleDarbDestinationChange}
+                        loading={loadingDarbData}
+                        accent="maroon"
+                      />
 
                       {/* العنوان التفصيلي */}
                       <div className="space-y-1">
@@ -2354,7 +2280,7 @@ const updateEditVariantQty = (variantId, qty) => {
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
-                        onClick={() => { loadDarbDataIfNeeded(); setDeliveryAssignMethod('darb_assabil'); }}
+                        onClick={() => { syncDarbDestinationFromOrder(selectedOrder); setDeliveryAssignMethod('darb_assabil'); }}
                         className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
                           deliveryAssignMethod === 'darb_assabil'
                             ? 'bg-white border-amber-400 text-amber-800 shadow-sm ring-2 ring-amber-400/20'
@@ -2385,9 +2311,22 @@ const updateEditVariantQty = (variantId, qty) => {
                     {/* محتوى خيار درب السبيل */}
                     {deliveryAssignMethod === 'darb_assabil' && (
                       <div className="bg-white border border-amber-200 rounded-xl p-3 space-y-3 text-xs">
-                        <div className="flex items-center justify-between text-slate-700 text-[11px]">
-                          <span className="font-medium text-slate-500">عنوان التوصيل المسجل:</span>
-                          <span className="font-bold text-slate-800">{selectedOrder.address || '—'}</span>
+                        <div className="flex items-start justify-between gap-2 text-slate-700 text-[11px]">
+                          <span className="font-medium text-slate-500 shrink-0">عنوان التوصيل المسجل:</span>
+                          <span className="font-bold text-slate-800 text-left">{selectedOrder.address || '—'}</span>
+                        </div>
+
+                        {/* منطقة درب السبيل المعتمدة للطلب — مستخرجة من عنوان الطلب وقابلة للتعديل */}
+                        <div className="border-t border-slate-100 pt-2">
+                          <DestinationPicker
+                            citiesAreas={darbCitiesAreas}
+                            city={selectedDarbCity}
+                            area={selectedDarbArea}
+                            onChange={handleDarbDestinationChange}
+                            loading={loadingDarbData}
+                            accent="amber"
+                            label="منطقة الشحن لدى درب السبيل"
+                          />
                         </div>
 
                         {/* تأكيد نوع التوصيل قبل الإرسال لدرب السبيل */}
@@ -2832,42 +2771,15 @@ const updateEditVariantQty = (variantId, qty) => {
                   <h3 className="text-xs font-bold text-slate-800">بيانات الشحن والتوصيل</h3>
                 </div>
 
-                {/* المدينة والمنطقة */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-bold text-slate-700 block">
-                      المدينة <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={editDarbCity}
-                      onChange={e => handleEditDarbCityChange(e.target.value)}
-                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
-                    >
-                      {sortedDarbCities.map(city => (
-                        <option key={city} value={city}>
-                          {formatCityOptionLabel(city)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[11px] font-bold text-slate-700 block">
-                      المنطقة <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={editDarbArea}
-                      onChange={e => setEditDarbArea(e.target.value)}
-                      className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
-                    >
-                      {availableAreasForEditCity.map(area => (
-                        <option key={area} value={area}>
-                          {area}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+                {/* المنطقة الموحّدة (المدينة - المنطقة) مع بحث سريع */}
+                <DestinationPicker
+                  citiesAreas={darbCitiesAreas}
+                  city={editDarbCity}
+                  area={editDarbArea}
+                  onChange={handleEditDestinationChange}
+                  loading={loadingDarbData}
+                  accent="maroon"
+                />
 
                 {/* العنوان التفصيلي */}
                 <div className="space-y-1">
@@ -3151,42 +3063,16 @@ const updateEditVariantQty = (variantId, qty) => {
                     </select>
                   </div>
 
-                  {/* المدينة والمنطقة المتسلسلة */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-700 block">
-                        المدينة المدعومة <span className="text-red-500">*</span>
-                      </label>
-                      <select
-                        value={selectedDarbCity}
-                        onChange={e => handleDarbCityChange(e.target.value)}
-                        className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800 font-medium"
-                      >
-                        {sortedDarbCities.map(city => (
-                          <option key={city} value={city}>
-                            {formatCityOptionLabel(city)}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-xs font-bold text-slate-700 block">
-                        المنطقة <span className="text-red-500">*</span>
-                      </label>
-                      <select
-                        value={selectedDarbArea}
-                        onChange={e => setSelectedDarbArea(e.target.value)}
-                        className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800 font-medium"
-                      >
-                        {availableAreasForSelectedCity.map(area => (
-                          <option key={area} value={area}>
-                            {area}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
+                  {/* المنطقة الموحّدة المدعومة (المدينة - المنطقة) مع بحث سريع */}
+                  <DestinationPicker
+                    citiesAreas={darbCitiesAreas}
+                    city={selectedDarbCity}
+                    area={selectedDarbArea}
+                    onChange={handleDarbDestinationChange}
+                    loading={loadingDarbData}
+                    accent="amber"
+                    label="المنطقة المدعومة"
+                  />
 
                   {/* العنوان التفصيلي */}
                   <div className="space-y-1">

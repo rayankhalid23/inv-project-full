@@ -1,4 +1,5 @@
 from decimal import Decimal
+import re
 import traceback
 from typing import Optional, List, Dict, Tuple
 from sqlalchemy import func, case, and_, or_, String, Integer, select
@@ -847,12 +848,28 @@ def _update_basic_info(db_order: Order, update_data: Dict):
     
     d_name = update_data.get("delivery_name")
     d_type = update_data.get("delivery_type")
-    
+
     if d_name and d_type:
         db_order.delivery_info = f"{d_name} - {d_type}"
     elif d_name:
         db_order.delivery_info = d_name
-             
+
+    # مزامنة وجهة درب السبيل (المدينة - المنطقة) مع delivery_info عند تعديل الطلب،
+    # حتى تظهر نفس الوجهة المحفوظة عند إعادة فتح الطلب أو إرساله لدرب السبيل.
+    darb_city = (update_data.get("darb_city") or "").strip()
+    darb_area = (update_data.get("darb_area") or "").strip()
+    provider = update_data.get("shipping_provider") or db_order.shipping_provider
+
+    if darb_city and provider == "darb_assabil" and not db_order.tracking_number:
+        # الحفاظ على وسم نوع التوصيل [رجالي]/[نسائي] إن كان مسجّلاً سابقاً
+        gender_txt = ""
+        if db_order.delivery_info:
+            gender_match = re.search(r"\[([^\]]+)\]", db_order.delivery_info)
+            if gender_match:
+                gender_txt = f"[{gender_match.group(1)}] "
+        db_order.delivery_info = f"درب السبيل {gender_txt}({darb_city} - {darb_area or 'وسط المدينة'})".strip()
+        db_order.shipping_provider = "darb_assabil"
+
     if "customer_phones" in update_data and update_data["customer_phones"] is not None:
         phones_val = update_data["customer_phones"]
         if isinstance(phones_val, str):
