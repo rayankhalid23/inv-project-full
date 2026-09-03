@@ -497,10 +497,16 @@ class DarbAssabilService:
             service_id = DEFAULT_SERVICES[0]["id"]
 
         # تحديد المدينة والمنطقة المتوافقة مع فروع وشبكة درب السبيل
-        ship_city, ship_area = self.resolve_shipping_destination(
-            order_data.get("city", "طرابلس"),
-            order_data.get("area", "وسط المدينة")
-        )
+        raw_city = str(order_data.get("city") or "طرابلس").strip()
+        raw_area = str(order_data.get("area") or "وسط المدينة").strip()
+        ship_city, ship_area = self.resolve_shipping_destination(raw_city, raw_area)
+
+        notes_val = str(order_data.get("notes") or "").strip()
+        # إذا تم اختيار مدينة فرعية تحولت لفرعها الرئيسي، نوضح الوجهة الأصلية في الملاحظات للسائق والشركة
+        if raw_city != ship_city and raw_city:
+            dest_clarification = f"الوجهة: {raw_city} - {raw_area}"
+            if dest_clarification not in notes_val:
+                notes_val = f"{notes_val} | {dest_clarification}".strip(" |")
 
         # 4. تجهيز payload الشحنة الرسمي المطابق بدقة لمواصفات درب السبيل (الحقول المسموحة فقط)
         payload = {
@@ -515,7 +521,7 @@ class DarbAssabilService:
                 "address": str(order_data.get("address") or ""),
             },
             "products": formatted_products,
-            "notes": str(order_data.get("notes") or ""),
+            "notes": notes_val,
         }
 
         # 5. طباعة وتسجيل الـ payload كاملاً بصيغة JSON قبل الإرسال مباشرة

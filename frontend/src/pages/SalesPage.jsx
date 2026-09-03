@@ -229,6 +229,99 @@ export default function SalesPage() {
     return [...list].sort((a, b) => a.localeCompare(b, 'ar'));
   }, [darbCitiesAreas, selectedDarbCity]);
 
+  // تسميات المدن التوضيحية لتسهيل وصول التاجر للمناطق التابعة
+  const formatCityOptionLabel = (city) => {
+    switch (city) {
+      case 'قصر خيار':
+        return 'قصر خيار (القره بولي)';
+      case 'جالو اوجلة':
+        return 'جالو اوجلة (تازربو / الواحات)';
+      case 'البريقة':
+        return 'البريقة (مرسى البريقة / العقيلة / بشر)';
+      case 'الخمس':
+        return 'الخمس (زليتن / مسلاتة)';
+      case 'صبراتة':
+        return 'صبراتة (صرمان)';
+      case 'رأس لانوف':
+        return 'رأس لانوف (بن جواد)';
+      default:
+        return city;
+    }
+  };
+
+  // فتح نافذة إسناد شحنة درب السبيل مع استخراج وتعبئة المدينة والمنطقة الفعلية من بيانات الطلب
+  const openDarbModalForOrder = (order) => {
+    loadDarbDataIfNeeded();
+    if (!order) return;
+
+    let detectedCity = '';
+    let detectedArea = '';
+    let detailed = '';
+
+    // 1. محاولة الاستخراج من delivery_info (مثال: "درب السبيل [رجالي] (بنغازي - الليثي)" أو "درب السبيل (البريقة - العقيلة)")
+    let parsedFromDelivery = false;
+    if (order.delivery_info && order.delivery_info.includes('(') && order.delivery_info.includes(')')) {
+      const match = order.delivery_info.match(/\(([^)]+)\)/);
+      if (match && match[1]) {
+        const segs = match[1].split('-').map(s => s.trim());
+        if (segs.length >= 2 && segs[0]) {
+          detectedCity = segs[0];
+          detectedArea = segs[1];
+          parsedFromDelivery = true;
+        } else if (segs.length === 1 && segs[0]) {
+          detectedCity = segs[0];
+          parsedFromDelivery = true;
+        }
+      }
+    }
+
+    // 2. إذا لم تكن في delivery_info، نفحص address إن كان مركباً: "المدينة - المنطقة - التفاصيل"
+    if (order.address && order.address.includes(' - ')) {
+      const parts = order.address.split(' - ').map(s => s.trim());
+      if (parts.length >= 2) {
+        if (!parsedFromDelivery) {
+          detectedCity = parts[0];
+          detectedArea = parts[1];
+        }
+        detailed = parts.slice(2).join(' - ').trim() || parts.slice(1).join(' - ').trim();
+      } else {
+        detailed = order.address;
+      }
+    } else {
+      detailed = order.address || '';
+    }
+
+    // مواءمة تحويل أسماء المناطق الشائعة لفرعها الرسمي في درب السبيل
+    if (detectedCity === 'القره بولي') {
+      detectedCity = 'قصر خيار';
+      detectedArea = 'القره بولي';
+    } else if (detectedCity === 'تازربو') {
+      detectedCity = 'جالو اوجلة';
+      detectedArea = 'تازربو';
+    } else if (detectedCity === 'زليتن') {
+      detectedCity = 'الخمس';
+      detectedArea = 'زليتن';
+    } else if (detectedCity === 'صرمان') {
+      detectedCity = 'صبراتة';
+      detectedArea = 'صرمان';
+    }
+
+    const finalCity = (detectedCity && darbCitiesAreas[detectedCity]) ? detectedCity : (selectedDarbCity || 'طرابلس');
+    setSelectedDarbCity(finalCity);
+
+    const cityAreas = darbCitiesAreas[finalCity] || [];
+    if (detectedArea && cityAreas.includes(detectedArea)) {
+      setSelectedDarbArea(detectedArea);
+    } else if (cityAreas.length > 0) {
+      setSelectedDarbArea(cityAreas[0]);
+    } else {
+      setSelectedDarbArea(detectedArea || 'وسط المدينة');
+    }
+
+    setDarbDetailedAddress(detailed || order.address || '');
+    setIsDarbModalOpen(true);
+  };
+
   // 1. دالة لتحديث رقم معين داخل مصفوفة الفورم الأساسي
   const handleNewOrderPhoneChange = (index, value) => {
     const updatedPhones = [...newOrderForm.customer_phones];
@@ -1702,7 +1795,7 @@ const updateEditVariantQty = (variantId, qty) => {
                           >
                             {sortedDarbCities.map(city => (
                               <option key={city} value={city}>
-                                {city}
+                                {formatCityOptionLabel(city)}
                               </option>
                             ))}
                           </select>
@@ -2075,11 +2168,7 @@ const updateEditVariantQty = (variantId, qty) => {
                         {!selectedOrder.tracking_number && (
                           <button
                             type="button"
-                            onClick={() => {
-                              loadDarbDataIfNeeded();
-                              setDarbDetailedAddress(selectedOrder?.address || '');
-                              setIsDarbModalOpen(true);
-                            }}
+                            onClick={() => openDarbModalForOrder(selectedOrder)}
                             className="flex items-center gap-1 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 text-[10px] font-bold px-2.5 py-1 rounded-lg transition-all shadow-sm active:scale-95"
                           >
                             <Zap className="h-3 w-3 text-amber-600" />
@@ -2756,7 +2845,7 @@ const updateEditVariantQty = (variantId, qty) => {
                     >
                       {sortedDarbCities.map(city => (
                         <option key={city} value={city}>
-                          {city}
+                          {formatCityOptionLabel(city)}
                         </option>
                       ))}
                     </select>
@@ -3075,7 +3164,7 @@ const updateEditVariantQty = (variantId, qty) => {
                       >
                         {sortedDarbCities.map(city => (
                           <option key={city} value={city}>
-                            {city}
+                            {formatCityOptionLabel(city)}
                           </option>
                         ))}
                       </select>
