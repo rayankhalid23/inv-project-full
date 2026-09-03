@@ -389,5 +389,101 @@ class TestHardcodedImmutability(unittest.TestCase):
         self.assertIs(p["allowSplitting"], True)
 
 
+class TestDarbCitiesAndCoverage(unittest.TestCase):
+    """
+    اختبارات التحقق من تغطية المدن والمناطق الحقيقية لدرب السبيل
+    (البريقة، جالو اوجلة، تازربو، القره بولي، وغيرها)
+    """
+
+    def setUp(self):
+        self.service = DarbAssabilService()
+
+    def test_requested_cities_present_in_cities_and_areas(self):
+        """التحقق من وجود المدن والمناطق المطلوبة صراحة من المستخدم"""
+        cities_areas = self.service.get_cities_and_areas()
+
+        # 1. البريقة
+        self.assertIn("البريقة", cities_areas, "يجب أن تكون البريقة موجودة في قائمة المدن")
+        brega_areas = cities_areas["البريقة"]
+        self.assertTrue(any("العقيلة" in a or "بشر" in a or "البريقة" in a for a in brega_areas))
+
+        # 2. جالو اوجلة
+        self.assertIn("جالو اوجلة", cities_areas, "يجب أن تكون جالو اوجلة موجودة في قائمة المدن")
+        jalu_areas = cities_areas["جالو اوجلة"]
+        self.assertTrue(any("تازربو" in a or "الواحات" in a for a in jalu_areas))
+
+        # 3. تازربو (متاحة كمدينة وموجودة أيضاً تحت جالو اوجلة)
+        self.assertIn("تازربو", cities_areas, "يجب أن تكون تازربو متاحة للاختيار")
+
+        # 4. القره بولي (متاحة كمدينة وموجودة تحت قصر خيار)
+        self.assertIn("القره بولي", cities_areas, "يجب أن تكون القره بولي متاحة للاختيار")
+        self.assertIn("قصر خيار", cities_areas, "يجب أن يكون فرع قصر خيار موجوداً")
+
+    def test_resolve_shipping_destination(self):
+        """التحقق من توجيه الوجهة لفرع درب السبيل المعتمد رسمياً"""
+        # القره بولي تتبع فرع قصر خيار
+        city, area = self.service.resolve_shipping_destination("القره بولي", "وسط المدينة")
+        self.assertEqual(city, "قصر خيار")
+        self.assertEqual(area, "القره بولي")
+
+        # تازربو تتبع فرع جالو اوجلة
+        city, area = self.service.resolve_shipping_destination("تازربو", "وسط المدينة")
+        self.assertEqual(city, "جالو اوجلة")
+        self.assertEqual(area, "تازربو")
+
+        # جالو اوجلة كمدينة والمنطقة تازربو
+        city, area = self.service.resolve_shipping_destination("جالو اوجلة", "تازربو")
+        self.assertEqual(city, "جالو اوجلة")
+        self.assertEqual(area, "تازربو")
+
+        # البريقة كمدينة والمنطقة العقيلة أو بشر
+        city, area = self.service.resolve_shipping_destination("البريقة", "العقيلة")
+        self.assertEqual(city, "البريقة")
+        self.assertEqual(area, "العقيلة")
+
+        city, area = self.service.resolve_shipping_destination("البريقة", "وسط المدينة")
+        self.assertEqual(city, "البريقة")
+        self.assertEqual(area, "وسط المدينة")
+
+        # طرابلس
+        city, area = self.service.resolve_shipping_destination("طرابلس", "حي الأندلس")
+        self.assertEqual(city, "طرابلس")
+        self.assertEqual(area, "حي الأندلس")
+
+    def test_create_shipment_payload_with_qarabulli(self):
+        """التحقق من تجهيز payload الشحنة عند اختيار القره بولي"""
+        order = {
+            **BASE_ORDER,
+            "city": "القره بولي",
+            "area": "وسط المدينة",
+        }
+        payload = _build_payload_via_mock(order)
+        self.assertEqual(payload["to"]["city"], "قصر خيار")
+        self.assertEqual(payload["to"]["area"], "القره بولي")
+
+    def test_create_shipment_payload_with_tazerbo(self):
+        """التحقق من تجهيز payload الشحنة عند اختيار تازربو"""
+        order = {
+            **BASE_ORDER,
+            "city": "تازربو",
+            "area": "وسط المدينة",
+        }
+        payload = _build_payload_via_mock(order)
+        self.assertEqual(payload["to"]["city"], "جالو اوجلة")
+        self.assertEqual(payload["to"]["area"], "تازربو")
+
+    def test_create_shipment_payload_with_brega(self):
+        """التحقق من تجهيز payload الشحنة عند اختيار البريقة"""
+        order = {
+            **BASE_ORDER,
+            "city": "البريقة",
+            "area": "العقيلة",
+        }
+        payload = _build_payload_via_mock(order)
+        self.assertEqual(payload["to"]["city"], "البريقة")
+        self.assertEqual(payload["to"]["area"], "العقيلة")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

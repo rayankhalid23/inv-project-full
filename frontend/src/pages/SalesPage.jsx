@@ -220,8 +220,13 @@ export default function SalesPage() {
     }
   };
 
+  const sortedDarbCities = useMemo(() => {
+    return Object.keys(darbCitiesAreas).sort((a, b) => a.localeCompare(b, 'ar'));
+  }, [darbCitiesAreas]);
+
   const availableAreasForSelectedCity = useMemo(() => {
-    return darbCitiesAreas[selectedDarbCity] || [];
+    const list = darbCitiesAreas[selectedDarbCity] || [];
+    return [...list].sort((a, b) => a.localeCompare(b, 'ar'));
   }, [darbCitiesAreas, selectedDarbCity]);
 
   // 1. دالة لتحديث رقم معين داخل مصفوفة الفورم الأساسي
@@ -287,7 +292,8 @@ export default function SalesPage() {
   };
 
   const availableAreasForEditCity = useMemo(() => {
-    return darbCitiesAreas[editDarbCity] || [];
+    const list = darbCitiesAreas[editDarbCity] || [];
+    return [...list].sort((a, b) => a.localeCompare(b, 'ar'));
   }, [darbCitiesAreas, editDarbCity]);
 
   const handleEditPhoneChange = (index, value) => {
@@ -1694,7 +1700,7 @@ const updateEditVariantQty = (variantId, qty) => {
                             onChange={e => handleDarbCityChange(e.target.value)}
                             className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
                           >
-                            {Object.keys(darbCitiesAreas).map(city => (
+                            {sortedDarbCities.map(city => (
                               <option key={city} value={city}>
                                 {city}
                               </option>
@@ -2748,7 +2754,7 @@ const updateEditVariantQty = (variantId, qty) => {
                       onChange={e => handleEditDarbCityChange(e.target.value)}
                       className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-[#800000] focus:ring-2 focus:ring-[#800000]/10 text-slate-800 font-medium"
                     >
-                      {Object.keys(darbCitiesAreas).map(city => (
+                      {sortedDarbCities.map(city => (
                         <option key={city} value={city}>
                           {city}
                         </option>
@@ -3067,7 +3073,7 @@ const updateEditVariantQty = (variantId, qty) => {
                         onChange={e => handleDarbCityChange(e.target.value)}
                         className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-500/10 text-slate-800 font-medium"
                       >
-                        {Object.keys(darbCitiesAreas).map(city => (
+                        {sortedDarbCities.map(city => (
                           <option key={city} value={city}>
                             {city}
                           </option>

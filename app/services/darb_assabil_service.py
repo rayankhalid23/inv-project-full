@@ -12,76 +12,113 @@ load_dotenv()                   # <-- 2. إضافة هذا السطر
 
 logger = logging.getLogger(__name__)
 
-# قائمة المدن والمناطق الليبية المعتمدة في التوصيل والشحن
+# قائمة المدن والمناطق الليبية المعتمدة في التوصيل والشحن (مطابقة تماماً لفروع وشبكة درب السبيل الرسمية)
 LIBYA_CITIES_AND_AREAS: Dict[str, List[str]] = {
-    "طرابلس": [
-        "سوق الجمعة", "تاجوراء", "جنزور", "حي الأندلس", "بن عاشور", "النوفليين",
-        "عين زارة", "السراج", "غوط الشعال", "طريق المطار", "أبو سليم", "صلاح الدين",
-        "قرقارش", "زاوية الدهماني", "الدريبي", "الفرناج", "الهضبة الخضراء", "الهضبة الشرقية",
-        "السبعة", "الهاني", "زناتة", "الظهرة", "بن غشير", "فشلوم", "المدينة القديمة",
-        "ميزران", "الحشان", "القادسية", "طريق الشوك", "طريق السور", "باب بن غشير",
-        "سيدي خليفة", "حي دمشق", "رأس حسن", "جامع الصقع", "عرادة", "الغرارات"
+    "اجدابيا": [
+        "اجدابيا", "وسط المدينة"
     ],
-    "بنغازي": [
-        "الفويهات", "الكيش", "الصابري", "سيدي حسين", "الحدائق", "الماجوري",
-        "الليثي", "طابلينو", "الهواري", "بوعطني", "شبنة", "السلماني",
-        "حي السلام", "القوارشة", "البركة", "بوهديمة", "قاريونس", "الكويفية",
-        "سيدي خليفة", "بلعون", "حي الفاتح", "حي النصر", "الرويسات", "المساكن"
-    ],
-    "مصراتة": [
-        "وسط المدينة", "قصر أحمد", "السكت", "الزروق", "الغيران", "طمينة",
-        "يدر", "الرويسات", "المحجوب", "المقاصبة", "الرملة", "بلاد شحات",
-        "رأس الطوبة", "ذات الرمال", "طريق الجزيرة", "الميدان", "طريق النهر"
-    ],
-    "الزاوية": [
-        "وسط المدينة", "الزاوية الجنوبية", "الزاوية الغربية", "جوددائم",
-        "الحرشة", "المطرد", "الصابرية", "بوعيسى", "بئر ترفاس", "ديلان"
-    ],
-    "زليتن": [
-        "وسط المدينة", "البازة", "الجمعة", "المنارة", "الساحل", "سوق الثلاثاء", "كعام", "ازدو"
-    ],
-    "الخمس": [
-        "وسط المدينة", "سوق الخميس", "كعبار", "سيلين", "لبدة", "رأس غزال", "الساحل"
-    ],
-    "غريان": [
-        "وسط المدينة", "تغرنة", "القواسم", "بني داوود", "الهيرة", "تغسات", "ككلة", "بني نصير"
-    ],
-    "صرمان": [
-        "وسط المدينة", "صرمان الغربية", "صرمان القبلية", "الشاطئ", "المطل"
-    ],
-    "صبراتة": [
-        "وسط المدينة", "دحمان", "العلالقة", "سوق العلالقة", "تليل", "الطويلة", "شاطئ الوادي"
+    "البريقة": [
+        "البريقة", "العقيلة", "بشر", "وسط المدينة"
     ],
     "البيضاء": [
-        "وسط المدينة", "حي الزاوية", "حي الأندلس", "الغريقة", "حي الثورة", "حي السلام", "الوردية", "الكاوة"
+        "البيضاء", "اسلنطة", "سوسة", "شحات", "قصر ليبيا", "قندولة", "مراوة", "مسة", "وسط المدينة"
     ],
-    "طبرق": [
-        "وسط المدينة", "باب درنة", "سوق العجاج", "المنارة", "سان جورج", "الجبيلة", "المرصص"
+    "الجفرة": [
+        "الجفرة", "هون", "ودان", "سوكنة", "زلة", "وسط المدينة"
     ],
-    "درنة": [
-        "وسط المدينة", "الساحل الشرقي", "باب طبرق", "الجبيلة", "شيحة الشرقية", "شيحة الغربية", "المغار"
+    "الخمس": [
+        "الخمس", "زليتن", "مسلاتة", "سوق الخميس", "كعبار", "سيلين", "لبدة", "وسط المدينة"
     ],
-    "سبها": [
-        "وسط المدينة", "القرضة", "المنشية", "المهدية", "حي الفاتح", "الجديد", "سكرة", "حجارة", "عبد الكافي"
+    "الزاوية": [
+        "الزاوية", "الماية", "المطرد", "بوعيسى", "جوددائم", "الحرشة", "الصابرية", "وسط المدينة"
     ],
-    "سرت": [
-        "وسط المدينة", "الحي السكني الأول", "الحي السكني الثاني", "الحي السكني الثالث", "الزعفران", "الغربيات", "جارف"
+    "العجيلات": [
+        "العجيلات", "وسط المدينة"
     ],
-    "ترهونة": [
-        "وسط المدينة", "سوق الأحد", "الخضراء", "مجي", "الداوون", "العواتة"
+    "القبة": [
+        "القبة", "الأبرق", "القيقب", "وسط المدينة"
+    ],
+    "القره بولي": [
+        "القره بولي", "قصر خيار", "وسط المدينة"
+    ],
+    "الكفرة": [
+        "الكفرة", "الجوف", "وسط المدينة"
+    ],
+    "المرج": [
+        "المرج", "الأبيار", "البياضة", "تاكنس", "توكرة", "وسط المدينة"
+    ],
+    "بنغازي": [
+        "وسط المدينة", "البركة", "الحدائق", "الحميضه", "الحي الجامعي", "الرجمه", "الرحبة",
+        "الرويسات", "السلماني", "الصابري", "الفويهات", "القوارشة", "الكويفية", "الكيش",
+        "الليثي", "الماجورى", "الهواري", "الوحيشي", "بلعون", "بنغازي - استلام من المكتب",
+        "بنينا", "بو هادي", "بو هديمة", "حي السلام", "حي الفاتح", "حي قطر", "حي لبنان",
+        "راس عبيدة", "سلوق", "سيدي حسين", "سيدي خليفة", "سيدي فرج", "سيدي يونس", "شارع عشرين",
+        "شبنة", "طبلينو", "قاريونس", "قمينس", "قنفودة", "فينسيا", "ابوعطني"
     ],
     "بني وليد": [
-        "وسط المدينة", "الظهرة", "المردوم", "تينيناي", "الشقيقة"
-    ],
-    "أجدابيا": [
-        "وسط المدينة", "الحي الصناعي", "حي 7 أكتوبر", "انتلات", "البيضان"
+        "بني وليد", "وسط المدينة"
     ],
     "تاجوراء": [
-        "الضاحية", "الدوائر", "بئر الأسطى ميلاد", "النشيع", "الحميدية", "العقربية", "الملاحة"
+        "تاجوراء", "الضاحية", "بئر الأسطى ميلاد", "النشيع", "الحميدية", "وسط المدينة"
     ],
-    "جنزور": [
-        "جنزور الشرقية", "جنزور الغربية", "الصياد", "السراج الغربي", "النجيلي", "المشاشطة"
-    ]
+    "تازربو": [
+        "تازربو", "الواحات", "جالو اوجلة", "وسط المدينة"
+    ],
+    "ترهونة": [
+        "ترهونة", "سوق الأحد", "الخضراء", "وسط المدينة"
+    ],
+    "جالو اوجلة": [
+        "جالو اوجلة", "تازربو", "الواحات", "وسط المدينة"
+    ],
+    "درنة": [
+        "درنة", "البمبه", "التميمي", "العزيات", "الفتائح", "المخيلي", "ام الرزم", "عين مارة", "كرسه", "مرتوبة", "وسط المدينة"
+    ],
+    "رأس لانوف": [
+        "رأس لانوف", "بن جواد", "وسط المدينة"
+    ],
+    "زليتن": [
+        "زليتن", "البازة", "الجمعة", "المنارة", "الساحل", "وسط المدينة"
+    ],
+    "زوارة": [
+        "زوارة", "أبي كماش", "الجميل", "رأس جدير", "رقدالين", "زلطن", "وسط المدينة"
+    ],
+    "سبها": [
+        "سبها", "أم الارانب", "اوباري", "براك الشاطي", "تراغن", "حي عبدالكافئ الاربعة", "طاردونه",
+        "غات", "مرزق", "مزدة", "القطرون", "الشويرف", "القرضة", "المنشية", "وسط المدينة"
+    ],
+    "سرت": [
+        "سرت", "أبوقرين", "تاورغاء", "هراوة", "الزعفران", "الغربيات", "وسط المدينة"
+    ],
+    "صبراتة": [
+        "صبراتة", "صرمان", "دحمان", "تليل", "وسط المدينة"
+    ],
+    "صرمان": [
+        "صرمان", "صرمان الغربية", "صرمان القبلية", "وسط المدينة"
+    ],
+    "طبرق": [
+        "طبرق", "مساعد", "باب درنة", "المنارة", "الجبيلة", "وسط المدينة"
+    ],
+    "طرابلس": [
+        "وسط المدينة", "ابوسليم", "الباعيش", "الحشان", "الحي الإسلامي", "الدريبي", "الرياضية",
+        "الزهراء", "السراج", "السواني", "السياحية", "الظهرة", "العزيزية", "الغرارات", "الفرناج",
+        "الكريمية", "المدينة القديمة", "النوفليين", "الهاني", "الهضبة البدري", "الهضبة الخضراء",
+        "الهضبة الشرقية", "باب العزيزية", "باب بن غشير", "بن عاشور", "بوابة الجبس", "تاجوراء",
+        "جنزور", "حي الأندلس", "حي دمشق", "رأس حسن", "زاوية الدهماني", "زناتة", "سوق الجمعة",
+        "صلاح الدين", "طريق الشوك", "طريق الفلاح", "طريق المطار", "عرادة", "عين زارة",
+        "غوط الشعال", "فشلوم", "قرجي", "قرقارش", "قصر بن غشير", "معيتيقة", "وادي الربيع", "ورشفانة"
+    ],
+    "غريان": [
+        "غريان", "الأصابعة", "الرابطة", "الرجبان", "الرحيبات", "الرياينة", "الزنتان", "القلعة",
+        "المشاشية", "بدر", "بير غنم", "تيجي", "جادو", "درج", "غدامس", "كاباو", "ككلة", "نالوت",
+        "يفرن", "تغرنة", "القواسم", "وسط المدينة"
+    ],
+    "قصر خيار": [
+        "قصر خيار", "القره بولي", "وسط المدينة"
+    ],
+    "مصراتة": [
+        "مصراتة", "أبوروية", "الجزيره", "الدافنية", "الزروق", "السكت", "السواوه", "الغيران",
+        "المقاصبه", "رويسات", "زاوية المحجوب", "طريق البحر", "طمينة", "قصر أحمد", "كرزاز", "يدر", "وسط المدينة"
+    ],
 }
 
 # باقات الخدمة الافتراضية لشركة درب السبيل
@@ -201,83 +238,138 @@ class DarbAssabilService:
 
         return DEFAULT_SERVICES
 
-    def _fetch_cities_from_api(self) -> Optional[List[Dict[str, Any]]]:
-        """يعيد مدن الـ API، أو None حين لا يوفّرها الحساب/الخادم.
-
-        التفريق بين "جاءت من الـ API" و"جاءت من القائمة المحلية" ضروري: بدونه
-        كانت `get_cities_and_areas` تظن أن الـ API يعمل فتُطلق طلب مناطق لكل
-        مدينة (19 طلباً) وكلها تفشل بنفس السبب — 5 ثوانٍ انتظار مقابل لا شيء.
+    def _fetch_branches_from_api(self) -> Optional[Dict[str, List[str]]]:
         """
-        url = f"{self.base_url}/api/cities?countryCode=LBY"
+        جلب قائمة الفروع والمدن والمناطق الرسمية المعتمدة الحية مباشرة من درب السبيل
+        (GET /api/local/branches/public).
+        يعيد خريطة {المدينة: [المناطق]} أو None إذا تعذر الاتصال بالخادم.
+        """
+        url = f"{self.base_url}/api/local/branches/public"
         try:
-            res = requests.get(url, headers=self._get_headers(), timeout=self.timeout)
+            res = requests.get(url, timeout=self.timeout)
             if res.status_code == 200:
                 data = res.json()
-                results = data.get("data", []) if isinstance(data.get("data"), list) else (data.get("results", []) if isinstance(data.get("results"), list) else [])
-                if results:
-                    return [
-                        {
-                            "id": str(c.get("_id") or c.get("id") or ""),
-                            "_id": str(c.get("_id") or c.get("id") or ""),
-                            "name": c.get("name") or c.get("city") or "",
-                            "nameEn": c.get("nameEn") or "",
-                            "countryCode": c.get("countryCode", "LBY")
-                        }
-                        for c in results if c.get("name") or c.get("city")
-                    ]
+                results = (
+                    data.get("data", {}).get("results", [])
+                    if isinstance(data.get("data"), dict)
+                    else (data.get("results", []) if isinstance(data.get("results"), list) else [])
+                )
+                if results and len(results) > 0:
+                    api_map: Dict[str, set] = {}
+                    for branch in results:
+                        city = (branch.get("city") or "").strip()
+                        area = (branch.get("area") or "").strip()
+                        areas_list = branch.get("areas") or []
+
+                        if city:
+                            if city not in api_map:
+                                api_map[city] = set()
+                            if area:
+                                api_map[city].add(area)
+                            for a in areas_list:
+                                if isinstance(a, str) and a.strip():
+                                    api_map[city].add(a.strip())
+                                elif isinstance(a, dict):
+                                    aname = (a.get("name") or a.get("area") or "").strip()
+                                    if aname:
+                                        api_map[city].add(aname)
+
+                    processed_map: Dict[str, List[str]] = {
+                        c: sorted(list(a_set)) for c, a_set in api_map.items() if a_set
+                    }
+
+                    # إتاحة المناطق الحيوية كمدن مباشرة لتسهيل وصول التاجر
+                    # (مثل القره بولي، تازربو، زليتن، صرمان)
+                    if "قصر خيار" in processed_map and "القره بولي" in processed_map["قصر خيار"]:
+                        if "القره بولي" not in processed_map:
+                            processed_map["القره بولي"] = ["القره بولي", "قصر خيار", "وسط المدينة"]
+                    if "جالو اوجلة" in processed_map and "تازربو" in processed_map["جالو اوجلة"]:
+                        if "تازربو" not in processed_map:
+                            processed_map["تازربو"] = ["تازربو", "الواحات", "جالو اوجلة", "وسط المدينة"]
+
+                    return processed_map
             else:
                 logger.warning(
-                    f"[DARB ASSABIL] GET /api/cities أعاد {res.status_code}: {res.text[:200]}"
+                    f"[DARB ASSABIL] GET /api/local/branches/public أعاد {res.status_code}: {res.text[:200]}"
                 )
         except Exception as e:
-            logger.warning(f"Failed to fetch Darb Assabil cities from API: {e}")
+            logger.warning(f"Failed to fetch Darb Assabil branches/cities from API: {e}")
         return None
 
     @staticmethod
-    def _local_cities() -> List[Dict[str, Any]]:
-        return [{"id": f"city_{i}", "_id": f"city_{i}", "name": city, "nameEn": city, "countryCode": "LBY"}
-                for i, city in enumerate(LIBYA_CITIES_AND_AREAS.keys())]
+    def resolve_shipping_destination(city: str, area: str) -> Tuple[str, str]:
+        """
+        مواءمة اسم المدينة والمنطقة مع تسميات شبكة درب السبيل الرسمية عند إنشاء الشحنة
+        (مثلاً 'القره بولي' تتبع فرع 'قصر خيار'، 'تازربو' تتبع فرع 'جالو اوجلة'، إلخ).
+        """
+        city_clean = (city or "طرابلس").strip()
+        area_clean = (area or "وسط المدينة").strip()
+
+        # خريطة تحويل المناطق الشهيرة إلى الفروع الرسمية المعتمدة لدى درب السبيل
+        BRANCH_REDIRECTS = {
+            "القره بولي": ("قصر خيار", "القره بولي"),
+            "تازربو": ("جالو اوجلة", "تازربو"),
+            "زليتن": ("الخمس", "زليتن"),
+            "صرمان": ("صبراتة", "صرمان"),
+            "مسلاتة": ("الخمس", "مسلاتة"),
+            "الجميل": ("زوارة", "الجميل"),
+            "رقدالين": ("زوارة", "رقدالين"),
+            "زلطن": ("زوارة", "زلطن"),
+            "الأبيار": ("المرج", "الأبيار"),
+            "شحات": ("البيضاء", "شحات"),
+            "سوسة": ("البيضاء", "سوسة"),
+            "بن جواد": ("رأس لانوف", "بن جواد"),
+            "العقيلة": ("البريقة", "العقيلة"),
+            "بشر": ("البريقة", "بشر"),
+        }
+
+        if city_clean in BRANCH_REDIRECTS:
+            parent_branch_city, default_area = BRANCH_REDIRECTS[city_clean]
+            final_area = area_clean if area_clean not in ["", "وسط المدينة", city_clean] else default_area
+            return parent_branch_city, final_area
+
+        return city_clean, area_clean
 
     def get_cities(self) -> List[Dict[str, Any]]:
         """
-        2. جلب قائمة المدن من درب السبيل (GET /api/cities?countryCode=LBY).
+        2. جلب قائمة المدن من درب السبيل (مباشرة من API الفروع أو الفول-باك المعتمد).
         """
-        return self._fetch_cities_from_api() or self._local_cities()
+        cities_map = self.get_cities_and_areas()
+        return [
+            {
+                "id": f"city_{i}",
+                "_id": f"city_{i}",
+                "name": city,
+                "nameEn": city,
+                "countryCode": "lby",
+            }
+            for i, city in enumerate(sorted(cities_map.keys()))
+        ]
 
     def get_areas(self, city: Optional[str] = None, city_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        3. جلب قائمة المناطق التابعة لمدينة من درب السبيل (GET /api/areas?city=... أو ?cityId=...).
+        3. جلب قائمة المناطق التابعة لمدينة محددة من درب السبيل.
         """
-        param = f"city={city}" if city else (f"cityId={city_id}" if city_id else "")
-        url = f"{self.base_url}/api/areas{('?' + param) if param else ''}"
-        try:
-            res = requests.get(url, headers=self._get_headers(), timeout=self.timeout)
-            if res.status_code == 200:
-                data = res.json()
-                results = data.get("data", []) if isinstance(data.get("data"), list) else (data.get("results", []) if isinstance(data.get("results"), list) else [])
-                if results:
-                    return [
-                        {
-                            "id": str(a.get("_id") or a.get("id") or ""),
-                            "_id": str(a.get("_id") or a.get("id") or ""),
-                            "name": a.get("name") or a.get("area") or "",
-                            "nameEn": a.get("nameEn") or "",
-                            "city": a.get("city") or city or ""
-                        }
-                        for a in results if a.get("name") or a.get("area")
-                    ]
-        except Exception as e:
-            logger.warning(f"Failed to fetch Darb Assabil areas for city {city}: {e}")
+        cities_map = self.get_cities_and_areas()
+        areas_list = cities_map.get(city, ["وسط المدينة"]) if city else []
+        if not areas_list:
+            areas_list = ["وسط المدينة"]
 
-        fallback_areas = LIBYA_CITIES_AND_AREAS.get(city, ["وسط المدينة"]) if city else []
-        return [{"id": f"area_{i}", "_id": f"area_{i}", "name": a, "nameEn": a, "city": city or ""} for i, a in enumerate(fallback_areas)]
+        return [
+            {
+                "id": f"area_{i}",
+                "_id": f"area_{i}",
+                "name": a,
+                "nameEn": a,
+                "city": city or "",
+            }
+            for i, a in enumerate(areas_list)
+        ]
 
     def get_cities_and_areas(self) -> Dict[str, List[str]]:
         """
         جلب الخريطة المجمعة للمدن والمناطق المدعومة للتوصيل.
-
-        النتيجة مُخزَّنة مؤقتاً (`_CITIES_CACHE_TTL`): الخريطة شبه ثابتة وتُطلب
-        عند كل فتح لنافذة إنشاء طلب، فلا معنى لإعادة بنائها في كل مرة.
+        تُجلب حياً من GET /api/local/branches/public وتُخزّن مؤقتاً لتسريع الأداء.
         """
         now = time.time()
         if self._cities_cache and (now - self._cities_cache_at) < self._CITIES_CACHE_TTL:
@@ -285,20 +377,12 @@ class DarbAssabilService:
 
         result = LIBYA_CITIES_AND_AREAS
         try:
-            cities_list = self._fetch_cities_from_api()
-            # بدون مدن حقيقية من الـ API لا فائدة من سؤاله عن المناطق:
-            # نفس نقطة النهاية هي التي فشلت للتو.
-            if cities_list and len(cities_list) > 3:
-                api_map = {}
-                for c in cities_list:
-                    c_name = c.get("name")
-                    if c_name:
-                        areas = self.get_areas(city=c_name, city_id=c.get("id"))
-                        api_map[c_name] = [a.get("name") for a in areas if a.get("name")] or ["وسط المدينة"]
-                if api_map:
-                    result = api_map
+            live_map = self._fetch_branches_from_api()
+            if live_map and len(live_map) > 5:
+                result = live_map
+                logger.info(f"[DARB ASSABIL] Successfully loaded {len(live_map)} live cities from Darb Assabil API")
         except Exception as e:
-            logger.warning(f"Failed to aggregate cities and areas: {e}")
+            logger.warning(f"Failed to aggregate cities and areas from live API: {e}")
 
         self._cities_cache = result
         self._cities_cache_at = now
@@ -412,6 +496,12 @@ class DarbAssabilService:
         if not service_id or len(str(service_id)) != 24:
             service_id = DEFAULT_SERVICES[0]["id"]
 
+        # تحديد المدينة والمنطقة المتوافقة مع فروع وشبكة درب السبيل
+        ship_city, ship_area = self.resolve_shipping_destination(
+            order_data.get("city", "طرابلس"),
+            order_data.get("area", "وسط المدينة")
+        )
+
         # 4. تجهيز payload الشحنة الرسمي المطابق بدقة لمواصفات درب السبيل (الحقول المسموحة فقط)
         payload = {
             "service": str(service_id),
@@ -420,8 +510,8 @@ class DarbAssabilService:
             "allowSplitting": True,
             "to": {
                 "countryCode": str(order_data.get("countryCode") or "lby").lower(),
-                "city": str(order_data.get("city") or "طرابلس"),
-                "area": str(order_data.get("area") or "وسط المدينة"),
+                "city": ship_city,
+                "area": ship_area,
                 "address": str(order_data.get("address") or ""),
             },
             "products": formatted_products,
