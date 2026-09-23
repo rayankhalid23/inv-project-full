@@ -71,7 +71,7 @@ const CatalogsPage = ({
   const [catalogName, setCatalogName] = useState('');
   
   const [filterData, setFilterData] = useState({ sizes: [], catalogs: [] });
-  const [pdfFilters, setPdfFilters] = useState({ size_name: '', catalog_id: '' });
+  const [pdfFilters, setPdfFilters] = useState({ size_names: [], catalog_id: '' });
 
   const [actionLoading, setActionLoading] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
@@ -325,7 +325,10 @@ const CatalogsPage = ({
     setErrors(null);
     setSuccessMsg('');
     const cleanFilters = {};
-    if (pdfFilters.size_name) cleanFilters.size_name = pdfFilters.size_name;
+    // نرسل المقاسات المختارة (واحد أو أكثر) مفصولة بفاصلة — الخادم يفكّكها إلى قائمة
+    if (pdfFilters.size_names && pdfFilters.size_names.length > 0) {
+      cleanFilters.size_names = pdfFilters.size_names.join(',');
+    }
     // Number() صراحةً: الخادم يتوقع catalog_id عدداً صحيحاً، وإرساله نصاً يعطي 422
     if (pdfFilters.catalog_id) cleanFilters.catalog_id = Number(pdfFilters.catalog_id);
 
@@ -761,18 +764,46 @@ useEffect(() => {
               <div className="space-y-5">
                 <div className="space-y-2 relative">
                   <label className="flex items-center gap-2 text-xs font-black text-slate-500 mr-1">
-                    <LayoutGrid size={14} className="text-[#800000]" /> فلترة حسب المقاس
+                    <LayoutGrid size={14} className="text-[#800000]" /> فلترة حسب المقاس (يمكن اختيار أكثر من مقاس)
                   </label>
-                  <div 
+                  <div
                     onClick={() => { setSizeSearch(''); setIsSizeDropdownOpen(!isSizeDropdownOpen); setIsCatDropdownOpen(false); }}
                     className="w-full px-4 py-4 bg-slate-50 border border-slate-100 rounded-2xl flex justify-between items-center cursor-pointer hover:bg-white transition-all"
                   >
-                    <span className="font-bold text-sm text-slate-700">
-                      {pdfFilters.size_name || "جميع المقاسات"}
+                    <span className="font-bold text-sm text-slate-700 truncate ml-2">
+                      {pdfFilters.size_names.length === 0
+                        ? "جميع المقاسات"
+                        : pdfFilters.size_names.length <= 2
+                          ? pdfFilters.size_names.join('، ')
+                          : `${pdfFilters.size_names.length} مقاسات مختارة`}
                     </span>
-                    <ChevronDown size={18} className={`text-slate-400 transition-transform ${isSizeDropdownOpen ? 'rotate-180' : ''}`} />
+                    <ChevronDown size={18} className={`text-slate-400 transition-transform shrink-0 ${isSizeDropdownOpen ? 'rotate-180' : ''}`} />
                   </div>
-                  
+
+                  {pdfFilters.size_names.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mr-1">
+                      {pdfFilters.size_names.map(name => (
+                        <span
+                          key={name}
+                          className="flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-[#80000010] text-[#800000]"
+                        >
+                          {name}
+                          <button
+                            type="button"
+                            onClick={() => setPdfFilters({
+                              ...pdfFilters,
+                              size_names: pdfFilters.size_names.filter(n => n !== name)
+                            })}
+                            className="hover:text-[#600000]"
+                            aria-label={`إزالة مقاس ${name}`}
+                          >
+                            <X size={11} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
                   {isSizeDropdownOpen && (
                     <div className="mt-2 bg-white border border-slate-100 rounded-2xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2">
                       <div className="p-2 border-b border-slate-50 bg-slate-50/60">
@@ -791,26 +822,47 @@ useEffect(() => {
                       </div>
                       <div className="max-h-[220px] overflow-y-auto custom-scrollbar font-bold text-sm">
                         <div
-                          onClick={() => { setPdfFilters({...pdfFilters, size_name: ''}); setIsSizeDropdownOpen(false); }}
+                          onClick={() => { setPdfFilters({...pdfFilters, size_names: []}); setIsSizeDropdownOpen(false); }}
                           className="px-5 py-3 hover:bg-slate-50 cursor-pointer border-b border-slate-50 text-slate-400"
                         >
-                          جميع المقاسات
+                          جميع المقاسات (إلغاء التحديد)
                         </div>
-                        {visibleSizes.map(size => (
-                          <div
-                            key={size.id}
-                            onClick={() => { setPdfFilters({...pdfFilters, size_name: size.name}); setIsSizeDropdownOpen(false); }}
-                            className="px-5 py-3 hover:bg-[#80000008] hover:text-[#800000] cursor-pointer border-b border-slate-50 last:border-0"
-                          >
-                            {size.name}
-                          </div>
-                        ))}
+                        {visibleSizes.map(size => {
+                          const isChecked = pdfFilters.size_names.includes(size.name);
+                          return (
+                            <div
+                              key={size.id}
+                              onClick={() => {
+                                setPdfFilters({
+                                  ...pdfFilters,
+                                  size_names: isChecked
+                                    ? pdfFilters.size_names.filter(n => n !== size.name)
+                                    : [...pdfFilters.size_names, size.name]
+                                });
+                                // نُبقي القائمة مفتوحة عمداً لتسهيل اختيار أكثر من مقاس متتاليين
+                              }}
+                              className={`px-5 py-3 hover:bg-[#80000008] hover:text-[#800000] cursor-pointer border-b border-slate-50 last:border-0 flex items-center justify-between gap-2 ${isChecked ? 'bg-[#80000005] text-[#800000]' : ''}`}
+                            >
+                              <span>{size.name}</span>
+                              <span className={`w-4 h-4 shrink-0 rounded-md border flex items-center justify-center ${isChecked ? 'bg-[#800000] border-[#800000]' : 'border-slate-300'}`}>
+                                {isChecked && <CheckCircle2 size={12} className="text-white" strokeWidth={3} />}
+                              </span>
+                            </div>
+                          );
+                        })}
                         {visibleSizes.length === 0 && (
                           <div className="px-5 py-4 text-xs font-bold text-slate-400 text-center">
                             لا يوجد مقاس مطابق لـ «{sizeSearch}»
                           </div>
                         )}
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsSizeDropdownOpen(false)}
+                        className="w-full py-3 text-xs font-black text-[#800000] bg-[#80000006] hover:bg-[#8000000e] border-t border-slate-50 transition-colors"
+                      >
+                        تم
+                      </button>
                     </div>
                   )}
                 </div>

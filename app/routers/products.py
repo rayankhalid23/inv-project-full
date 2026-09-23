@@ -353,7 +353,7 @@ def _describe_filters(catalog_name, catalog_id, size_name, product_name, product
     return lines
 
 
-def _explain_unrenderable(products, size_name):
+def _explain_unrenderable(products, size_name_list=None):
     """لماذا لم يخرج أي كرت رغم مطابقة المنتجات للفلاتر؟
 
     كرت الـ PDF يحتاج: منتج ← لون غير محذوف ← مقاس (متغيّر) غير محذوف ← كمية متاحة > 0.
@@ -363,8 +363,15 @@ def _explain_unrenderable(products, size_name):
     شرط الكمية جزء من الفلترة (`build_catalog_display_list` يستبعد ما نفد)، ولذلك
     يجب أن يُذكر هنا صراحةً: بدونه كانت المنتجات النافدة تُصنَّف خطأً تحت
     "كل الألوان أو المقاسات محذوفة" رغم أن ألوانها ومقاساتها سليمة تماماً.
+
+    `size_name_list`: مقاس واحد (نص، للتوافق مع الاستخدام القديم) أو قائمة مقاسات
+    (اختيار متعدد) — أي منها يُطابق.
     """
-    wanted = size_name.strip().casefold() if size_name else None
+    if isinstance(size_name_list, str):
+        size_name_list = [size_name_list] if size_name_list.strip() else []
+    size_name_list = [s for s in (size_name_list or []) if s]
+    wanted = {s.strip().casefold() for s in size_name_list} if size_name_list else None
+    size_display = "، ".join(size_name_list) if size_name_list else None
     no_colors = []
     colors_without_sizes = []
     size_mismatch = []
@@ -387,7 +394,7 @@ def _explain_unrenderable(products, size_name):
 
         if wanted:
             matching = [v for v in live_variants
-                        if v.size and (v.size.name or '').strip().casefold() == wanted]
+                        if v.size and (v.size.name or '').strip().casefold() in wanted]
             if not matching:
                 size_mismatch.append(p.code or str(p.id))
             elif not any(qty(v) > 0 for v in matching):
@@ -407,7 +414,7 @@ def _explain_unrenderable(products, size_name):
     if size_mismatch:
         lines.append(f"  • {len(size_mismatch)} منتج مقاساته الحيّة لا تشمل المقاس المطلوب: {sample(size_mismatch)}")
     if out_of_stock:
-        detail = f"المقاس «{size_name}» فيها" if size_name else "كل مقاساتها"
+        detail = f"المقاس «{size_display}» فيها" if size_display else "كل مقاساتها"
         lines.append(f"  • {len(out_of_stock)} منتج {detail} بكمية متاحة صفر (نفدت): {sample(out_of_stock)}")
     if not lines:
         lines.append("  • كل الألوان أو المقاسات محذوفة (deleted_at) في المنتجات المطابقة")
@@ -522,6 +529,27 @@ def _size_availability_report(db, size_name, catalog_id=None, catalog_name=None)
     return None, []
 
 
+def _size_list_availability_report(db, size_name_list, catalog_id=None, catalog_name=None):
+    """نسخة من `_size_availability_report` تدعم أكثر من مقاس معاً (اختيار متعدد):
+    تشرح لكل مقاس مطلوب لم يُطابق شيئاً سبب فشله على حدة، ثم تجمع كل الأسباب."""
+    size_name_list = [s for s in (size_name_list or []) if s and s.strip()]
+    if not size_name_list:
+        return None, []
+    if len(size_name_list) == 1:
+        return _size_availability_report(db, size_name_list[0], catalog_id=catalog_id, catalog_name=catalog_name)
+
+    reasons = []
+    all_lines = []
+    for s in size_name_list:
+        reason, lines = _size_availability_report(db, s, catalog_id=catalog_id, catalog_name=catalog_name)
+        if reason:
+            reasons.append(f"[{s}] {reason}")
+            all_lines.extend(lines)
+    if not reasons:
+        return None, []
+    return "\n".join(reasons), all_lines
+
+
 def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None, reason_override=None):
     """رسالة تشخيص تحدّد **الخطوة** التي انقطعت عندها النتائج، بالأرقام.
 
@@ -570,6 +598,7 @@ def _pdf_export_failure_detail(*, stage, counts, filter_lines, extra_lines=None,
 @router.get("/export-pdf")
 def export_products_pdf(
     size_name: str = Query(None),
+    size_names: str = Query(None, description="أسماء مقاسات متعددة مفصولة بفاصلة، لاختيار أكثر من مقاس معاً"),
     catalog_id: int = Query(None),
     product_name: str = Query(None),
     product_ref: str = Query(None),
@@ -577,6 +606,20 @@ def export_products_pdf(
     current_user = Depends(RoleChecker([1, 2, 3]))
 ):
     clean_size_name = size_name.strip() if (size_name and isinstance(size_name, str)) else None
+
+    # اختيار متعدد للمقاسات: `size_names` مفصولة بفاصلة (مثال: "M,L,XL"). نُبقي
+    # `size_name` المفرد يعمل كما كان تماماً للتوافق مع أي استدعاء قديم.
+    size_name_list = []
+    if size_names and isinstance(size_names, str):
+        seen = set()
+        for part in size_names.split(','):
+            s = part.strip()
+            key = s.casefold()
+            if s and key not in seen:
+                seen.add(key)
+                size_name_list.append(s)
+    if not size_name_list and clean_size_name:
+        size_name_list = [clean_size_name]
 
     # عدّاد لكل خطوة تصفية: هو ما يسمح للرسالة أن تقول **أين** انقطعت النتائج
     # بدل أن تتّهم آخر فلتر مهما كان السبب.
@@ -589,7 +632,8 @@ def export_products_pdf(
         catalog_row = db.query(Catalog).filter(Catalog.id == catalog_id).first()
         catalog_name = catalog_row.name if catalog_row else None
 
-    filter_lines = _describe_filters(catalog_name, catalog_id, clean_size_name,
+    filter_lines = _describe_filters(catalog_name, catalog_id,
+                                     "، ".join(size_name_list) if size_name_list else None,
                                      product_name, product_ref)
 
     def fail(stage, extra_lines=None, reason_override=None):
@@ -603,8 +647,8 @@ def export_products_pdf(
     if catalog_id:
         query = query.filter(Product.catalog_id == catalog_id)
 
-    # 2) المقاس — استعلام فرعي سريع جداً بدلاً من correlated EXISTS المتكررة
-    if clean_size_name:
+    # 2) المقاس (واحد أو أكثر) — استعلام فرعي سريع جداً بدلاً من correlated EXISTS المتكررة
+    if size_name_list:
         matching_product_ids = (
             db.query(ProductColor.product_id)
             .join(ProductVariant, ProductVariant.product_color_id == ProductColor.id)
@@ -613,7 +657,7 @@ def export_products_pdf(
                 ProductColor.deleted_at.is_(None),
                 ProductVariant.deleted_at.is_(None),
                 Size.deleted_at.is_(None),
-                Size.name.ilike(clean_size_name),
+                or_(*[Size.name.ilike(s) for s in size_name_list]),
                 ProductVariant.quantity_available > 0
             )
             .distinct()
@@ -645,19 +689,19 @@ def export_products_pdf(
             counts["after_catalog"] = base.filter(Product.catalog_id == catalog_id).count()
             if counts["after_catalog"] == 0:
                 fail("catalog")
-        if clean_size_name:
+        if size_name_list:
             counts["after_size"] = 0
             # سبب دقيق بدل الرسالة العامة: مقاس غير موجود؟ غير مضاف لأي منتج؟
             # نفدت كميته؟ أم متوفر لكن في كتالوج آخر غير المختار؟
-            reason, extra = _size_availability_report(
-                db, clean_size_name, catalog_id=catalog_id, catalog_name=catalog_name)
+            reason, extra = _size_list_availability_report(
+                db, size_name_list, catalog_id=catalog_id, catalog_name=catalog_name)
             fail("size", extra_lines=extra or None, reason_override=reason)
         fail("text")
 
     # 4) هل يوجد فعلاً ما يُرسم؟ المنتج قد يطابق كل الفلاتر وهو بلا ألوان أو
     # بألوان بلا مقاسات أو نفدت كميته — وكان الناتج ملف PDF فيه الترويسة فقط
     # بلا أي تفسير.
-    cards = build_catalog_display_list(products_data, clean_size_name)
+    cards = build_catalog_display_list(products_data, size_names=size_name_list)
     counts["renderable"] = len(cards)
     if not cards:
         # المنتجات وصلت لآخر خطوة، فكل العدّادات السابقة تساوي عدد النتائج —
@@ -665,17 +709,17 @@ def export_products_pdf(
         matched = len(products_data)
         for key in ("after_catalog", "after_size", "after_text"):
             counts[key] = matched
-        reason, extra = _size_availability_report(
-            db, clean_size_name, catalog_id=catalog_id, catalog_name=catalog_name)
+        reason, extra = _size_list_availability_report(
+            db, size_name_list, catalog_id=catalog_id, catalog_name=catalog_name)
         fail("render",
-             extra_lines=_explain_unrenderable(products_data, clean_size_name) + (extra or []),
+             extra_lines=_explain_unrenderable(products_data, size_name_list) + (extra or []),
              reason_override=reason)
 
     try:
         buffer = io.BytesIO()
         # نمرّر display_list الجاهزة مباشرة لمنع إعادة بنائها داخل generate_catalog_pdf
         # (كانت تُبنى مرتين: مرة هنا للتحقق من الكروت، ومرة داخل generate_catalog_pdf)
-        generate_catalog_pdf(products_data, buffer, size_name=clean_size_name, display_list=cards)
+        generate_catalog_pdf(products_data, buffer, size_names=size_name_list, display_list=cards)
         buffer.seek(0)
         create_system_audit_log(
           db=db,
@@ -684,7 +728,7 @@ def export_products_pdf(
           target_id=0,
           action_type="export_pdf",
           details={"type": "catalog", "catalog_id": catalog_id,
-                   "size_name": clean_size_name, "cards": len(cards)}
+                   "size_names": size_name_list, "cards": len(cards)}
           )
 
         return StreamingResponse(

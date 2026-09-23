@@ -96,11 +96,16 @@ export default function SalesPage() {
   const [inventoryStats, setInventoryStats] = useState(null);
   const [showProductsSection, setShowProductsSection] = useState(true); // true تعني مفتوح بشكل افتراضي
 
-  // ---- States للفلترة والبحث ----
-  const [searchQuery, setSearchQuery]   = useState('');
-  const [activeFilter, setActiveFilter] = useState('الكل');
+  // ---- States للفلترة والبحث والتمرير اللانهائي ----
+  const [searchQuery, setSearchQuery]       = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [hasMore, setHasMore]               = useState(true);
+  const [isLoadingMore, setIsLoadingMore]   = useState(false);
+  const [activeFilter, setActiveFilter]     = useState('الكل');
   const [filterEmployee, setFilterEmployee] = useState('الكل');
-  const [employeesList, setEmployeesList] = useState([]);
+  const [employeesList, setEmployeesList]   = useState([]);
+  const loadMoreRef                         = useRef(null);
+  const loadingMoreRef                      = useRef(false);
 
   // ---- States للنوافذ المنبثقة ----
   const [selectedOrder, setSelectedOrder]     = useState(null);
@@ -392,20 +397,90 @@ const handleScanProduct = async (barcodeValue) => {
 
 
 
-  // ========= جلب الطلبات من الـ API =========
+  // تفعيل البحث المؤجل (Debounce) لمنع تكرار الطلبات أثناء الكتابة
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchQuery.trim());
+    }, 350);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
+  // ========= جلب الطلبات من الـ API (أول 200 طلب مع دعم البحث والفلتر في السيرفر) =========
   const fetchOrders = useCallback(async (silent = false) => {
     if (!silent) setIsLoading(true);
     else setIsRefreshing(true);
     try {
-      const data = await orderApi.getOrders({ limit: 200 });
-      setOrders(Array.isArray(data) ? data : []);
+      const statusParam = activeFilter !== 'الكل' ? activeFilter : undefined;
+      const searchParam = debouncedSearch || undefined;
+      const data = await orderApi.getOrders({
+        skip: 0,
+        limit: 200,
+        status: statusParam,
+        search: searchParam,
+      });
+      const orderList = Array.isArray(data) ? data : [];
+      setOrders(orderList);
+      setHasMore(orderList.length >= 200);
     } catch (err) {
       showToast(typeof err === 'string' ? err : 'فشل تحميل الطلبات', 'error');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [showToast]);
+  }, [activeFilter, debouncedSearch, showToast]);
+
+  // ========= جلب الدفعة التالية (200 طلب إضافي عند التمرير لأسفل) =========
+  const loadMoreOrders = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMore || isLoading) return;
+    loadingMoreRef.current = true;
+    setIsLoadingMore(true);
+    try {
+      const statusParam = activeFilter !== 'الكل' ? activeFilter : undefined;
+      const searchParam = debouncedSearch || undefined;
+      const nextBatch = await orderApi.getOrders({
+        skip: orders.length,
+        limit: 200,
+        status: statusParam,
+        search: searchParam,
+      });
+      const newOrders = Array.isArray(nextBatch) ? nextBatch : [];
+      if (newOrders.length < 200) {
+        setHasMore(false);
+      }
+      if (newOrders.length > 0) {
+        setOrders(prev => {
+          const existingIds = new Set(prev.map(o => o.id));
+          const filteredNew = newOrders.filter(o => !existingIds.has(o.id));
+          return [...prev, ...filteredNew];
+        });
+      }
+    } catch (err) {
+      console.error('Error loading more orders:', err);
+    } finally {
+      setIsLoadingMore(false);
+      loadingMoreRef.current = false;
+    }
+  }, [hasMore, isLoading, orders.length, activeFilter, debouncedSearch]);
+
+  // مراقبة التمرير اللانهائي (IntersectionObserver)
+  useEffect(() => {
+    if (!hasMore || isLoadingMore || isLoading) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadMoreOrders();
+        }
+      },
+      { threshold: 0.1, rootMargin: '300px' }
+    );
+
+    const target = loadMoreRef.current;
+    if (target) observer.observe(target);
+    return () => {
+      if (target) observer.unobserve(target);
+      observer.disconnect();
+    };
+  }, [hasMore, isLoadingMore, isLoading, loadMoreOrders]);
 
   // ========= جلب إحصائيات المخزون =========
   const fetchInventoryStats = useCallback(async () => {
@@ -442,10 +517,13 @@ const handleScanProduct = async (barcodeValue) => {
 
   useEffect(() => {
     fetchOrders();
+  }, [fetchOrders]);
+
+  useEffect(() => {
     fetchInventoryStats();
     fetchEmployeesList();
     loadDarbDataIfNeeded();
-  }, [fetchOrders, fetchInventoryStats, fetchEmployeesList, loadDarbDataIfNeeded]);
+  }, [fetchInventoryStats, fetchEmployeesList, loadDarbDataIfNeeded]);
 
   // تحديث تلقائي للقائمة كل 45 ث — يبقي جميع المستخدمين العاملين في نفس الوقت متزامنين
   useEffect(() => {
@@ -511,8 +589,8 @@ const handleScanProduct = async (barcodeValue) => {
         : (order.customer_phones || '');
       const q = searchQuery.toLowerCase();
 
-      // 1. مطابقة البحث
-      const matchSearch = !q || name.includes(q) || id.includes(q) || phones.includes(q);
+      // 1. مطابقة البحث: إذا كانت النتائج قادمة من السيرفر استناداً للبحث نعتبرها مطابقة، مع توفير فلترة لحظية أثناء الكتابة
+      const matchSearch = !q || (debouncedSearch && q === debouncedSearch.toLowerCase()) || name.includes(q) || id.includes(q) || phones.includes(q);
       
       // 2. 🔥 مطابقة الفلتر الذكي المحدث لحالة التوصيل الشاملة
       let matchFilter = activeFilter === 'الكل' || order.status === activeFilter;
@@ -525,7 +603,7 @@ const handleScanProduct = async (barcodeValue) => {
       
       return matchSearch && matchFilter && matchEmployee;
     });
-  }, [orders, searchQuery, activeFilter, filterEmployee]);
+  }, [orders, searchQuery, debouncedSearch, activeFilter, filterEmployee]);
 
  
 
@@ -1371,6 +1449,7 @@ const updateEditVariantQty = (variantId, qty) => {
     'قيد التجهيز':  orders.filter(o => o.status === 'قيد التجهيز').length,
     'تم التجهيز':   orders.filter(o => o.status === 'تم التجهيز').length,
     'تم اسناده للتوصيل': orders.filter(o => o.status === 'تم اسناده للتوصيل' || o.status === 'جاري الشحن').length,
+    'تم التوصيل':    orders.filter(o => o.status === 'تم التوصيل').length,
     'ملغي':         orders.filter(o => o.status === 'ملغي').length,
   }), [orders]); // <--- هنا تم إغلاق الدالة الثانية بنجاح!
 
@@ -1517,7 +1596,7 @@ const updateEditVariantQty = (variantId, qty) => {
 
           {/* شريط تبويبات الحالات مع مسافات واضحة وتصميم مريح على الهاتف والديسكتوب */}
           <div className="flex gap-2 sm:gap-2.5 overflow-x-auto pb-1.5 pt-0.5 scrollbar-none items-center">
-            {['الكل', 'معلق', 'قيد التجهيز', 'تم التجهيز', 'تم اسناده للتوصيل', 'ملغي'].map(tab => {
+            {['الكل', 'معلق', 'قيد التجهيز', 'تم التجهيز', 'تم اسناده للتوصيل', 'تم التوصيل', 'ملغي'].map(tab => {
               const isActive = activeFilter === tab;
               const count = filterCounts[tab] ?? 0;
               return (
@@ -1568,7 +1647,8 @@ const updateEditVariantQty = (variantId, qty) => {
               </button>
             </div>
           ) : (
-            filteredOrders.map(order => (
+            <>
+              {filteredOrders.map(order => (
               <div
                 key={order.id}
                 onClick={() => handleOpenDetail(order)}
@@ -1613,7 +1693,33 @@ const updateEditVariantQty = (variantId, qty) => {
                   </div>
                 </div>
               </div>
-            ))
+            ))}
+
+            {/* مراقبة التمرير اللانهائي (Infinite Scroll Sentinel) */}
+            <div ref={loadMoreRef} className="py-6 text-center">
+              {isLoadingMore && (
+                <div className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-white border border-slate-200 shadow-sm text-xs font-bold text-slate-700 animate-pulse">
+                  <Loader2 className="h-4 w-4 animate-spin text-[#800000]" />
+                  <span>جاري جلب الدفعة التالية (200 طلب إضافي)...</span>
+                </div>
+              )}
+              {!hasMore && orders.length > 0 && (
+                <div className="text-[11px] font-bold text-slate-400 py-2">
+                  تم استعراض كافة الطلبات المسجلة ({orders.length} طلب) ✓
+                </div>
+              )}
+              {hasMore && !isLoadingMore && orders.length >= 200 && (
+                <button
+                  type="button"
+                  onClick={loadMoreOrders}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-[#800000] bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition-all shadow-sm"
+                >
+                  <span>تحميل المزيد من الطلبات (200 طلب)</span>
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </>
           )}
         </div>
 

@@ -1144,23 +1144,54 @@ def get_orders_comprehensive_logic(db: Session, skip: int = 0, limit: int = 100,
         joinedload(Order.items).joinedload(OrderItem.product) # لجلب صورة المنتج الأساسية
     )
     
-    # 2. الفلترة حسب الحالة
-    if status:
-        query = query.filter(Order.status == status)
+    # 2. الفلترة حسب الحالة (دعم الحالات بالعربية والإنجليزية)
+    if status and status != 'الكل':
+        status_map = {
+            'pending': ['pending', 'معلق'],
+            'in_preparation': ['in_preparation', 'قيد التجهيز'],
+            'prepared': ['prepared', 'تم التجهيز'],
+            'shipped': ['shipped', 'تم اسناده للتوصيل', 'جاري الشحن'],
+            'delivered': ['delivered', 'تم التوصيل'],
+            'cancelled': ['cancelled', 'ملغي'],
+            'returned': ['returned', 'مرتجع بالكامل'],
+        }
+        equivalent = status_map.get(status)
+        if not equivalent:
+            for k, v in status_map.items():
+                if status in v:
+                    equivalent = v
+                    break
+        if equivalent:
+            query = query.filter(Order.status.in_(equivalent))
+        else:
+            query = query.filter(Order.status == status)
     
-    # 3. نظام البحث المتقدم
-    if search:
-        search_term = f"%{search.strip()}%"
+    # 3. نظام البحث المتقدم والشامل
+    if search and search.strip():
+        # تحويل الأرقام العربية-الهندية إلى إنجليزية لضمان مطابقة أرقام الهواتف والـ ID
+        arabic_digits = "٠١٢٣٤٥٦٧٨٩"
+        english_digits = "0123456789"
+        trans_table = str.maketrans(arabic_digits, english_digits)
+        clean_search = search.strip().translate(trans_table)
+
+        search_term_clean = f"%{clean_search}%"
+        search_term_raw = f"%{search.strip()}%"
+
         conditions = [
-            Order.customer_name.ilike(search_term),
-            Order.social_media_source.ilike(search_term),
-            # ✅ تحويل العمود JSON إلى String ليعمل بشكل آمن عبر جميع قواعد البيانات
-            func.cast(Order.customer_phones, String).ilike(search_term) 
+            Order.customer_name.ilike(search_term_raw),
+            Order.social_media_source.ilike(search_term_raw),
+            Order.address.ilike(search_term_raw),
+            # ✅ تحويل العمود JSON إلى String ليعمل بشكل آمن ومطابقة الهواتف
+            func.cast(Order.customer_phones, String).ilike(search_term_clean),
         ]
+
+        if clean_search != search.strip():
+            conditions.append(func.cast(Order.customer_phones, String).ilike(search_term_raw))
+            conditions.append(Order.customer_name.ilike(search_term_clean))
         
         # إذا كان مصطلح البحث عبارة عن رقم فقط، نضيف البحث بكود الطلب (ID)
-        if search.strip().isdigit():
-            conditions.append(Order.id == int(search.strip()))
+        if clean_search.isdigit():
+            conditions.append(Order.id == int(clean_search))
             
         query = query.filter(or_(*conditions))
     

@@ -91,17 +91,33 @@ def wrap_sizes_lines(canvas_obj, sizes_list, prefix, max_width, font, font_size,
             result.append(format_ar(render(kept[i], i == 0)))
     return result
 
-def build_catalog_display_list(products, size_name=None):
+def _normalize_wanted_sizes(size_name=None, size_names=None):
+    """يوحّد مدخل المقاس (نص مفرد قديم أو قائمة مقاسات جديدة) إلى مجموعة
+    أسماء منسّقة (casefold + trim) تُستخدم للمطابقة، بدون التأثير على الاستخدام
+    القديم بمقاس واحد (نص)."""
+    wanted = set()
+    if isinstance(size_names, (list, tuple, set)):
+        for s in size_names:
+            if isinstance(s, str) and s.strip():
+                wanted.add(s.strip().casefold())
+    if isinstance(size_name, str) and size_name.strip():
+        wanted.add(size_name.strip().casefold())
+    return wanted
+
+
+def build_catalog_display_list(products, size_name=None, size_names=None):
     """يبني قائمة الكروت المراد رسمها في الـ PDF.
 
-    `size_name`: حين يُمرَّر، يُرسم المقاس المطلوب فقط ولا تظهر إلا الألوان التي
-    تملكه فعلاً. بدونه كان تصدير "فلترة حسب المقاس" يخرج بكل مقاسات المنتج،
-    فيبدو الفلتر كأنه لم يُطبَّق إطلاقاً.
+    `size_name`: (مقاس واحد، للتوافق مع الاستخدام القديم) حين يُمرَّر، يُرسم
+    المقاس المطلوب فقط ولا تظهر إلا الألوان التي تملكه فعلاً.
+    `size_names`: قائمة مقاسات متعددة — تعمل بنفس المنطق لكن تسمح باختيار أكثر
+    من مقاس معاً (أي مقاس من القائمة يُطابق). بدونهما كان تصدير "فلترة حسب
+    المقاس" يخرج بكل مقاسات المنتج، فيبدو الفلتر كأنه لم يُطبَّق إطلاقاً.
 
     ملاحظة: نستبعد المقاسات التي نفدت كميتها (quantity_available <= 0)
     لأن الكتالوج يجب أن يعكس فقط ما هو متوفر للبيع فعلاً.
     """
-    wanted_size = size_name.strip().casefold() if isinstance(size_name, str) and size_name.strip() else None
+    wanted_sizes = _normalize_wanted_sizes(size_name, size_names)
 
     display_list = []
     for product in products:
@@ -114,9 +130,9 @@ def build_catalog_display_list(products, size_name=None):
                         if not getattr(v, 'deleted_at', None)
                         and (getattr(v, 'quantity_available', 0) or 0) > 0]
 
-            if wanted_size:
+            if wanted_sizes:
                 variants = [v for v in variants
-                            if v.size and (v.size.name or '').strip().casefold() == wanted_size]
+                            if v.size and (v.size.name or '').strip().casefold() in wanted_sizes]
 
             if not variants:
                 continue
@@ -163,12 +179,15 @@ def _resize_image_for_pdf(img_path, image_cache=None, max_w_px=350, max_h_px=350
     except Exception:
         return None  # نتراجع للمسار الأصلي إذا فشل التصغير
 
-def generate_catalog_pdf(products_or_display_list, output_path, size_name=None, display_list=None):
+def generate_catalog_pdf(products_or_display_list, output_path, size_name=None, display_list=None, size_names=None):
     """توليد PDF الكتالوج.
 
     يقبل إما:
     - `products_or_display_list`: قائمة منتجات ORM (المسار القديم)
     - `display_list`: قائمة كروت جاهزة من build_catalog_display_list (أسرع — لا يُعيد بناءها)
+
+    `size_names`: قائمة مقاسات متعددة (بديل `size_name` المفرد) تُستخدم فقط حين
+    لا تُمرَّر `display_list` جاهزة.
     """
     c = canvas.Canvas(output_path, pagesize=A4)
     width, height = A4
@@ -200,7 +219,7 @@ def generate_catalog_pdf(products_or_display_list, output_path, size_name=None, 
     if display_list is not None:
         items = display_list
     else:
-        items = build_catalog_display_list(products_or_display_list, size_name)
+        items = build_catalog_display_list(products_or_display_list, size_name=size_name, size_names=size_names)
 
     # قاموس كاش للصور المصغرة لتجنب تكرار معالجة نفس الصورة + قائمة لتنظيفها
     image_cache = {}
