@@ -186,7 +186,6 @@ export default function EmployeesReport({ period }) {
 
 {["admins", "managers", "staff"].map((roleKey) => {
   const roleData = performance?.[roleKey];
-  if (!roleData?.list?.length) return null;
 
   // تعريف التنسيقات والألوان الثابتة لكل رتبة لضمان عمل Tailwind بشكل صحيح
   const roleStyles = {
@@ -211,7 +210,7 @@ export default function EmployeesReport({ period }) {
   };
   
   const style = roleStyles[roleKey];
-
+  const empList = roleData?.list || [];
   return (
     <div key={roleKey} className="mb-10">
       
@@ -223,7 +222,7 @@ export default function EmployeesReport({ period }) {
           <div className="flex items-center gap-2">
             <style.icon className="h-4 w-4 text-slate-700" />
             <h3 className="text-xs sm:text-sm font-black text-slate-900">
-              {style.label} : ({roleData.list.length} موظف نشط)
+              {style.label} : ({empList.length} موظف نشط)
             </h3>
           </div>
           <span className="text-[10px] bg-slate-200/70 text-slate-600 font-bold px-3 py-1 rounded-full hidden sm:block">
@@ -231,9 +230,15 @@ export default function EmployeesReport({ period }) {
           </span>
         </div>
 
-        {/* عناصر القائمة (الموظفين) */}
+        {/* عناصر القائمة (الموظفين) أو رسالة فارغة */}
+        {empList.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-10 gap-2 text-slate-400">
+            <style.icon className="h-8 w-8 opacity-30" />
+            <p className="text-xs font-bold">لا يوجد موظفون نشطون في هذه الرتبة خلال الفترة المختارة</p>
+          </div>
+        ) : (
         <div className="divide-y divide-slate-100">
-          {roleData.list.map((emp, index) => {
+          {empList.map((emp, index) => {
             const isExpanded = expandedEmployee === emp.id;
             
             return (
@@ -280,9 +285,9 @@ export default function EmployeesReport({ period }) {
                 {isExpanded && (
                   <div className={`${style.contentBg} p-4 border-t border-b ${style.contentBorder} animate-fade-in`}>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {Object.entries(emp.categories)
+                      {Object.entries(emp.categories || {})
                         .filter(([catKey]) => {
-                          // تصفية: إذا كان الرتبة "موظفون" يتم إخفاء هذه الأقسام
+                          // تصفية: إذا كانت الرتبة "موظفون" يتم إخفاء هذه الأقسام
                           if (roleKey === "staff" && ["catalogs", "employees", "products"].includes(catKey.toLowerCase())) {
                             return false;
                           }
@@ -358,6 +363,7 @@ export default function EmployeesReport({ period }) {
             );
           })}
         </div>
+        )}
       </div>
     </div>
   );
