@@ -106,11 +106,13 @@ class ReportingService:
         # --- 5. التقسيم حسب الرتبة ---
         admins_list, managers_list, staff_list = [], [], []
         for u_data in user_stats.values():
-            if u_data["role_id"] == 1:
+            r_name = str(u_data.get("role") or "").lower()
+            r_id = u_data.get("role_id")
+            if r_id == 1 or "admin" in r_name or "مسؤول" in r_name:
                 admins_list.append(u_data)
-            elif u_data["role_id"] == 2:
+            elif r_id == 2 or "manager" in r_name or "مدير" in r_name:
                 managers_list.append(u_data)
-            elif u_data["role_id"] == tax.ROLE_STAFF:
+            else:
                 staff_list.append(u_data)
 
         for l in [admins_list, managers_list, staff_list]:
@@ -354,33 +356,31 @@ class ReportingService:
 
     @staticmethod
     def get_employee_statistics(db: Session):
-        stats = db.query(
-            func.count(User.id).label("total"),
-            func.sum(case((and_(User.deleted_at.is_(None), User.is_active == True), 1), else_=0)).label("active"),
-            func.sum(case((User.deleted_at.is_not(None), 1), else_=0)).label("deleted"),
-            func.sum(case((and_(User.role_id == 1, User.deleted_at.is_(None)), 1), else_=0)).label("admins"),
-            func.sum(case((and_(User.role_id == 2, User.deleted_at.is_(None)), 1), else_=0)).label("managers"),
-            func.sum(case((and_(User.role_id == 3, User.deleted_at.is_(None)), 1), else_=0)).label("employees")
-        ).first()
+        users = db.query(User).options(joinedload(User.role)).all()
+        total = len(users)
+        active = sum(1 for u in users if u.deleted_at is None and u.is_active)
+        deleted = sum(1 for u in users if u.deleted_at is not None)
 
-        roles = db.query(Role).all()
-        role_breakdown = {role.name: 0 for role in roles}
+        admins = 0
+        managers = 0
+        employees = 0
 
-        role_counts = db.query(
-            Role.name,
-            func.count(User.id).label("count")
-        ).join(User, User.role_id == Role.id)\
-         .filter(User.deleted_at.is_(None))\
-         .group_by(Role.name).all()
-
-        for r in role_counts:
-            role_breakdown[r.name] = r.count
+        for u in users:
+            if u.deleted_at is not None:
+                continue
+            r_name = str(u.role.name if u.role else "").lower()
+            if u.role_id == 1 or "admin" in r_name or "مسؤول" in r_name:
+                admins += 1
+            elif u.role_id == 2 or "manager" in r_name or "مدير" in r_name:
+                managers += 1
+            else:
+                employees += 1
 
         return {
-            "total_employees": int(stats.total or 0),
-            "active_employees": int(stats.active or 0),
-            "deleted_employees": int(stats.deleted or 0),
-            "admins_count": int(stats.admins or 0),
-            "managers_count": int(stats.managers or 0),
-            "employees_count": int(stats.employees or 0),
+            "total_employees": total,
+            "active_employees": active,
+            "deleted_employees": deleted,
+            "admins_count": admins,
+            "managers_count": managers,
+            "employees_count": employees,
         }
