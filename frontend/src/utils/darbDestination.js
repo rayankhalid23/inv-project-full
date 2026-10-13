@@ -4,6 +4,8 @@
  * الوجهة المعروضة في كل الشاشات مطابقة تماماً لما هو محفوظ في الطلب.
  */
 
+import { FALLBACK_DARB_CITIES } from '../constants/darbAssabilFallback';
+
 /** مطابق لخريطة BRANCH_REDIRECTS في app/services/darb_assabil_service.py */
 export const DARB_BRANCH_REDIRECTS = {
   'القره بولي': ['قصر خيار', 'القره بولي'],
@@ -20,14 +22,38 @@ export const DARB_BRANCH_REDIRECTS = {
   'بن جواد':    ['رأس لانوف', 'بن جواد'],
   'العقيلة':    ['البريقة', 'العقيلة'],
   'بشر':        ['البريقة', 'بشر'],
+  'الزنتان':    ['غريان', 'الزنتان'],
+  'تاجوراء':    ['طرابلس', 'تاجوراء'],
+  'يفرن':       ['غريان', 'يفرن'],
+  'جادو':       ['غريان', 'جادو'],
+  'نالوت':      ['غريان', 'نالوت'],
+  'ككلة':       ['غريان', 'ككلة'],
+  'الرجبان':    ['غريان', 'الرجبان'],
+  'الرحيبات':   ['غريان', 'الرحيبات'],
+  'الرياينة':   ['غريان', 'الرياينة'],
+  'الأصابعة':   ['غريان', 'الأصابعة'],
+  'غدامس':      ['غريان', 'غدامس'],
+  'بدر':        ['غريان', 'بدر'],
+  'تيجي':       ['غريان', 'تيجي'],
 };
 
 /** مواءمة المدينة/المنطقة مع الفرع الرسمي المعتمد لدى درب السبيل */
 export const resolveDarbDestination = (city, area) => {
-  const cityClean = (city || '').trim();
-  const areaClean = (area || '').trim();
+  let cityClean = (city || '').trim();
+  let areaClean = (area || '').trim();
 
-  const redirect = DARB_BRANCH_REDIRECTS[cityClean];
+  // تنظيف الأرقام الملحقة بالمدينة (مثل الزنتان35 أو سرت 30)
+  const cityWithoutDigits = cityClean.replace(/\d+/g, '').trim();
+  if (cityWithoutDigits && (DARB_BRANCH_REDIRECTS[cityWithoutDigits] || !cityClean)) {
+    cityClean = cityWithoutDigits;
+  }
+
+  // إذا كانت المنطقة رقماً فقط (مثل سعر التوصيل 35 من "الزنتان - 35")
+  if (/^\d+$/.test(areaClean)) {
+    areaClean = '';
+  }
+
+  const redirect = DARB_BRANCH_REDIRECTS[cityClean] || DARB_BRANCH_REDIRECTS[cityWithoutDigits];
   if (redirect) {
     const [parentCity, defaultArea] = redirect;
     const finalArea = (!areaClean || areaClean === 'وسط المدينة' || areaClean === cityClean)
@@ -80,6 +106,37 @@ export const parseOrderDestination = (order) => {
     }
   }
 
+  // 3. كشف ذكي عند غياب الفاصل (مثل: "الزنتان35" أو "سرت 30" أو "تاجوراء" أو "مصراتة"):
+  if (!city && address) {
+    const cleanAddress = address.replace(/\d+/g, '').trim();
+
+    // أ) فحص التطابق مع المدن التابعة (DARB_BRANCH_REDIRECTS)
+    for (const key of Object.keys(DARB_BRANCH_REDIRECTS)) {
+      if (cleanAddress.includes(key)) {
+        city = key;
+        area = key;
+        break;
+      }
+    }
+
+    // ب) فحص التطابق مع المدن والمناطق الرئيسية (FALLBACK_DARB_CITIES)
+    if (!city) {
+      for (const [cName, areas] of Object.entries(FALLBACK_DARB_CITIES)) {
+        if (cleanAddress.includes(cName)) {
+          city = cName;
+          area = (areas && areas.includes(cName)) ? cName : ((areas && areas[0]) || 'وسط المدينة');
+          break;
+        }
+        const matchedArea = (areas || []).find(a => a && cleanAddress.includes(a));
+        if (matchedArea) {
+          city = cName;
+          area = matchedArea;
+          break;
+        }
+      }
+    }
+  }
+
   if (!detailed) detailed = address;
 
   const resolved = resolveDarbDestination(city, area);
@@ -97,7 +154,10 @@ export const matchDestinationToCatalog = (citiesAreas, city, area, fallback = { 
   if (city && map[city]) {
     const areas = map[city] || [];
     if (area && areas.includes(area)) return { city, area };
-    return { city, area: areas.includes('وسط المدينة') ? 'وسط المدينة' : (areas[0] || area || 'وسط المدينة') };
+    const preferredArea = areas.includes(city)
+      ? city
+      : (areas.includes('وسط المدينة') ? 'وسط المدينة' : (areas[0] || area || 'وسط المدينة'));
+    return { city, area: preferredArea };
   }
 
   // المدينة غير موجودة كفرع — نبحث عنها كمنطقة تابعة لمدينة أخرى

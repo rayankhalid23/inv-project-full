@@ -51,6 +51,29 @@ describe('parseOrderDestination — استخراج وجهة الطلب', () => {
     expect(res).toEqual({ city: 'الخمس', area: 'زليتن', detailed: 'قرب المستشفى' });
   });
 
+  it('يتعرّف بذكاء على الزنتان وسعر التوصيل (الزنتان35) ويحوّلها لفرع غريان', () => {
+    const order = { address: 'الزنتان35' };
+    const res = parseOrderDestination(order);
+    expect(res.city).toBe('غريان');
+    expect(res.area).toBe('الزنتان');
+    expect(res.detailed).toBe('الزنتان35');
+  });
+
+  it('يتعرّف على سرت وسعر التوصيل (سرت 30)', () => {
+    const order = { address: 'سرت 30' };
+    const res = parseOrderDestination(order);
+    expect(res.city).toBe('سرت');
+    expect(res.area).toBe('سرت');
+    expect(res.detailed).toBe('سرت 30');
+  });
+
+  it('يحوّل تاجوراء لفرع طرابلس لضمان قبولها في درب السبيل', () => {
+    const order = { address: 'تاجوراء' };
+    const res = parseOrderDestination(order);
+    expect(res.city).toBe('طرابلس');
+    expect(res.area).toBe('تاجوراء');
+  });
+
   it('يعيد نفس الوجهة عند تكرار الاستخراج (ثبات بين التعديل والإرسال)', () => {
     const address = 'طرابلس - عين زارة - شارع الهضبة';
     const first = parseOrderDestination({ address });

@@ -305,6 +305,15 @@ class DarbAssabilService:
         city_clean = (city or "طرابلس").strip()
         area_clean = (area or "وسط المدينة").strip()
 
+        # إزالة أي أرقام زائدة تسربت لاسم المدينة (مثل الزنتان35 أو سرت 30)
+        city_without_digits = re.sub(r'\d+', '', city_clean).strip()
+        if city_without_digits:
+            city_clean = city_without_digits
+
+        # إذا كانت المنطقة رقماً فقط (مثل سعر التوصيل 35 من "الزنتان - 35")
+        if re.match(r'^\d+$', area_clean):
+            area_clean = ""
+
         # خريطة تحويل المناطق الشهيرة إلى الفروع الرسمية المعتمدة لدى درب السبيل
         BRANCH_REDIRECTS = {
             "القره بولي": ("قصر خيار", "القره بولي"),
@@ -321,12 +330,28 @@ class DarbAssabilService:
             "بن جواد": ("رأس لانوف", "بن جواد"),
             "العقيلة": ("البريقة", "العقيلة"),
             "بشر": ("البريقة", "بشر"),
+            "الزنتان": ("غريان", "الزنتان"),
+            "تاجوراء": ("طرابلس", "تاجوراء"),
+            "يفرن": ("غريان", "يفرن"),
+            "جادو": ("غريان", "جادو"),
+            "نالوت": ("غريان", "نالوت"),
+            "ككلة": ("غريان", "ككلة"),
+            "الرجبان": ("غريان", "الرجبان"),
+            "الرحيبات": ("غريان", "الرحيبات"),
+            "الرياينة": ("غريان", "الرياينة"),
+            "الأصابعة": ("غريان", "الأصابعة"),
+            "غدامس": ("غريان", "غدامس"),
+            "بدر": ("غريان", "بدر"),
+            "تيجي": ("غريان", "تيجي"),
         }
 
         if city_clean in BRANCH_REDIRECTS:
             parent_branch_city, default_area = BRANCH_REDIRECTS[city_clean]
             final_area = area_clean if area_clean not in ["", "وسط المدينة", city_clean] else default_area
             return parent_branch_city, final_area
+
+        if not area_clean:
+            area_clean = city_clean
 
         return city_clean, area_clean
 
@@ -547,6 +572,7 @@ class DarbAssabilService:
                     data = res_json.get("data", {})
                     tracking_number = data.get("reference") or data.get("trackingNumber") or data.get("_id")
                     shipment_id = data.get("_id") or str(data.get("id", ""))
+                    print(f"[DARB ASSABIL SUCCESS] Shipment created! Tracking: {tracking_number}, ID: {shipment_id}")
 
                     return {
                         "success": True,
@@ -558,6 +584,7 @@ class DarbAssabilService:
                 else:
                     last_status = res.status_code
                     last_error = res.text
+                    print(f"\n[DARB ASSABIL ERROR {res.status_code} on {ep}]: {res.text}\n")
                     # تسجيل الاستجابة الكاملة (status + body) لسهولة التشخيص
                     logger.warning(
                         f"[DARB ASSABIL] {ep} أعاد {res.status_code}: {res.text[:800]}"
@@ -571,9 +598,12 @@ class DarbAssabilService:
                         pass
             except requests.exceptions.Timeout:
                 last_error = "انتهت مهلة الاتصال بخادم درب السبيل (Timeout)"
+                print(f"[DARB ASSABIL TIMEOUT on {ep}]")
             except Exception as e:
                 last_error = f"تعذر الاتصال بخادم درب السبيل: {str(e)}"
+                print(f"[DARB ASSABIL EXCEPTION on {ep}]: {str(e)}")
 
+        print(f"[DARB ASSABIL FINAL FAILURE]: Status {last_status} - {last_error}")
         return {
             "success": False,
             "error": f"خطأ من درب السبيل ({last_status}): {last_error}",
